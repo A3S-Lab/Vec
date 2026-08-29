@@ -1,0 +1,38 @@
+[package]
+name = "a3s-vec"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["A3S Lab Team"]
+repository = "https://github.com/A3S-Lab/a3s"
+description = "Native Rust in-process vector database with zvec-compatible capabilities"
+keywords = ["a3s", "vector-database", "ann", "hnsw", "fts"]
+categories = ["database-implementations", "algorithms"]
+
+[features]
+default = ["jieba"]
+jieba = ["zvec-core/jieba"]
+async = ["dep:tokio"]
+
+[dependencies]
+# zvec-core is a pure-Rust algorithm kernel. It has no C/C++ or runtime
+# library dependency; a3s-vec owns the public contract, storage, and locking
+# layer around it.
+zvec-core = { version = "0.1.0", default-features = false }
+crc32fast = "1"
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "1"
+tokio = { version = "1", features = ["rt", "sync"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
