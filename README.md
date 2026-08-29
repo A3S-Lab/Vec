@@ -42,6 +42,6 @@ cargo test --manifest-path crates/vec/Cargo.toml
 cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets -- -D warnings
 ```
 
-Before this crate is published, it must be moved to the external
-`A3S-Lab/Vec` repository and added as a submodule. The monorepo root remains a
-composition repository and is not a Rust workspace.
+This repository is `A3S-Lab/Vec`; the A3S monorepo consumes it as the
+`crates/vec` git submodule. The monorepo root remains a composition repository
+and is not a Rust workspace.
