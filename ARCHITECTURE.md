@@ -2,10 +2,10 @@
 
 This file defines the engine-internal contract. Cross-project ownership,
 `a3s-code`/`vgrep` integration, model-provider policy, and migration from the
-current Memory/BM25 path are defined in
-[`../../docs/retrieval-platform-architecture.md`](../../docs/retrieval-platform-architecture.md).
-The corresponding cross-project delivery gates are in
-[`../../docs/retrieval-platform-roadmap.md`](../../docs/retrieval-platform-roadmap.md).
+current Memory/BM25 path are defined in the
+[A3S local retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md).
+The corresponding cross-project delivery gates are in the
+[A3S local retrieval platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-roadmap.md).
 
 This document defines the architecture for `a3s-vec`, the native Rust vector
 database embedded in A3S. The target is behavioural parity with the zvec Rust

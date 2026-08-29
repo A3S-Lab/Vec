@@ -2,8 +2,8 @@
 
 This is the engine-only roadmap. The dependency order for integrating the
 engine into `a3s-code`, exposing `vgrep`, and removing the duplicate SQLite/
-BM25 workspace paths is maintained in
-[`../../docs/retrieval-platform-roadmap.md`](../../docs/retrieval-platform-roadmap.md).
+BM25 workspace paths is maintained in the
+[A3S local retrieval platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-roadmap.md).
 
 The roadmap is ordered by dependency and by the cost of being wrong. Each
 phase has an explicit exit gate; a later approximate or optimized feature does

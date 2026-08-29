@@ -6,8 +6,8 @@ documents, schema validation, persistence, vector indexes, scalar indexes, and
 FTS/BM25. It does not own workspace scanning, Embedding model runtimes, Agent
 sessions, or UI policy.
 
-The cross-project ownership contract is in
-[`../../docs/retrieval-platform-architecture.md`](../../docs/retrieval-platform-architecture.md).
+The cross-project ownership contract is in the
+[A3S local retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md).
 The engine-specific design and gates are in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md).
 
@@ -45,4 +45,3 @@ cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets -- -D warnings
 Before this crate is published, it must be moved to the external
 `A3S-Lab/Vec` repository and added as a submodule. The monorepo root remains a
 composition repository and is not a Rust workspace.
-
