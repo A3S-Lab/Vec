@@ -3,11 +3,12 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCK_FILE_NAME: &str = ".a3s-vec.lock";
+const OWNER_FILE_NAME: &str = ".a3s-vec.lock.owner";
 const MAX_OWNER_BYTES: u64 = 4 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +30,8 @@ impl CollectionLock {
                 .map_err(|e| Error::internal(format!("create collection directory: {e}")))?;
         }
         let lock_path = path.join(LOCK_FILE_NAME);
-        let mut file = if read_only {
+        let owner_path = path.join(OWNER_FILE_NAME);
+        let file = if read_only {
             OpenOptions::new().read(true).open(&lock_path)
         } else {
             OpenOptions::new()
@@ -46,7 +48,7 @@ impl CollectionLock {
             fs2::FileExt::try_lock_exclusive(&file).map_err(|error| error.to_string())
         };
         if let Err(error) = result {
-            let owner = describe_owner(&lock_path);
+            let owner = describe_owner(&owner_path);
             return Err(Error::new(
                 if read_only {
                     crate::error::ErrorCode::Unavailable
@@ -57,7 +59,7 @@ impl CollectionLock {
             ));
         }
         if !read_only {
-            if let Err(error) = write_owner(&mut file) {
+            if let Err(error) = write_owner(&owner_path) {
                 let _ = fs2::FileExt::unlock(&file);
                 return Err(error);
             }
@@ -72,7 +74,7 @@ impl CollectionLock {
     }
 }
 
-fn write_owner(file: &mut File) -> Result<()> {
+fn write_owner(path: &Path) -> Result<()> {
     let acquired_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {
@@ -84,9 +86,13 @@ fn write_owner(file: &mut File) -> Result<()> {
     };
     let bytes = serde_json::to_vec(&owner)
         .map_err(|error| Error::internal(format!("serialize collection lock owner: {error}")))?;
-    file.set_len(0)
-        .and_then(|()| file.seek(SeekFrom::Start(0)).map(|_| ()))
-        .and_then(|()| file.write_all(&bytes))
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| Error::internal(format!("open collection lock owner: {error}")))?;
+    file.write_all(&bytes)
         .and_then(|()| file.sync_data())
         .map_err(|error| Error::internal(format!("write collection lock owner: {error}")))
 }
@@ -123,7 +129,7 @@ impl Drop for CollectionLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_owner, CollectionLock, LockOwner, LOCK_FILE_NAME};
+    use super::{read_owner, CollectionLock, LockOwner, OWNER_FILE_NAME};
     use crate::error::ErrorCode;
     use std::fs;
     use tempfile::tempdir;
@@ -159,14 +165,14 @@ mod tests {
             acquired_unix_ms: 1,
         };
         fs::write(
-            temporary.path().join(LOCK_FILE_NAME),
+            temporary.path().join(OWNER_FILE_NAME),
             serde_json::to_vec(&stale).expect("stale owner fixture must serialize"),
         )
         .expect("stale owner fixture must be writable");
 
         let lock = CollectionLock::acquire(temporary.path(), false)
             .expect("metadata alone must never block the kernel lock");
-        let current = read_owner(&temporary.path().join(LOCK_FILE_NAME))
+        let current = read_owner(&temporary.path().join(OWNER_FILE_NAME))
             .expect("current lock owner must be readable");
         assert_eq!(current.pid, std::process::id());
         assert_ne!(current, stale);

@@ -193,10 +193,11 @@ mistaken for shipped ANN behaviour.
   replacement of uncommitted WAL tails, orphan-candidate isolation, and safe
   interruption before/after WAL and snapshot removal. Pruned directories are
   synchronized where the platform supports directory fsync.
-- Completed: the lock file records a bounded PID/acquisition-time diagnostic
-  after the kernel lock succeeds. Contention reports that record, while stale
-  or malformed metadata never becomes lock authority and is replaced by the
-  next exclusive owner.
+- Completed: a sidecar records bounded PID/acquisition-time diagnostics after
+  the kernel lock succeeds. Keeping metadata separate from the locked handle
+  makes it readable on Windows. Contention reports that record, while stale or
+  malformed metadata never becomes lock authority and is replaced by the next
+  exclusive owner.
 - Completed: fixed-seed recovery mutation fuzzing flips every persisted byte,
   truncates and appends structural cases, and runs 256 combined mutations per
   manifest/snapshot/WAL file. A separate cargo-fuzz target exercises the same
