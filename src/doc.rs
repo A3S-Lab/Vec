@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::types::DataType;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Number, Value};
+use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 
 /// Scalar and array field values accepted by a collection.
@@ -38,7 +38,7 @@ pub enum FieldValue {
 impl FieldValue {
     pub fn data_type(&self) -> DataType {
         match self {
-            Self::Null => DataType::Undefined,
+            Self::Null | Self::Json(_) => DataType::Undefined,
             Self::Binary(_) => DataType::Binary,
             Self::String(_) => DataType::String,
             Self::Bool(_) => DataType::Bool,
@@ -57,7 +57,6 @@ impl FieldValue {
             Self::ArrayUint64(_) => DataType::ArrayUint64,
             Self::ArrayFloat(_) => DataType::ArrayFloat,
             Self::ArrayDouble(_) => DataType::ArrayDouble,
-            Self::Json(_) => DataType::Undefined,
         }
     }
 
@@ -71,7 +70,7 @@ impl FieldValue {
             Self::Int64(value) => Value::Number((*value).into()),
             Self::Uint32(value) => Value::Number((*value).into()),
             Self::Uint64(value) => Value::Number((*value).into()),
-            Self::Float(value) => number_from_f64(*value as f64),
+            Self::Float(value) => number_from_f64(f64::from(*value)),
             Self::Double(value) => number_from_f64(*value),
             Self::ArrayBinary(values) => Value::Array(
                 values
@@ -82,119 +81,31 @@ impl FieldValue {
             Self::ArrayString(values) => {
                 Value::Array(values.iter().cloned().map(Value::String).collect())
             }
-            Self::ArrayBool(values) => Value::Array(values.iter().copied().map(Value::Bool).collect()),
-            Self::ArrayInt32(values) => Value::Array(
-                values
-                    .iter()
-                    .map(|v| Value::Number((*v).into()))
-                    .collect(),
-            ),
-            Self::ArrayInt64(values) => Value::Array(
-                values
-                    .iter()
-                    .map(|v| Value::Number((*v).into()))
-                    .collect(),
-            ),
-            Self::ArrayUint32(values) => Value::Array(
-                values
-                    .iter()
-                    .map(|v| Value::Number((*v).into()))
-                    .collect(),
-            ),
-            Self::ArrayUint64(values) => Value::Array(
-                values
-                    .iter()
-                    .map(|v| Value::Number((*v).into()))
-                    .collect(),
-            ),
-            Self::ArrayFloat(values) => {
-                Value::Array(values.iter().map(|v| number_from_f64(*v as f64)).collect())
+            Self::ArrayBool(values) => {
+                Value::Array(values.iter().copied().map(Value::Bool).collect())
             }
+            Self::ArrayInt32(values) => {
+                Value::Array(values.iter().map(|v| Value::Number((*v).into())).collect())
+            }
+            Self::ArrayInt64(values) => {
+                Value::Array(values.iter().map(|v| Value::Number((*v).into())).collect())
+            }
+            Self::ArrayUint32(values) => {
+                Value::Array(values.iter().map(|v| Value::Number((*v).into())).collect())
+            }
+            Self::ArrayUint64(values) => {
+                Value::Array(values.iter().map(|v| Value::Number((*v).into())).collect())
+            }
+            Self::ArrayFloat(values) => Value::Array(
+                values
+                    .iter()
+                    .map(|v| number_from_f64(f64::from(*v)))
+                    .collect(),
+            ),
             Self::ArrayDouble(values) => {
                 Value::Array(values.iter().map(|v| number_from_f64(*v)).collect())
             }
             Self::Json(value) => value.clone(),
-        }
-    }
-
-    pub(crate) fn from_json(value: &Value, data_type: Option<DataType>) -> Self {
-        match data_type.unwrap_or(DataType::Undefined) {
-            DataType::Binary => value
-                .as_str()
-                .map(|s| FieldValue::Binary(base64_decode(s)))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::String => value
-                .as_str()
-                .map(|s| FieldValue::String(s.to_string()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Bool => value
-                .as_bool()
-                .map(FieldValue::Bool)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Int32 => value
-                .as_i64()
-                .and_then(|v| i32::try_from(v).ok())
-                .map(FieldValue::Int32)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Int64 => value
-                .as_i64()
-                .map(FieldValue::Int64)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Uint32 => value
-                .as_u64()
-                .and_then(|v| u32::try_from(v).ok())
-                .map(FieldValue::Uint32)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Uint64 => value
-                .as_u64()
-                .map(FieldValue::Uint64)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Float => value
-                .as_f64()
-                .map(|v| FieldValue::Float(v as f32))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::Double => value
-                .as_f64()
-                .map(FieldValue::Double)
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayString => value
-                .as_array()
-                .map(|v| FieldValue::ArrayString(v.iter().filter_map(Value::as_str).map(str::to_string).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayBool => value
-                .as_array()
-                .map(|v| FieldValue::ArrayBool(v.iter().filter_map(Value::as_bool).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayInt32 => value
-                .as_array()
-                .map(|v| FieldValue::ArrayInt32(v.iter().filter_map(Value::as_i64).filter_map(|x| i32::try_from(x).ok()).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayInt64 => value
-                .as_array()
-                .map(|v| FieldValue::ArrayInt64(v.iter().filter_map(Value::as_i64).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayUint32 => value
-                .as_array()
-                .map(|v| FieldValue::ArrayUint32(v.iter().filter_map(Value::as_u64).filter_map(|x| u32::try_from(x).ok()).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayUint64 => value
-                .as_array()
-                .map(|v| FieldValue::ArrayUint64(v.iter().filter_map(Value::as_u64).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayFloat => value
-                .as_array()
-                .map(|v| FieldValue::ArrayFloat(v.iter().filter_map(Value::as_f64).map(|x| x as f32).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayDouble => value
-                .as_array()
-                .map(|v| FieldValue::ArrayDouble(v.iter().filter_map(Value::as_f64).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            DataType::ArrayBinary => value
-                .as_array()
-                .map(|v| FieldValue::ArrayBinary(v.iter().filter_map(Value::as_str).map(base64_decode).collect()))
-                .unwrap_or_else(|| FieldValue::Json(value.clone())),
-            _ if value.is_null() => FieldValue::Null,
-            _ => FieldValue::Json(value.clone()),
         }
     }
 }
@@ -231,6 +142,7 @@ impl VectorValue {
         }
     }
 
+    #[allow(clippy::match_same_arms)]
     pub fn dimension(&self) -> usize {
         match self {
             Self::Binary32(v) => v.len().saturating_mul(8),
@@ -257,10 +169,10 @@ impl VectorValue {
         match self {
             Self::Fp16(values) => Some(values.iter().map(|v| fp16_to_f32(*v)).collect()),
             Self::Fp32(values) => Some(values.clone()),
-            Self::Fp64(values) => Some(values.iter().map(|v| *v as f32).collect()),
-            Self::Int4(values) => Some(values.iter().map(|v| *v as f32).collect()),
-            Self::Int8(values) => Some(values.iter().map(|v| *v as f32).collect()),
-            Self::Int16(values) => Some(values.iter().map(|v| *v as f32).collect()),
+            Self::Fp64(values) => values.iter().copied().map(f64_to_f32).collect(),
+            Self::Int4(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
+            Self::Int8(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
+            Self::Int16(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
             _ => None,
         }
     }
@@ -275,7 +187,7 @@ impl VectorValue {
                     indices
                         .iter()
                         .copied()
-                        .zip(values.iter().map(|v| *v as f64))
+                        .zip(values.iter().map(|v| f64::from(*v)))
                         .collect(),
                 )
             }
@@ -283,60 +195,30 @@ impl VectorValue {
         }
     }
 
-    pub(crate) fn to_core(&self) -> zvec_core::model::StoredVector {
+    pub(crate) fn to_core(&self) -> Option<zvec_core::model::StoredVector> {
         use zvec_core::model::StoredVector;
-        match self {
+        Some(match self {
             Self::Fp32(v) => StoredVector::Dense(v.clone()),
-            Self::Fp64(v) => StoredVector::Dense(v.iter().map(|x| *x as f32).collect()),
+            Self::Fp64(v) => {
+                StoredVector::Dense(v.iter().copied().map(f64_to_f32).collect::<Option<_>>()?)
+            }
             Self::Fp16(v) => StoredVector::Dense(v.iter().map(|x| fp16_to_f32(*x)).collect()),
-            Self::Int4(v) => StoredVector::Dense(v.iter().map(|x| *x as f32).collect()),
-            Self::Int8(v) => StoredVector::Dense(v.iter().map(|x| *x as f32).collect()),
-            Self::Int16(v) => StoredVector::Dense(v.iter().map(|x| *x as f32).collect()),
+            Self::Int4(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
+            Self::Int8(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
+            Self::Int16(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
             Self::Binary32(v) | Self::Binary64(v) => {
-                StoredVector::Dense(v.iter().map(|x| *x as f32).collect())
+                StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect())
             }
             Self::SparseFp16 { indices, values } | Self::SparseFp32 { indices, values } => {
                 let map = indices
                     .iter()
                     .copied()
-                    .zip(values.iter().map(|v| *v as f64))
+                    .zip(values.iter().map(|v| f64::from(*v)))
                     .map(|(i, v)| (i.to_string(), v))
                     .collect();
                 StoredVector::Sparse(map)
             }
-        }
-    }
-
-    pub(crate) fn from_core(value: &zvec_core::model::StoredVector) -> Self {
-        use zvec_core::model::StoredVector;
-        match value {
-            StoredVector::Dense(v) => Self::Fp32(v.clone()),
-            StoredVector::DenseInt8 { codes, scale } => {
-                Self::Fp32(codes.iter().map(|v| *v as f32 * *scale).collect())
-            }
-            StoredVector::DenseFp16 { data } => Self::Fp16(data.clone()),
-            StoredVector::DenseInt4 { nibbles, scale, dim } => {
-                let mut values = Vec::with_capacity(*dim);
-                for byte in nibbles {
-                    let lo = (byte & 0x0f) as i8;
-                    let hi = ((byte >> 4) & 0x0f) as i8;
-                    values.push(if lo >= 8 { lo - 16 } else { lo });
-                    if values.len() < *dim {
-                        values.push(if hi >= 8 { hi - 16 } else { hi });
-                    }
-                }
-                Self::Fp32(values.into_iter().map(|v| v as f32 * *scale).collect())
-            }
-            StoredVector::Sparse(map) => {
-                let mut pairs: Vec<(u32, f32)> = map
-                    .iter()
-                    .filter_map(|(i, v)| i.parse::<u32>().ok().map(|i| (i, *v as f32)))
-                    .collect();
-                pairs.sort_by_key(|(i, _)| *i);
-                let (indices, values) = pairs.into_iter().unzip();
-                Self::SparseFp32 { indices, values }
-            }
-        }
+        })
     }
 }
 
@@ -347,7 +229,8 @@ pub struct Doc {
     #[serde(default)]
     score: f32,
     #[serde(default)]
-    doc_id: Option<u64>,
+    #[serde(rename = "doc_id")]
+    internal_id: Option<u64>,
     #[serde(default)]
     fields: BTreeMap<String, FieldValue>,
     #[serde(default)]
@@ -359,7 +242,7 @@ impl Default for Doc {
         Self::new().unwrap_or_else(|_| Self {
             pk: None,
             score: 0.0,
-            doc_id: None,
+            internal_id: None,
             fields: BTreeMap::new(),
             vectors: BTreeMap::new(),
         })
@@ -371,7 +254,7 @@ impl Doc {
         Ok(Self {
             pk: None,
             score: 0.0,
-            doc_id: None,
+            internal_id: None,
             fields: BTreeMap::new(),
             vectors: BTreeMap::new(),
         })
@@ -410,7 +293,7 @@ impl Doc {
     }
 
     pub fn doc_id(&self) -> Option<u64> {
-        self.doc_id
+        self.internal_id
     }
 
     pub fn field_count(&self) -> usize {
@@ -527,12 +410,7 @@ impl Doc {
         self.set_vector_value(name, VectorValue::Binary64(vector.to_vec()))
     }
 
-    pub fn add_sparse_vector(
-        &mut self,
-        name: &str,
-        indices: &[u32],
-        values: &[f32],
-    ) -> Result<()> {
+    pub fn add_sparse_vector(&mut self, name: &str, indices: &[u32], values: &[f32]) -> Result<()> {
         if indices.len() != values.len() || indices.is_empty() {
             return Err(Error::invalid_argument(
                 "sparse vector indices and values must have equal non-zero length",
@@ -621,35 +499,91 @@ impl Doc {
     }
 
     pub fn get_bool(&self, name: &str) -> Result<Option<bool>> {
-        self.get_scalar(name, |v| match v { FieldValue::Bool(x) => Some(*x), _ => None }, DataType::Bool)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Bool(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Bool,
+        )
     }
 
     pub fn get_i32(&self, name: &str) -> Result<Option<i32>> {
-        self.get_scalar(name, |v| match v { FieldValue::Int32(x) => Some(*x), _ => None }, DataType::Int32)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Int32(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Int32,
+        )
     }
 
     pub fn get_i64(&self, name: &str) -> Result<Option<i64>> {
-        self.get_scalar(name, |v| match v { FieldValue::Int64(x) => Some(*x), _ => None }, DataType::Int64)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Int64(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Int64,
+        )
     }
 
     pub fn get_u32(&self, name: &str) -> Result<Option<u32>> {
-        self.get_scalar(name, |v| match v { FieldValue::Uint32(x) => Some(*x), _ => None }, DataType::Uint32)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Uint32(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Uint32,
+        )
     }
 
     pub fn get_u64(&self, name: &str) -> Result<Option<u64>> {
-        self.get_scalar(name, |v| match v { FieldValue::Uint64(x) => Some(*x), _ => None }, DataType::Uint64)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Uint64(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Uint64,
+        )
     }
 
     pub fn get_f32(&self, name: &str) -> Result<Option<f32>> {
-        self.get_scalar(name, |v| match v { FieldValue::Float(x) => Some(*x), _ => None }, DataType::Float)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Float(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Float,
+        )
     }
 
     pub fn get_f64(&self, name: &str) -> Result<Option<f64>> {
-        self.get_scalar(name, |v| match v { FieldValue::Double(x) => Some(*x), _ => None }, DataType::Double)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Double(x) => Some(*x),
+                _ => None,
+            },
+            DataType::Double,
+        )
     }
 
     pub fn get_binary(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        self.get_scalar(name, |v| match v { FieldValue::Binary(x) => Some(x.clone()), _ => None }, DataType::Binary)
+        self.get_scalar(
+            name,
+            |v| match v {
+                FieldValue::Binary(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::Binary,
+        )
     }
 
     pub fn get_vector_f32(&self, name: &str) -> Result<Option<Vec<f32>>> {
@@ -680,19 +614,83 @@ impl Doc {
         }
     }
 
-    pub fn get_array_i32(&self, name: &str) -> Result<Option<Vec<i32>>> { self.get_array(name, |v| match v { FieldValue::ArrayInt32(x) => Some(x.clone()), _ => None }, DataType::ArrayInt32) }
-    pub fn get_array_i64(&self, name: &str) -> Result<Option<Vec<i64>>> { self.get_array(name, |v| match v { FieldValue::ArrayInt64(x) => Some(x.clone()), _ => None }, DataType::ArrayInt64) }
-    pub fn get_array_u32(&self, name: &str) -> Result<Option<Vec<u32>>> { self.get_array(name, |v| match v { FieldValue::ArrayUint32(x) => Some(x.clone()), _ => None }, DataType::ArrayUint32) }
-    pub fn get_array_u64(&self, name: &str) -> Result<Option<Vec<u64>>> { self.get_array(name, |v| match v { FieldValue::ArrayUint64(x) => Some(x.clone()), _ => None }, DataType::ArrayUint64) }
-    pub fn get_array_f32(&self, name: &str) -> Result<Option<Vec<f32>>> { self.get_array(name, |v| match v { FieldValue::ArrayFloat(x) => Some(x.clone()), _ => None }, DataType::ArrayFloat) }
-    pub fn get_array_f64(&self, name: &str) -> Result<Option<Vec<f64>>> { self.get_array(name, |v| match v { FieldValue::ArrayDouble(x) => Some(x.clone()), _ => None }, DataType::ArrayDouble) }
-    pub fn get_array_bool(&self, name: &str) -> Result<Option<Vec<bool>>> { self.get_array(name, |v| match v { FieldValue::ArrayBool(x) => Some(x.clone()), _ => None }, DataType::ArrayBool) }
+    pub fn get_array_i32(&self, name: &str) -> Result<Option<Vec<i32>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayInt32(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayInt32,
+        )
+    }
+    pub fn get_array_i64(&self, name: &str) -> Result<Option<Vec<i64>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayInt64(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayInt64,
+        )
+    }
+    pub fn get_array_u32(&self, name: &str) -> Result<Option<Vec<u32>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayUint32(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayUint32,
+        )
+    }
+    pub fn get_array_u64(&self, name: &str) -> Result<Option<Vec<u64>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayUint64(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayUint64,
+        )
+    }
+    pub fn get_array_f32(&self, name: &str) -> Result<Option<Vec<f32>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayFloat(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayFloat,
+        )
+    }
+    pub fn get_array_f64(&self, name: &str) -> Result<Option<Vec<f64>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayDouble(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayDouble,
+        )
+    }
+    pub fn get_array_bool(&self, name: &str) -> Result<Option<Vec<bool>>> {
+        self.get_array(
+            name,
+            |v| match v {
+                FieldValue::ArrayBool(x) => Some(x.clone()),
+                _ => None,
+            },
+            DataType::ArrayBool,
+        )
+    }
 
     /// Returns a projection suitable for query/fetch output.
     pub fn project(&self, output_fields: Option<&[String]>, include_vector: bool) -> Self {
         let mut out = self.clone();
         if let Some(fields) = output_fields {
-            let wanted: std::collections::BTreeSet<&str> = fields.iter().map(String::as_str).collect();
+            let wanted: std::collections::BTreeSet<&str> =
+                fields.iter().map(String::as_str).collect();
             out.fields.retain(|k, _| wanted.contains(k.as_str()));
             if include_vector {
                 out.vectors.retain(|k, _| wanted.contains(k.as_str()));
@@ -709,7 +707,7 @@ impl Doc {
         let vectors = self
             .vectors
             .iter()
-            .map(|(name, value)| (name.clone(), value.to_core()))
+            .filter_map(|(name, value)| value.to_core().map(|value| (name.clone(), value)))
             .collect();
         let fields = self
             .fields
@@ -718,30 +716,10 @@ impl Doc {
             .collect();
         zvec_core::model::Doc::new(
             self.pk.clone().unwrap_or_default(),
-            Some(self.score as f64),
+            Some(f64::from(self.score)),
             vectors,
             fields,
         )
-    }
-
-    pub(crate) fn from_core(doc: &zvec_core::model::Doc) -> Self {
-        let fields = doc
-            .fields
-            .iter()
-            .map(|(name, value)| (name.clone(), FieldValue::Json(value.clone())))
-            .collect();
-        let vectors = doc
-            .vectors
-            .iter()
-            .map(|(name, value)| (name.clone(), VectorValue::from_core(value)))
-            .collect();
-        Self {
-            pk: Some(doc.id.clone()),
-            score: doc.score.unwrap_or(0.0) as f32,
-            doc_id: None,
-            fields,
-            vectors,
-        }
     }
 
     pub(crate) fn scalar_json(&self, name: &str) -> Option<Value> {
@@ -754,9 +732,7 @@ impl Doc {
     {
         match self.fields.get(name) {
             None | Some(FieldValue::Null) => Ok(None),
-            Some(value) => f(value)
-                .map(Some)
-                .ok_or_else(|| type_error(name, expected)),
+            Some(value) => f(value).map(Some).ok_or_else(|| type_error(name, expected)),
         }
     }
 
@@ -793,7 +769,9 @@ fn validate_field_finite(value: &FieldValue) -> Result<()> {
         FieldValue::ArrayDouble(v) => v.iter().all(|x| x.is_finite()),
         _ => true,
     };
-    finite.then_some(()).ok_or_else(|| Error::invalid_argument("floating-point field values must be finite"))
+    finite
+        .then_some(())
+        .ok_or_else(|| Error::invalid_argument("floating-point field values must be finite"))
 }
 
 fn validate_vector(value: &VectorValue) -> Result<()> {
@@ -801,17 +779,23 @@ fn validate_vector(value: &VectorValue) -> Result<()> {
         VectorValue::SparseFp16 { indices, values }
         | VectorValue::SparseFp32 { indices, values } => {
             if indices.len() != values.len() || indices.is_empty() {
-                return Err(Error::invalid_argument("sparse vector indices and values must have equal non-zero length"));
+                return Err(Error::invalid_argument(
+                    "sparse vector indices and values must have equal non-zero length",
+                ));
             }
             if !values.iter().all(|v| v.is_finite()) {
-                return Err(Error::invalid_argument("sparse vector values must be finite"));
+                return Err(Error::invalid_argument(
+                    "sparse vector values must be finite",
+                ));
             }
         }
         VectorValue::Fp32(values) => {
-            if !values.iter().all(|v| v.is_finite()) { return Err(Error::invalid_argument("vector values must be finite")); }
+            if !values.iter().all(|v| v.is_finite()) {
+                return Err(Error::invalid_argument("vector values must be finite"));
+            }
         }
-        VectorValue::Fp64(values) => {
-            if !values.iter().all(|v| v.is_finite()) { return Err(Error::invalid_argument("vector values must be finite")); }
+        VectorValue::Fp64(values) if !values.iter().all(|v| v.is_finite()) => {
+            return Err(Error::invalid_argument("vector values must be finite"));
         }
         _ => {}
     }
@@ -823,7 +807,7 @@ fn type_error(name: &str, expected: DataType) -> Error {
 }
 
 fn number_from_f64(value: f64) -> Value {
-    Number::from_f64(value).map(Value::Number).unwrap_or(Value::Null)
+    Number::from_f64(value).map_or(Value::Null, Value::Number)
 }
 
 // Base64 is implemented locally to avoid adding a mandatory codec dependency
@@ -832,45 +816,35 @@ fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let a = chunk[0] as u32;
-        let b = chunk.get(1).copied().unwrap_or(0) as u32;
-        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let a = u32::from(chunk[0]);
+        let b = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let c = u32::from(chunk.get(2).copied().unwrap_or(0));
         out.push(TABLE[((a >> 2) & 63) as usize] as char);
         out.push(TABLE[(((a << 4) | (b >> 4)) & 63) as usize] as char);
-        if chunk.len() > 1 { out.push(TABLE[(((b << 2) | (c >> 6)) & 63) as usize] as char); } else { out.push('='); }
-        if chunk.len() > 2 { out.push(TABLE[(c & 63) as usize] as char); } else { out.push('='); }
-    }
-    out
-}
-
-fn base64_decode(value: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut buf = 0u32;
-    let mut bits = 0u8;
-    for byte in value.bytes() {
-        let digit = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            _ => continue,
-        } as u32;
-        buf = (buf << 6) | digit;
-        bits = bits.saturating_add(6);
-        if bits >= 8 {
-            bits -= 8;
-            out.push(((buf >> bits) & 0xff) as u8);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b << 2) | (c >> 6)) & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(c & 63) as usize] as char);
+        } else {
+            out.push('=');
         }
     }
     out
 }
 
+#[allow(clippy::cast_possible_truncation)]
+fn f64_to_f32(value: f64) -> Option<f32> {
+    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
+        .then_some(value as f32)
+}
+
 fn fp16_to_f32(bits: u16) -> f32 {
-    let sign = ((bits & 0x8000) as u32) << 16;
+    let sign = u32::from(bits & 0x8000) << 16;
     let exp = (bits >> 10) & 0x1f;
-    let frac = (bits & 0x03ff) as u32;
+    let frac = u32::from(bits & 0x03ff);
     let raw = if exp == 0 {
         if frac == 0 {
             sign
@@ -886,7 +860,7 @@ fn fp16_to_f32(bits: u16) -> f32 {
     } else if exp == 0x1f {
         sign | 0x7f80_0000 | (frac << 13)
     } else {
-        sign | (((exp as u32 + 112) & 0xff) << 23) | (frac << 13)
+        sign | (((u32::from(exp) + 112) & 0xff) << 23) | (frac << 13)
     };
     f32::from_bits(raw)
 }

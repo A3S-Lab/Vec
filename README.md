@@ -21,9 +21,30 @@ The engine-specific design and gates are in
 - WAL, checksummed snapshots, manifest generations, recovery, and locking.
 - Caller-owned Embedding traits; no implicit network access or model download.
 
-The current implementation is a prototype. HNSW, IVF, and DiskANN modules may
-initially use an exact-flat correctness facade until their independent recall,
-latency, corruption, and portability gates pass.
+The current implementation is a prototype. The collection query path is an
+exact-scan correctness oracle; HNSW, IVF, DiskANN, and indexed FTS are not yet
+implemented and are not advertised as active indexes.
+
+## Verified baseline
+
+As of 2026-08-30, the storage format is version 2 and the following behaviour
+has deterministic test evidence:
+
+- immutable generation-specific snapshots with the manifest as the only
+  generation commit point;
+- revisioned and checksummed WAL records for insert, update, upsert, delete,
+  and schema/backfill operations;
+- a manifest-committed WAL byte boundary, so an incomplete or complete
+  uncommitted tail is ignored and replaced by the next commit;
+- read-only create/open/close semantics that do not create missing files or
+  checkpoint on close;
+- bounded manifest, snapshot, WAL-frame, and total-WAL recovery reads;
+- checksum, committed truncation, orphan-generation, replay, and snapshot-size
+  failure tests.
+
+Format version 1 was never released and is not opened by the version 2 reader.
+Fault-injection hooks, WAL-pruning crash tests, real approximate indexes,
+indexed FTS, fuzzing, and the full platform matrix remain roadmap work.
 
 ## Platform policy
 
@@ -39,7 +60,10 @@ Run checks from this crate directory or with its manifest:
 ```sh
 cargo fmt --manifest-path crates/vec/Cargo.toml -- --check
 cargo test --manifest-path crates/vec/Cargo.toml
+cargo test --manifest-path crates/vec/Cargo.toml --no-default-features
+cargo test --manifest-path crates/vec/Cargo.toml --all-features
 cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
 This repository is `A3S-Lab/Vec`; the A3S monorepo consumes it as the

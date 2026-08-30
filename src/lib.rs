@@ -15,7 +15,6 @@ mod config;
 mod doc;
 mod embedding;
 mod error;
-mod index;
 mod iterator;
 mod multi_query;
 mod query;
@@ -28,7 +27,7 @@ pub mod core {
     //! The pure-Rust algorithm kernel used by the high-level A3S API.
     //!
     //! This escape hatch is useful for advanced callers that need low-level
-    //! centroid, graph, SIMD, or DiskANN format helpers.  High-level users
+    //! centroid, graph, SIMD, or `DiskANN` format helpers.  High-level users
     //! should prefer the types re-exported at the crate root.
     pub use zvec_core::*;
 }
@@ -37,8 +36,8 @@ pub use collection::{
     Collection, CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,
 };
 pub use config::{
-    default_config, initialize, is_initialized, shutdown, version, ConfigBuilder, Durability,
-    IoBackend,
+    check_version, default_config, initialize, is_initialized, shutdown, version, version_major,
+    version_minor, version_patch, ConfigBuilder, Durability, IoBackend,
 };
 pub use doc::{Doc, FieldValue, VectorValue};
 pub use embedding::{DenseEmbedding, EmbeddingInput, QueryExecutor, SparseEmbedding};
@@ -46,20 +45,17 @@ pub use error::{Error, ErrorCode, Result};
 pub use iterator::DocIterator;
 pub use multi_query::{MultiQuery, RerankMethod, SubQuery};
 pub use query::{
-    DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, GroupBySearchQuery,
-    HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery, SearchQueryBuilder,
-    VectorQuery,
+    DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, GroupBySearchQuery, HnswQueryParams,
+    IvfQueryParams, IvfRabitqQueryParams, SearchQuery, SearchQueryBuilder, VectorQuery,
 };
 pub use schema::{
-    AddColumnOption, AlterColumnOption, CollectionSchema, CollectionSchemaBuilder, FieldSchema,
-    HnswIndexParam, IndexParams, IndexParamsBuilder, IVFIndexParam, IvfRabitqIndexParam,
-    DiskAnnIndexParam, FlatIndexParam, FtsIndexParam, InvertIndexParam, VamanaIndexParam,
-    VectorSchema,
+    AddColumnOption, AlterColumnOption, CollectionSchema, CollectionSchemaBuilder,
+    DiskANNIndexParam, DiskAnnIndexParam, FieldSchema, FlatIndexParam, FtsIndexParam,
+    HnswIndexParam, IVFIndexParam, IndexParams, IndexParamsBuilder, InvertIndexParam,
+    IvfIndexParam, IvfRabitqIndexParam, VamanaIndexParam, VectorSchema,
 };
 pub use stats::StatsSnapshot;
-pub use types::{
-    DataType, DocOperator, IndexType, LogLevel, LogType, MetricType, QuantizeType,
-};
+pub use types::{DataType, DocOperator, IndexType, LogLevel, LogType, MetricType, QuantizeType};
 
 /// Convenient import for the common collection workflow.
 pub mod prelude {

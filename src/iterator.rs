@@ -11,9 +11,14 @@ pub struct DocIterator {
 
 impl DocIterator {
     pub(crate) fn new(docs: Vec<Doc>, revision: u64) -> Self {
-        Self { docs: docs.into_iter(), revision }
+        Self {
+            docs: docs.into_iter(),
+            revision,
+        }
     }
-    pub fn revision(&self) -> u64 { self.revision }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 impl Iterator for DocIterator {
@@ -23,4 +28,3 @@ impl Iterator for DocIterator {
         self.docs.next().map(Ok)
     }
 }
-

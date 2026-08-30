@@ -9,6 +9,22 @@ The roadmap is ordered by dependency and by the cost of being wrong. Each
 phase has an explicit exit gate; a later approximate or optimized feature does
 not replace an earlier correctness gate.
 
+## Current implementation status
+
+**2026-08-30:** Phase 3's core recovery transaction is implemented in storage
+format version 2. Generation-specific snapshots, manifest-committed WAL byte
+boundaries, monotonic DML/schema revisions, read-only lifecycle semantics, and
+bounded recovery reads have 18 passing unit/integration tests. Formatting,
+default/all-feature Clippy with `-D warnings`, default/no-default/all-feature
+tests, and rustdoc are green.
+
+Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
+every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
+platform matrix remain open. Phase 2 also still needs differential and
+concurrency evidence. Approximate index and indexed-FTS names are schema/query
+contracts only; the unused exact-facade implementations were removed so they
+cannot be mistaken for shipped ANN behaviour.
+
 ## Phase 0 — Contract and compatibility baseline
 
 **Deliverables**
@@ -63,6 +79,21 @@ not replace an earlier correctness gate.
 
 - Restart and crash-recovery tests cover insert/update/upsert/delete,
   schema changes, partial final frames, checksum failures, and WAL pruning.
+
+**Evidence landed on 2026-08-30**
+
+- Completed: versioned CRC WAL records with monotonic operation identity,
+  immutable snapshot generations, one manifest commit point, and replay to the
+  manifest revision.
+- Completed: read-only create rejection, side-effect-free close, existing-lock
+  requirement, and explicit manual flush synchronization.
+- Completed: restart tests for every DML operation and schema add/backfill,
+  rename, and drop; corruption tests for checksum mismatch, committed
+  truncation, partial uncommitted tails, orphan snapshots, and oversized
+  snapshots.
+- Open: fault-injection hooks, every-boundary crash matrix, explicit WAL-prune
+  crash evidence, stale-lock owner diagnostics, recovery fuzzing, and platform
+  CI.
 
 ## Phase 4 — Memory ANN indexes
 
