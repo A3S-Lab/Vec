@@ -23,13 +23,15 @@ numeric vectors share exact L2/IP/cosine/MIPS-L2 scoring with `f64`
 intermediates and are ranked before the public score is narrowed to `f32`.
 Independent differential fixtures now cover deterministic dense/sparse scores,
 filters, radius/top-k ordering, and scan BM25 corpus statistics. Advanced FTS
-syntax fails explicitly instead of being approximated. The external algorithm
-kernel is private and has a negative compile-time API fixture. Inert process/
+syntax fails explicitly instead of being approximated. Concurrent public-API
+fixtures prove serialized disjoint updates, revision-pinned iterators, and
+atomic multi-document publication to readers. The external algorithm kernel
+is private and has a negative compile-time API fixture. Inert process/
 collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
 tested. Future index/query/schema tuning now fails explicitly unless it has an
 exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
-built FTS index. The baseline has 57 passing unit/integration tests plus four
+built FTS index. The baseline has 60 passing unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
 `-D warnings`, and rustdoc are green. The full default-feature suite also
@@ -40,10 +42,11 @@ manifests.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
-platform matrix remain open. Phase 2 still needs concurrency evidence and a
-broader generated differential corpus. Approximate index and indexed-FTS names
-are schema/query contracts only; the unused exact-facade implementations were
-removed so they cannot be mistaken for shipped ANN behaviour.
+platform matrix remain open. Phase 2 still needs a broader generated
+differential corpus and supported-platform evidence. Approximate index and
+indexed-FTS names are schema/query contracts only; the unused exact-facade
+implementations were removed so they cannot be mistaken for shipped ANN
+behaviour.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -108,7 +111,7 @@ removed so they cannot be mistaken for shipped ANN behaviour.
   rejected, and unimplemented boolean, phrase, wildcard, and fielded syntax
   returns `NotSupported` rather than silently changing query meaning.
 - Open: broader nullability/overflow fixtures, a larger generated vector/FTS
-  differential corpus, concurrency evidence, and the supported-platform matrix
+  differential corpus and the supported-platform matrix
   required by the full Phase 1 exit gate. Scale-bearing FP16/INT8/INT4 index
   quantization with exact re-ranking remains Phase 4 work; binary query
   execution remains unsupported.
@@ -132,8 +135,12 @@ removed so they cannot be mistaken for shipped ANN behaviour.
 - Completed for the current exact surface: independent dense and sparse
   references cover all four metrics, deterministic filtering, radius/top-k,
   score comparison, and primary-key ordering.
-- Open: expand the generated corpus and prove snapshot coherence under
-  concurrent readers and serialized writers.
+- Completed for the current in-process surface: concurrent disjoint updates
+  preserve both patches and monotonic revisions; iterators retain one captured
+  revision; synchronized readers racing repeated two-document upserts observe
+  only a complete previous or next batch.
+- Open: expand the generated corpus and repeat the concurrency fixtures across
+  the supported platform matrix.
 
 ## Phase 3 — Durability and recovery
 

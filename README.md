@@ -70,6 +70,12 @@ field do not change document frequency or average length. Plain token
 wildcard, and fielded query-string syntax returns `NotSupported` until Phase 5
 implements it, and providing both expression forms is rejected as ambiguous.
 
+The in-process concurrency contract has deterministic public-API evidence.
+Concurrent writers are serialized without losing disjoint patches, a document
+iterator remains pinned to the revision it captured while a later batch is
+published, and synchronized readers never observe a partially published
+multi-document batch.
+
 The public contract now also validates every query before exact execution:
 dense dimensions are checked across all numeric vector types and metrics,
 dense/sparse/FTS routes must match their schema field, and unsupported binary
@@ -79,7 +85,7 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 57 passing unit and integration tests plus four
+The current baseline has 60 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision. The default test suite also passes on the
