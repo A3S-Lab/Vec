@@ -31,9 +31,12 @@ atomic multi-document publication to readers. The external algorithm kernel
 is private and has a negative compile-time API fixture. Inert process/
 collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
-tested. Future index/query/schema tuning now fails explicitly unless it has an
-exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
-built FTS index. The baseline has 63 passing unit/integration tests plus four
+tested. Missing, typed-null, and JSON-null behavior is checked for every scalar
+and array type, and numeric scalar/array conversion is checked at both extrema
+and beyond each representable boundary. Future index/query/schema tuning now
+fails explicitly unless it has an exact execution consumer; Flat and scan FTS
+telemetry no longer claim ANN or a built FTS index. The baseline has 66 passing
+unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
 `-D warnings`, and rustdoc are green. The full default-feature suite also
@@ -90,6 +93,11 @@ were removed so they cannot be mistaken for shipped ANN behaviour.
   WAL append. Recovered documents use the same normalization and validation.
 - Completed: typed schema-default backfill validation and complete-document
   validation for replacement upserts.
+- Completed: table-driven nullability contracts cover absent fields, typed and
+  JSON nulls, durable null updates, and required-field rejection for all 18
+  scalar/array types. Numeric JSON scalar and array fixtures cover signed and
+  unsigned extrema, wrong signs, fractions, overflowing members, and finite
+  floating-point limits without narrowing or wraparound.
 - Completed: the `zvec-core` implementation dependency is no longer re-exported
   through the A3S public surface; a compile-fail doctest guards the boundary.
 - Partially completed: removed inert memory/thread/logging/I/O/mmap/buffer/
@@ -121,10 +129,9 @@ were removed so they cannot be mistaken for shipped ANN behaviour.
 - Completed for hosted runners: the default suite runs on Linux x86_64/arm64,
   Windows x86_64, and macOS arm64/Intel. The Intel job compiles with a 12.0
   deployment target, but an actual macOS 12 runtime smoke remains open.
-- Open: broader nullability/overflow fixtures and the macOS 12 Intel runtime
-  required by the full Phase 1 exit gate. Scale-bearing FP16/INT8/INT4 index
-  quantization with exact re-ranking remains Phase 4 work; binary query
-  execution remains unsupported.
+- Open: the macOS 12 Intel runtime required by the full Phase 1 exit gate.
+  Scale-bearing FP16/INT8/INT4 index quantization with exact re-ranking remains
+  Phase 4 work; binary query execution remains unsupported.
 
 ## Phase 2 — Correct in-memory collection
 

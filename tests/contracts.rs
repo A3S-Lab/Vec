@@ -278,6 +278,138 @@ fn json_adapter_cases() -> Vec<JsonAdapterCase> {
     ]
 }
 
+type TypedFieldCase = (&'static str, DataType, FieldValue);
+
+fn typed_scalar_and_array_cases() -> Vec<TypedFieldCase> {
+    let mut cases: Vec<_> = json_adapter_cases()
+        .into_iter()
+        .map(|(name, data_type, _, value)| (name, data_type, value))
+        .collect();
+    cases.extend([
+        (
+            "binary",
+            DataType::Binary,
+            FieldValue::Binary(vec![0x00, 0xff]),
+        ),
+        (
+            "binary-array",
+            DataType::ArrayBinary,
+            FieldValue::ArrayBinary(vec![vec![], vec![0x00, 0xff]]),
+        ),
+    ]);
+    cases
+}
+
+#[test]
+fn nullability_is_enforced_for_every_scalar_and_array_type() {
+    let temporary = tempdir().expect("temporary directory must be available");
+
+    for (name, data_type, typed_value) in typed_scalar_and_array_cases() {
+        let nullable_path = temporary.path().join(format!("{name}-nullable"));
+        let nullable_schema = CollectionSchema::builder("nullable-contract")
+            .add_field(
+                FieldSchema::new("value", data_type, true, 0)
+                    .expect("nullable field schema must be valid"),
+            )
+            .build()
+            .expect("nullable collection schema must be valid");
+        let nullable = Collection::create(
+            nullable_path
+                .to_str()
+                .expect("temporary path must be UTF-8"),
+            &nullable_schema,
+            None,
+        )
+        .expect("nullable collection must be created");
+
+        let missing = Doc::with_pk("missing").expect("primary key must be valid");
+        let mut typed_null = Doc::with_pk("typed-null").expect("primary key must be valid");
+        typed_null
+            .set_field_null("value")
+            .expect("typed null must fit the document container");
+        let mut json_null = Doc::with_pk("json-null").expect("primary key must be valid");
+        json_null
+            .set_field_value("value", FieldValue::Json(Value::Null))
+            .expect("JSON null must fit the document container");
+        let mut populated = Doc::with_pk("populated").expect("primary key must be valid");
+        populated
+            .set_field_value("value", typed_value.clone())
+            .expect("typed value must fit the document container");
+
+        let result = nullable
+            .insert(&[&missing, &typed_null, &json_null, &populated])
+            .expect("nullable batch must return per-document results");
+        assert_eq!(result.success_count, 4, "data_type={data_type:?}");
+
+        let mut null_patch = Doc::with_pk("populated").expect("primary key must be valid");
+        null_patch
+            .set_field_value("value", FieldValue::Json(Value::Null))
+            .expect("JSON null patch must fit the document container");
+        let result = nullable
+            .update(&[&null_patch])
+            .expect("nullable update must return a per-document result");
+        assert_eq!(result.success_count, 1, "data_type={data_type:?}");
+        drop(nullable);
+
+        let nullable = Collection::open(
+            nullable_path
+                .to_str()
+                .expect("temporary path must be UTF-8"),
+            None,
+        )
+        .expect("nullable collection must reopen");
+        let stored = nullable
+            .fetch(&["missing", "typed-null", "json-null", "populated"])
+            .expect("nullable documents must be readable");
+        let find = |id: &str| {
+            stored
+                .iter()
+                .find(|doc| doc.get_pk() == Some(id))
+                .expect("requested document must exist")
+        };
+        assert!(
+            !find("missing").has_field("value"),
+            "data_type={data_type:?}"
+        );
+        for id in ["typed-null", "json-null", "populated"] {
+            assert!(
+                find(id).is_field_null("value"),
+                "data_type={data_type:?}, id={id}"
+            );
+            assert_eq!(find(id).field("value"), Some(&FieldValue::Null));
+        }
+
+        let required_path = temporary.path().join(format!("{name}-required"));
+        let required_schema = CollectionSchema::builder("required-contract")
+            .add_field(
+                FieldSchema::new("value", data_type, false, 0)
+                    .expect("required field schema must be valid"),
+            )
+            .build()
+            .expect("required collection schema must be valid");
+        let required = Collection::create(
+            required_path
+                .to_str()
+                .expect("temporary path must be UTF-8"),
+            &required_schema,
+            None,
+        )
+        .expect("required collection must be created");
+        let mut valid = Doc::with_pk("valid").expect("primary key must be valid");
+        valid
+            .set_field_value("value", typed_value)
+            .expect("typed value must fit the document container");
+        let result = required
+            .insert(&[&missing, &typed_null, &json_null, &valid])
+            .expect("required batch must return per-document results");
+        assert_eq!(result.success_count, 1, "data_type={data_type:?}");
+        assert_eq!(result.error_count, 3, "data_type={data_type:?}");
+        for outcome in &result.results[..3] {
+            assert_eq!(outcome.code, ErrorCode::InvalidArgument);
+        }
+    }
+}
+
 #[test]
 fn json_adapter_canonicalizes_every_supported_scalar_and_array_type() {
     let cases = json_adapter_cases();
@@ -342,6 +474,263 @@ fn json_adapter_canonicalizes_every_supported_scalar_and_array_type() {
             .expect("binary adapter rejection must be a per-document result");
         assert_eq!(result.success_count, 0);
         assert_eq!(result.results[0].code, ErrorCode::InvalidArgument);
+    }
+}
+
+fn json_number(literal: &str) -> Value {
+    serde_json::from_str(literal).expect("boundary JSON number must parse")
+}
+
+type AcceptedNumericCase = (&'static str, &'static str, Value, FieldValue);
+type RejectedNumericCase = (&'static str, &'static str, Value);
+
+fn numeric_boundary_schema() -> CollectionSchema {
+    let mut schema = CollectionSchema::new("numeric-boundaries").expect("schema must be valid");
+    for (name, data_type) in [
+        ("i32", DataType::Int32),
+        ("i64", DataType::Int64),
+        ("u32", DataType::Uint32),
+        ("u64", DataType::Uint64),
+        ("f32", DataType::Float),
+        ("f64", DataType::Double),
+        ("i32s", DataType::ArrayInt32),
+        ("i64s", DataType::ArrayInt64),
+        ("u32s", DataType::ArrayUint32),
+        ("u64s", DataType::ArrayUint64),
+        ("f32s", DataType::ArrayFloat),
+        ("f64s", DataType::ArrayDouble),
+    ] {
+        schema
+            .add_field(
+                &FieldSchema::new(name, data_type, true, 0)
+                    .expect("numeric field schema must be valid"),
+            )
+            .expect("numeric field names must be unique");
+    }
+    schema
+}
+
+fn accepted_numeric_scalar_boundaries() -> Vec<AcceptedNumericCase> {
+    vec![
+        (
+            "i32-min",
+            "i32",
+            json!(i32::MIN),
+            FieldValue::Int32(i32::MIN),
+        ),
+        (
+            "i32-max",
+            "i32",
+            json!(i32::MAX),
+            FieldValue::Int32(i32::MAX),
+        ),
+        (
+            "i64-min",
+            "i64",
+            json!(i64::MIN),
+            FieldValue::Int64(i64::MIN),
+        ),
+        (
+            "i64-max",
+            "i64",
+            json!(i64::MAX),
+            FieldValue::Int64(i64::MAX),
+        ),
+        ("u32-min", "u32", json!(0), FieldValue::Uint32(0)),
+        (
+            "u32-max",
+            "u32",
+            json!(u32::MAX),
+            FieldValue::Uint32(u32::MAX),
+        ),
+        ("u64-min", "u64", json!(0), FieldValue::Uint64(0)),
+        (
+            "u64-max",
+            "u64",
+            json!(u64::MAX),
+            FieldValue::Uint64(u64::MAX),
+        ),
+        (
+            "f32-min",
+            "f32",
+            json!(f32::MIN),
+            FieldValue::Float(f32::MIN),
+        ),
+        (
+            "f32-max",
+            "f32",
+            json!(f32::MAX),
+            FieldValue::Float(f32::MAX),
+        ),
+        (
+            "f64-min",
+            "f64",
+            json!(f64::MIN),
+            FieldValue::Double(f64::MIN),
+        ),
+        (
+            "f64-max",
+            "f64",
+            json!(f64::MAX),
+            FieldValue::Double(f64::MAX),
+        ),
+    ]
+}
+
+fn accepted_numeric_array_boundaries() -> Vec<AcceptedNumericCase> {
+    vec![
+        (
+            "i32-array-extrema",
+            "i32s",
+            json!([i32::MIN, i32::MAX]),
+            FieldValue::ArrayInt32(vec![i32::MIN, i32::MAX]),
+        ),
+        (
+            "i64-array-extrema",
+            "i64s",
+            json!([i64::MIN, i64::MAX]),
+            FieldValue::ArrayInt64(vec![i64::MIN, i64::MAX]),
+        ),
+        (
+            "u32-array-extrema",
+            "u32s",
+            json!([0, u32::MAX]),
+            FieldValue::ArrayUint32(vec![0, u32::MAX]),
+        ),
+        (
+            "u64-array-extrema",
+            "u64s",
+            json!([0, u64::MAX]),
+            FieldValue::ArrayUint64(vec![0, u64::MAX]),
+        ),
+        (
+            "f32-array-extrema",
+            "f32s",
+            json!([f32::MIN, f32::MAX]),
+            FieldValue::ArrayFloat(vec![f32::MIN, f32::MAX]),
+        ),
+        (
+            "f64-array-extrema",
+            "f64s",
+            json!([f64::MIN, f64::MAX]),
+            FieldValue::ArrayDouble(vec![f64::MIN, f64::MAX]),
+        ),
+    ]
+}
+
+fn rejected_numeric_scalar_boundaries() -> Vec<RejectedNumericCase> {
+    vec![
+        ("i32-below", "i32", json!(i64::from(i32::MIN) - 1)),
+        ("i32-above", "i32", json!(i64::from(i32::MAX) + 1)),
+        ("i32-fraction", "i32", json!(1.5)),
+        ("i64-below", "i64", json_number("-9223372036854775809")),
+        ("i64-above", "i64", json!(i64::MAX as u64 + 1)),
+        ("i64-fraction", "i64", json!(1.5)),
+        ("u32-negative", "u32", json!(-1)),
+        ("u32-above", "u32", json!(u64::from(u32::MAX) + 1)),
+        ("u32-fraction", "u32", json!(1.5)),
+        ("u64-negative", "u64", json!(-1)),
+        ("u64-above", "u64", json_number("18446744073709551616")),
+        ("u64-fraction", "u64", json!(1.5)),
+        ("f32-below", "f32", json!(-f64::from(f32::MAX) * 2.0)),
+        ("f32-above", "f32", json!(f64::from(f32::MAX) * 2.0)),
+        ("f64-wrong-type", "f64", json!("1.0")),
+    ]
+}
+
+fn rejected_numeric_array_boundaries() -> Vec<RejectedNumericCase> {
+    vec![
+        (
+            "i32-array-overflow",
+            "i32s",
+            json!([0, i64::from(i32::MAX) + 1]),
+        ),
+        (
+            "i64-array-overflow",
+            "i64s",
+            Value::Array(vec![json!(0), json_number("9223372036854775808")]),
+        ),
+        ("u32-array-negative", "u32s", json!([0, -1])),
+        (
+            "u64-array-overflow",
+            "u64s",
+            Value::Array(vec![json!(0), json_number("18446744073709551616")]),
+        ),
+        (
+            "f32-array-overflow",
+            "f32s",
+            json!([0.0, f64::from(f32::MAX) * 2.0]),
+        ),
+        ("f64-array-wrong-type", "f64s", json!([0.0, "1.0"])),
+    ]
+}
+
+#[test]
+fn json_numeric_boundaries_are_canonicalized_without_wrapping() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("collection");
+    let collection = Collection::create(
+        path.to_str().expect("temporary path must be UTF-8"),
+        &numeric_boundary_schema(),
+        None,
+    )
+    .expect("collection must be created");
+
+    for (id, field, value, expected) in accepted_numeric_scalar_boundaries()
+        .into_iter()
+        .chain(accepted_numeric_array_boundaries())
+    {
+        let mut doc = Doc::with_pk(id).expect("primary key must be valid");
+        doc.set_field_value(field, FieldValue::Json(value))
+            .expect("JSON boundary value must fit the document container");
+        let result = collection
+            .insert(&[&doc])
+            .expect("accepted boundary must return a per-document result");
+        assert_eq!(result.success_count, 1, "id={id}");
+        let stored = collection
+            .fetch(&[id])
+            .expect("accepted boundary document must be readable");
+        assert_eq!(stored[0].field(field), Some(&expected), "id={id}");
+    }
+
+    for (id, field, value) in rejected_numeric_scalar_boundaries()
+        .into_iter()
+        .chain(rejected_numeric_array_boundaries())
+    {
+        let mut doc = Doc::with_pk(id).expect("primary key must be valid");
+        doc.set_field_value(field, FieldValue::Json(value))
+            .expect("JSON boundary value must fit the document container");
+        let result = collection
+            .insert(&[&doc])
+            .expect("rejected boundary must return a per-document result");
+        assert_eq!(result.success_count, 0, "id={id}");
+        assert_eq!(
+            result.results[0].code,
+            ErrorCode::InvalidArgument,
+            "id={id}"
+        );
+    }
+}
+
+#[test]
+fn typed_floating_point_fields_reject_non_finite_scalars_and_array_members() {
+    for value in [
+        FieldValue::Float(f32::NAN),
+        FieldValue::Float(f32::INFINITY),
+        FieldValue::Float(f32::NEG_INFINITY),
+        FieldValue::Double(f64::NAN),
+        FieldValue::Double(f64::INFINITY),
+        FieldValue::Double(f64::NEG_INFINITY),
+        FieldValue::ArrayFloat(vec![0.0, f32::NAN]),
+        FieldValue::ArrayFloat(vec![0.0, f32::INFINITY]),
+        FieldValue::ArrayDouble(vec![0.0, f64::NAN]),
+        FieldValue::ArrayDouble(vec![0.0, f64::NEG_INFINITY]),
+    ] {
+        let mut doc = Doc::with_pk("non-finite").expect("primary key must be valid");
+        let error = doc
+            .set_field_value("value", value)
+            .expect_err("non-finite field values must fail at the document boundary");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
 }
 
