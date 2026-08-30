@@ -84,11 +84,13 @@ dense dimensions are checked across all numeric vector types and metrics,
 dense/sparse/FTS routes must match their schema field, and unsupported binary
 or sparse source-ID routes fail with typed errors. JSON adapter values are
 canonicalized to their declared scalar or array type at the write boundary;
-incompatible, overflowing, and binary JSON values are rejected. Schema
-backfills and replacement upserts are validated against the resulting complete
-document.
+incompatible, overflowing, and binary JSON values are rejected. Table-driven
+contracts cover missing and explicit nulls for all 18 scalar/array types,
+integer and floating-point extrema, array-member overflow, and durable null
+updates. Schema backfills and replacement upserts are validated against the
+resulting complete document.
 
-The current baseline has 63 passing unit and integration tests plus four
+The current baseline has 66 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision. The default test suite also passes on the
