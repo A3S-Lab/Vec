@@ -1,5 +1,6 @@
 //! Persistence primitives used by the collection handle.
 
+mod fault;
 mod lock;
 pub mod manifest;
 pub mod snapshot;
@@ -9,6 +10,7 @@ use crate::config::{ConfigBuilder, Durability};
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
+use fault::FaultInjector;
 use lock::CollectionLock;
 use manifest::Manifest;
 use std::fs;
@@ -22,6 +24,7 @@ pub(crate) struct StorageHandle {
     pub root: PathBuf,
     pub manifest: Manifest,
     pub lock: CollectionLock,
+    faults: FaultInjector,
 }
 
 impl StorageHandle {
@@ -42,20 +45,23 @@ impl StorageHandle {
         fs::create_dir_all(path)
             .map_err(|e| Error::internal(format!("create collection path: {e}")))?;
         let lock = CollectionLock::acquire(path, false)?;
+        let faults = FaultInjector::default();
         let mut manifest = Manifest::new(schema.name.clone(), schema.digest());
         manifest.generation = 1;
-        manifest.docs_checksum = snapshot::write(path, schema, &[], manifest.generation, 0, true)?;
+        manifest.docs_checksum =
+            snapshot::write_with_faults(path, schema, &[], manifest.generation, 0, true, &faults)?;
         manifest.wal_active_seq = 1;
         manifest.wal_checkpoint_seq = 0;
         manifest.revision = 0;
         manifest.checkpoint_revision = 0;
         manifest.wal_ops_since_checkpoint = 0;
         manifest.wal_bytes_since_checkpoint = 0;
-        manifest::write(path, &manifest, true)?;
+        manifest::write_with_faults(path, &manifest, true, &faults)?;
         Ok(Self {
             root: path.to_path_buf(),
             manifest,
             lock,
+            faults,
         })
     }
 
@@ -101,6 +107,7 @@ impl StorageHandle {
                 root: path.to_path_buf(),
                 manifest,
                 lock,
+                faults: FaultInjector::default(),
             },
             schema,
             docs,
@@ -129,12 +136,13 @@ impl StorageHandle {
         }
         let record = wal::WalRecord::new(revision, operation)?;
         let sync = matches!(config.durability, Durability::Always);
-        let bytes = wal::append(
+        let bytes = wal::append_with_faults(
             &self.root,
             self.manifest.wal_active_seq,
             self.manifest.wal_bytes_since_checkpoint,
             &record,
             sync,
+            &self.faults,
         )?;
         let mut next_manifest = self.manifest.clone();
         next_manifest.revision = revision;
@@ -146,7 +154,7 @@ impl StorageHandle {
             .wal_bytes_since_checkpoint
             .checked_add(bytes)
             .ok_or_else(|| Error::resource_exhausted("WAL byte count overflow"))?;
-        manifest::write(&self.root, &next_manifest, sync)?;
+        manifest::write_with_faults(&self.root, &next_manifest, sync, &self.faults)?;
         self.manifest = next_manifest;
         Ok(bytes)
     }
@@ -172,7 +180,15 @@ impl StorageHandle {
             .generation
             .checked_add(1)
             .ok_or_else(|| Error::resource_exhausted("snapshot generation overflow"))?;
-        let checksum = snapshot::write(&self.root, schema, docs, generation, revision, sync)?;
+        let checksum = snapshot::write_with_faults(
+            &self.root,
+            schema,
+            docs,
+            generation,
+            revision,
+            sync,
+            &self.faults,
+        )?;
         let mut next_manifest = self.manifest.clone();
         next_manifest.collection_name.clone_from(&schema.name);
         next_manifest.schema_digest = schema.digest();
@@ -188,14 +204,22 @@ impl StorageHandle {
             .ok_or_else(|| Error::resource_exhausted("WAL sequence overflow"))?;
         next_manifest.wal_ops_since_checkpoint = 0;
         next_manifest.wal_bytes_since_checkpoint = 0;
-        manifest::write(&self.root, &next_manifest, sync)?;
+        manifest::write_with_faults(&self.root, &next_manifest, sync, &self.faults)?;
         self.manifest = next_manifest;
 
         // The manifest is already committed. Old generations are harmless,
         // so cleanup is best-effort: reporting a prune error here would make
         // callers believe the transaction failed after it actually committed.
-        let _wal_prune = wal::prune(&self.root, self.manifest.wal_checkpoint_seq);
-        let _snapshot_prune = snapshot::prune(&self.root, self.manifest.generation);
+        // If WAL cleanup is interrupted, stop this maintenance pass so the
+        // remaining files match an actual crash at that boundary. Both prune
+        // operations are optional after manifest publication and can be
+        // retried by a later checkpoint.
+        if wal::prune_with_faults(&self.root, self.manifest.wal_checkpoint_seq, &self.faults)
+            .is_ok()
+        {
+            let _snapshot_prune =
+                snapshot::prune_with_faults(&self.root, self.manifest.generation, &self.faults);
+        }
         Ok(())
     }
 
@@ -206,6 +230,16 @@ impl StorageHandle {
             || config
                 .wal_max_bytes
                 .is_some_and(|v| self.manifest.wal_bytes_since_checkpoint >= v)
+    }
+
+    #[cfg(test)]
+    fn arm_fault(&self, point: fault::FaultPoint) {
+        self.faults.arm(point);
+    }
+
+    #[cfg(test)]
+    fn fault_fired(&self, point: fault::FaultPoint) -> bool {
+        self.faults.fired(point)
     }
 }
 
@@ -284,5 +318,11 @@ fn apply_operation(
     Ok(())
 }
 
+#[cfg(test)]
+mod fault_tests;
+#[cfg(test)]
+mod recovery_fuzz_tests;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;

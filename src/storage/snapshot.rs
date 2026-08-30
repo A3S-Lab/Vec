@@ -1,6 +1,9 @@
 //! Atomic document/schema snapshots.
 
-use super::manifest::{atomic_write, checksum, Manifest};
+use super::fault::{FaultInjector, FaultPoint};
+use super::manifest::{
+    atomic_write_with_faults, checksum, sync_directory, AtomicWriteKind, Manifest,
+};
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
@@ -21,6 +24,7 @@ struct Snapshot {
     docs: Vec<Doc>,
 }
 
+#[cfg(test)]
 pub fn write(
     root: &Path,
     schema: &CollectionSchema,
@@ -28,6 +32,26 @@ pub fn write(
     generation: u64,
     revision: u64,
     sync: bool,
+) -> Result<u32> {
+    write_with_faults(
+        root,
+        schema,
+        docs,
+        generation,
+        revision,
+        sync,
+        &FaultInjector::default(),
+    )
+}
+
+pub(super) fn write_with_faults(
+    root: &Path,
+    schema: &CollectionSchema,
+    docs: &[Doc],
+    generation: u64,
+    revision: u64,
+    sync: bool,
+    faults: &FaultInjector,
 ) -> Result<u32> {
     if generation == 0 {
         return Err(Error::invalid_argument(
@@ -51,7 +75,14 @@ pub fn write(
         )));
     }
     let digest = checksum(&bytes);
-    atomic_write(root, &relative_path(generation), &bytes, sync)?;
+    atomic_write_with_faults(
+        root,
+        &relative_path(generation),
+        &bytes,
+        sync,
+        AtomicWriteKind::Snapshot,
+        faults,
+    )?;
     Ok(digest)
 }
 
@@ -112,11 +143,16 @@ pub fn read(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Vec<D
     Ok((snapshot.schema, snapshot.docs))
 }
 
-pub fn prune(root: &Path, keep_generation: u64) -> Result<()> {
+pub(super) fn prune_with_faults(
+    root: &Path,
+    keep_generation: u64,
+    faults: &FaultInjector,
+) -> Result<()> {
     let directory = root.join("segments");
     if !directory.exists() {
         return Ok(());
     }
+    let mut removed = false;
     for entry in fs::read_dir(&directory)
         .map_err(|e| Error::internal(format!("read snapshot directory: {e}")))?
     {
@@ -135,9 +171,16 @@ pub fn prune(root: &Path, keep_generation: u64) -> Result<()> {
             .parse::<u64>()
             .is_ok_and(|generation| generation != keep_generation)
         {
+            faults.hit(FaultPoint::SnapshotPruneBeforeRemove)?;
             fs::remove_file(entry.path())
                 .map_err(|e| Error::internal(format!("prune document snapshot: {e}")))?;
+            removed = true;
+            faults.hit(FaultPoint::SnapshotPruneAfterRemove)?;
         }
+    }
+    if removed {
+        sync_directory(&directory)?;
+        faults.hit(FaultPoint::SnapshotPruneDirectorySynced)?;
     }
     Ok(())
 }
