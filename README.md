@@ -42,9 +42,23 @@ has deterministic test evidence:
 - checksum, committed truncation, orphan-generation, replay, and snapshot-size
   failure tests.
 
+The public contract now also validates every query before exact execution:
+dense dimensions are checked across all numeric vector types and metrics,
+dense/sparse/FTS routes must match their schema field, and unsupported binary
+or sparse source-ID routes fail with typed errors. JSON adapter values are
+canonicalized to their declared scalar or array type at the write boundary;
+incompatible, overflowing, and binary JSON values are rejected. Schema
+backfills and replacement upserts are validated against the resulting complete
+document.
+
+The current baseline has 26 passing unit and integration tests in each of the
+default, no-default-feature, and all-feature configurations. Strict Clippy and
+rustdoc warning gates pass for the same source revision.
+
 Format version 1 was never released and is not opened by the version 2 reader.
 Fault-injection hooks, WAL-pruning crash tests, real approximate indexes,
-indexed FTS, fuzzing, and the full platform matrix remain roadmap work.
+indexed FTS, quantized/binary search semantics, fuzzing, and the full platform
+matrix remain roadmap work.
 
 ## Platform policy
 
@@ -52,6 +66,12 @@ The baseline must compile and run on Linux x86_64/aarch64, Windows x86_64, and
 macOS arm64/x86_64 with macOS 12.0 as the Intel minimum. C/C++ runtimes,
 Linux-only `io_uring`, and required architecture-specific SIMD are not part of
 the correctness path.
+
+The default feature set is pure Rust. Chinese Jieba tokenization is opt-in with
+`--features jieba`; that feature currently pulls Jieba's compressed dictionary
+build chain, including `zstd-sys` and a C compiler. Requesting the `jieba`
+tokenizer without the feature returns `NotSupported` instead of silently using
+a different tokenizer.
 
 ## Development
 

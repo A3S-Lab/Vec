@@ -11,12 +11,15 @@ not replace an earlier correctness gate.
 
 ## Current implementation status
 
-**2026-08-30:** Phase 3's core recovery transaction is implemented in storage
-format version 2. Generation-specific snapshots, manifest-committed WAL byte
-boundaries, monotonic DML/schema revisions, read-only lifecycle semantics, and
-bounded recovery reads have 18 passing unit/integration tests. Formatting,
-default/all-feature Clippy with `-D warnings`, default/no-default/all-feature
-tests, and rustdoc are green.
+**2026-08-30:** Phase 1's query/write contract hardening and Phase 3's core
+recovery transaction are implemented. Query routes, dense dimensions, sparse
+indices, JSON adapter values, schema defaults, and replacement upserts are
+validated before execution or persistence. Storage format version 2 provides
+generation-specific snapshots, manifest-committed WAL byte boundaries,
+monotonic DML/schema revisions, read-only lifecycle semantics, and bounded
+recovery reads. The baseline has 26 passing unit/integration tests in each of
+the default, no-default-feature, and all-feature configurations. Formatting,
+default/all-feature Clippy with `-D warnings`, and rustdoc are green.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
@@ -51,6 +54,21 @@ cannot be mistaken for shipped ANN behaviour.
 
 - Every supported type has positive and negative tests, including dimension,
   nullability, duplicate-name, and overflow cases.
+
+**Evidence landed on 2026-08-30**
+
+- Completed: dense query dimension errors for every current numeric vector
+  type and L2/IP/cosine/MIPS-L2 metric; route/type checks for dense, sparse,
+  scalar, and FTS fields; explicit unsupported errors for binary search and
+  sparse source-ID search.
+- Completed: schema-aware JSON adapter coercion for every supported scalar and
+  non-binary array type, with incompatible and binary values rejected before
+  WAL append. Recovered documents use the same normalization and validation.
+- Completed: typed schema-default backfill validation and complete-document
+  validation for replacement upserts.
+- Open: encoded binary and quantized round trips/error bounds, broader
+  nullability/overflow fixtures, and the supported-platform matrix required by
+  the full Phase 1 exit gate.
 
 ## Phase 2 — Correct in-memory collection
 

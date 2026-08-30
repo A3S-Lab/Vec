@@ -1,8 +1,7 @@
 //! Collection query, fetch, and iterator APIs.
 
-use super::query_engine::{
-    count_to_f64, execute_query, normalize_scores, schema_index_params, score_to_f32, sort_docs,
-};
+use super::query_contract::schema_index_params;
+use super::query_engine::{count_to_f64, execute_query, normalize_scores, score_to_f32, sort_docs};
 use super::Collection;
 use crate::doc::Doc;
 use crate::error::{Error, Result};

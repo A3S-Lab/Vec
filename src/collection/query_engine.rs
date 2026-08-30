@@ -1,5 +1,6 @@
 //! Exact query execution used as the collection correctness oracle.
 
+use super::query_contract::{query_metric, validate_query_contract, validate_tokenizer};
 use crate::doc::{Doc, FieldValue, VectorValue};
 use crate::error::{Error, Result};
 use crate::query::SearchQuery;
@@ -64,24 +65,6 @@ fn dense_score(query: &[f32], vector: &VectorValue, metric: MetricType) -> Optio
     })
 }
 
-pub(super) fn schema_index_params<'a>(
-    schema: &'a CollectionSchema,
-    field_name: &str,
-) -> Option<&'a IndexParams> {
-    schema
-        .fields
-        .iter()
-        .find(|field| field.name == field_name)
-        .and_then(|field| field.index_params.as_ref())
-        .or_else(|| {
-            schema
-                .vectors
-                .iter()
-                .find(|field| field.name == field_name)
-                .and_then(|field| field.index_params.as_ref())
-        })
-}
-
 pub(super) fn sort_docs(docs: &mut [Doc]) {
     docs.sort_by(|left, right| {
         right
@@ -121,37 +104,19 @@ pub(super) fn execute_query(
     docs: &[Doc],
     query: &SearchQuery,
 ) -> Result<Vec<Doc>> {
-    let field = schema
-        .fields
-        .iter()
-        .find(|field| field.name == query.field_name)
-        .map(|field| (field.data_type, field.index_params.as_ref()))
-        .or_else(|| {
-            schema
-                .vectors
-                .iter()
-                .find(|field| field.name == query.field_name)
-                .map(|field| (field.data_type, field.index_params.as_ref()))
-        })
-        .ok_or_else(|| Error::not_found(format!("query field '{}' not found", query.field_name)))?;
+    let field = validate_query_contract(schema, query)?;
     if let Some(filter) = query.filter.as_deref() {
         parse_filter_expression(filter)?;
     }
-    let metric = query
-        .params
-        .get("metric")
-        .and_then(Value::as_str)
-        .map(parse_metric)
-        .transpose()?
-        .or_else(|| field.1.map(|params| params.metric_type))
-        .unwrap_or(MetricType::Cosine);
+    let metric = query_metric(&field, query)?;
     let mut scored = if query.fts.is_some() {
-        execute_fts(docs, query, field.1)?
+        execute_fts(docs, query, field.index_params)?
     } else {
         execute_vector(docs, query, metric)?
     };
     sort_docs(&mut scored);
-    let topk = usize::try_from(query.topk.max(0)).unwrap_or(0);
+    let topk = usize::try_from(query.topk)
+        .map_err(|_| Error::invalid_argument("query topk must be positive"))?;
     scored.truncate(topk);
     let output_fields = query.output_fields.as_deref();
     Ok(scored
@@ -245,6 +210,7 @@ fn execute_fts(
         .and_then(|params| params.params.get("tokenizer_name"))
         .and_then(Value::as_str)
         .unwrap_or("standard");
+    validate_tokenizer(tokenizer)?;
     let terms = fts_terms(expression, fts.query_string.is_some());
     let total_docs = count_to_f64(docs.len().max(1));
     let average_length = docs
@@ -280,16 +246,6 @@ fn execute_fts(
         result.push(copy);
     }
     Ok(result)
-}
-
-fn parse_metric(value: &str) -> Result<MetricType> {
-    match value.to_ascii_lowercase().as_str() {
-        "l2" | "euclidean" => Ok(MetricType::L2),
-        "ip" | "inner_product" | "dot" => Ok(MetricType::Ip),
-        "cosine" => Ok(MetricType::Cosine),
-        "mips_l2" | "mips-l2" => Ok(MetricType::MipsL2),
-        _ => Err(Error::invalid_argument(format!("unknown metric '{value}'"))),
-    }
 }
 
 fn text_value<'a>(doc: &'a Doc, field: &str) -> Option<&'a str> {
