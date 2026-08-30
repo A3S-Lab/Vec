@@ -80,7 +80,10 @@ named HNSW/IVF/DiskANN are not kept as placeholders.
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
 `SearchQuery`, `MultiQuery`, and `DocIterator`). Internal modules remain
-replaceable and do not leak storage implementation details.
+replaceable and do not leak storage implementation details. The `zvec-core`
+algorithm dependency is also private: it may implement internal filtering,
+tokenization, or document conversion, but its modules and types are not
+re-exported as part of the A3S contract.
 
 ## 3. Runtime ownership and concurrency
 
@@ -232,7 +235,9 @@ The Rust API provides the zvec concepts below without requiring zvec's C API:
 
 The crate does not promise ABI compatibility with the C API or source
 compatibility with Python-only extension classes. Those are separate adapters
-and are intentionally outside this project.
+and are intentionally outside this project. It likewise does not expose the
+dependency kernel as a low-level escape hatch; a kernel replacement must not
+force downstream callers to migrate unrelated types.
 
 ## 8. Platform policy
 

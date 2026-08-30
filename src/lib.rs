@@ -9,6 +9,13 @@
 //! A collection's document snapshot and WAL are authoritative.  ANN, scalar,
 //! and full-text indexes are derived data and are rebuilt or safely bypassed
 //! when their generation does not match the snapshot.
+//!
+//! The external algorithm kernel is an implementation detail and is not part
+//! of the stable A3S API:
+//!
+//! ```compile_fail
+//! use a3s_vec::core;
+//! ```
 
 mod collection;
 mod config;
@@ -22,15 +29,6 @@ mod schema;
 mod stats;
 mod storage;
 mod types;
-
-pub mod core {
-    //! The pure-Rust algorithm kernel used by the high-level A3S API.
-    //!
-    //! This escape hatch is useful for advanced callers that need low-level
-    //! centroid, graph, SIMD, or `DiskANN` format helpers.  High-level users
-    //! should prefer the types re-exported at the crate root.
-    pub use zvec_core::*;
-}
 
 pub use collection::{
     Collection, CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,

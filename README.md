@@ -25,6 +25,10 @@ The current implementation is a prototype. The collection query path is an
 exact-scan correctness oracle; HNSW, IVF, DiskANN, and indexed FTS are not yet
 implemented and are not advertised as active indexes.
 
+`zvec-core` is a private algorithm dependency. It is not re-exported through
+the public API, so callers depend only on the A3S-owned collection, schema,
+document, query, error, and configuration contracts.
+
 ## Verified baseline
 
 As of 2026-08-30, the storage format is version 2 and the following behaviour
