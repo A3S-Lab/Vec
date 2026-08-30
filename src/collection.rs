@@ -1,11 +1,12 @@
 //! Thread-safe collection handle and transaction coordinator.
 
 mod query_api;
+mod query_contract;
 mod query_engine;
 mod validation;
 
 use crate::config::{current_config, ConfigBuilder, Durability, IoBackend};
-use crate::doc::{Doc, FieldValue};
+use crate::doc::Doc;
 use crate::error::{Error, ErrorCode, Result};
 use crate::schema::{
     AddColumnOption, AlterColumnOption, CollectionSchema, FieldSchema, IndexParams,
@@ -15,12 +16,14 @@ use crate::stats::{StatsRegistry, StatsSnapshot};
 use crate::storage::{StorageHandle, WalOperation};
 use query_engine::{matches_filter, parse_filter_expression};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
-use validation::{merge_patch, prepare_mutation_batch, runtime_indexes};
+use validation::{
+    merge_patch, normalize_doc, parse_default_expression, prepare_mutation_batch, runtime_indexes,
+    validate_doc,
+};
 
 /// Options for creating or opening a collection.
 #[derive(Debug, Clone)]
@@ -199,10 +202,28 @@ impl Collection {
             return Err(Error::internal("persisted collection has an empty name"));
         }
         let revision = storage.manifest.revision;
-        let docs: BTreeMap<String, Doc> = docs
-            .into_iter()
-            .filter_map(|doc| doc.get_pk().map(str::to_string).map(|id| (id, doc)))
-            .collect();
+        let mut recovered_docs = BTreeMap::new();
+        for doc in docs {
+            let doc = normalize_doc(&schema, &doc).map_err(|error| {
+                Error::internal(format!(
+                    "persisted document cannot be normalized: {}",
+                    error.message
+                ))
+            })?;
+            validate_doc(&schema, &doc, true).map_err(|error| {
+                Error::internal(format!("persisted document is invalid: {}", error.message))
+            })?;
+            let id = doc
+                .get_pk()
+                .ok_or_else(|| Error::internal("persisted document has no primary key"))?
+                .to_string();
+            if recovered_docs.insert(id.clone(), doc).is_some() {
+                return Err(Error::internal(format!(
+                    "persisted collection contains duplicate primary key '{id}'"
+                )));
+            }
+        }
+        let docs = recovered_docs;
         let document_count = docs.len() as u64;
         let state = CollectionState {
             path: PathBuf::from(path),
@@ -678,11 +699,16 @@ impl Collection {
         ensure_writable(&state.options)?;
         let mut next = state.clone();
         next.schema.add_field(field_schema)?;
-        let default = default_expr.map(parse_default_expression);
+        let default = default_expr
+            .map(|expression| parse_default_expression(expression, field_schema.data_type))
+            .transpose()?;
         if let Some(value) = default {
             for doc in next.docs.values_mut() {
                 doc.set_field_value(&field_schema.name, value.clone())?;
             }
+        }
+        for doc in next.docs.values() {
+            validate_doc(&next.schema, doc, true)?;
         }
         let config = options_config(&state.options);
         let mut storage = self
@@ -935,27 +961,4 @@ fn next_revision(current: u64) -> Result<u64> {
     current
         .checked_add(1)
         .ok_or_else(|| Error::resource_exhausted("collection revision overflow"))
-}
-
-fn parse_default_expression(expression: &str) -> FieldValue {
-    let trimmed = expression.trim();
-    if trimmed.eq_ignore_ascii_case("null") {
-        return FieldValue::Null;
-    }
-    if trimmed.eq_ignore_ascii_case("true") {
-        return FieldValue::Bool(true);
-    }
-    if trimmed.eq_ignore_ascii_case("false") {
-        return FieldValue::Bool(false);
-    }
-    if let Ok(value) = trimmed.parse::<i64>() {
-        return FieldValue::Int64(value);
-    }
-    if let Ok(value) = trimmed.parse::<f64>() {
-        return FieldValue::Double(value);
-    }
-    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        return FieldValue::Json(value);
-    }
-    FieldValue::String(trimmed.trim_matches(['\'', '"']).to_string())
 }

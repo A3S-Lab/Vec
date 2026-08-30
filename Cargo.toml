@@ -11,7 +11,7 @@ keywords = ["a3s", "vector-database", "ann", "hnsw", "fts"]
 categories = ["database-implementations", "algorithms"]
 
 [features]
-default = ["jieba"]
+default = []
 jieba = ["zvec-core/jieba"]
 async = ["dep:tokio"]
 

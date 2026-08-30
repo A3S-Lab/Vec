@@ -55,6 +55,7 @@ crates/vec/
 │   ├── collection.rs          # lifecycle and write transaction coordinator
 │   ├── collection/
 │   │   ├── query_api.rs       # query/fetch/iterator collection API
+│   │   ├── query_contract.rs  # schema-derived route/type/dimension checks
 │   │   ├── query_engine.rs    # exact vector/filter/FTS oracle
 │   │   └── validation.rs      # write validation and index metadata
 │   ├── iterator.rs            # isolated document iterators
@@ -68,6 +69,7 @@ crates/vec/
 │       ├── lock.rs            # single-writer/multi-reader lock
 │       └── tests.rs           # storage-boundary fault simulations
 └── tests/
+    ├── contracts.rs           # typed query/write contract coverage
     └── durability.rs          # public lifecycle/restart coverage
 ```
 
@@ -112,8 +114,12 @@ caller never blocks an async executor thread on disk or index work.
 
 `Doc` contains a primary key, scalar values, dense vectors, sparse vectors, and
 an optional score. Values are typed at the API boundary and have a lossless
-serde representation. Vector codecs preserve the original dimension and
-quantizer metadata.
+serde representation. `FieldValue::Json` is an adapter input only: collection
+writes canonicalize compatible JSON scalars and arrays to the schema's concrete
+`FieldValue` variant before validation, WAL append, and storage. JSON cannot
+represent binary fields in this contract. Recovery applies the same
+normalization so query code never treats untyped JSON as stored authority.
+Vector codecs preserve the original dimension and quantizer metadata.
 
 ### On-disk generations
 
@@ -193,7 +199,7 @@ execution to an approximate algorithm or indexed FTS path.
 
 ```text
 Request
-  → validate schema/dimension/limits
+  → resolve the schema field and validate route/type/dimension/limits
   → parse filter and FTS expressions
   → acquire one data/index snapshot
   → build scalar candidate set (if available)
@@ -235,6 +241,12 @@ arm64/x86_64 with a macOS deployment target of 12.0. Intel Monterey uses the
 portable scalar/AVX2 path, POSIX file locks, and `pread`/ordinary file reads;
 Linux-only `io_uring` is never a required dependency. CI must compile with
 default features and with all optional index/FTS features enabled.
+
+The default Cargo feature set is empty and its normal/build dependency graph
+does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit
+because its embedded dictionary compression currently introduces that native
+build chain. A schema that requests Jieba without the feature receives
+`NotSupported`; it is never executed with a substitute tokenizer.
 
 ## 9. Non-negotiable quality gates
 
