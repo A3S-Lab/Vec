@@ -262,6 +262,22 @@ fn checkpoints_publish_one_generation_specific_snapshot() {
     collection
         .insert(&[&stored_doc])
         .expect("insert must succeed");
+    let committed_manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(collection_path.join("manifest.json"))
+            .expect("committed manifest must be readable"),
+    )
+    .expect("committed manifest must be valid JSON");
+    let wal_sequence = committed_manifest["wal_active_seq"]
+        .as_u64()
+        .expect("WAL sequence must be an integer");
+    let wal = std::fs::read(
+        collection_path
+            .join("wal")
+            .join(format!("wal-{wal_sequence:020}.bin")),
+    )
+    .expect("WAL frame must be readable");
+    assert_eq!(&wal[..4], b"A3VW");
+    assert_eq!(u16::from_le_bytes([wal[4], wal[5]]), 3);
     collection.flush().expect("first checkpoint must succeed");
     collection.flush().expect("second checkpoint must succeed");
 
@@ -275,13 +291,45 @@ fn checkpoints_publish_one_generation_specific_snapshot() {
         .file_name()
         .to_string_lossy()
         .starts_with("snapshot-"));
+    let snapshot: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(snapshots[0].path()).expect("snapshot must be readable"),
+    )
+    .expect("snapshot must be valid JSON");
+    assert_eq!(snapshot["format_version"], 3);
 
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(collection_path.join("manifest.json")).expect("manifest must be readable"),
     )
     .expect("manifest must be valid JSON");
-    assert_eq!(manifest["format_version"], 2);
+    assert_eq!(manifest["format_version"], 3);
     assert_eq!(manifest["revision"], 1);
     assert_eq!(manifest["checkpoint_revision"], 1);
     collection.close().expect("collection must close");
+}
+
+#[test]
+fn format_two_is_rejected_before_vector_payloads_can_be_reinterpreted() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection_path = temporary.path().join("collection");
+    let path = collection_path
+        .to_str()
+        .expect("temporary path must be valid UTF-8");
+    Collection::create(path, &test_schema(), None)
+        .expect("collection must be created")
+        .close()
+        .expect("collection must close");
+
+    let manifest_path = collection_path.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("manifest must be readable"))
+            .expect("manifest must be valid JSON");
+    manifest["format_version"] = serde_json::json!(2);
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest must serialize"),
+    )
+    .expect("old manifest fixture must be written");
+
+    let error = Collection::open(path, None).expect_err("format 2 must fail closed");
+    assert_eq!(error.code, ErrorCode::NotSupported);
 }

@@ -34,7 +34,7 @@ document, query, error, and configuration contracts.
 
 ## Verified baseline
 
-As of 2026-08-30, the storage format is version 2 and the following behaviour
+As of 2026-08-30, the storage format is version 3 and the following behaviour
 has deterministic test evidence:
 
 - immutable generation-specific snapshots with the manifest as the only
@@ -49,6 +49,17 @@ has deterministic test evidence:
 - checksum, committed truncation, orphan-generation, replay, and snapshot-size
   failure tests.
 
+Native vector payloads are also authoritative and lossless at rest. Dense and
+sparse FP16 store raw IEEE 754 half-precision bits; INT4 accepts only signed
+coordinates in `-8..=7`; INT8 and INT16 keep their native integer coordinates;
+and Binary32/Binary64 validate complete 32-/64-bit chunks and bit dimensions.
+A schema accepts only its exact physical vector type. These native integer
+forms are not scale-bearing ANN quantizers and INT4 is not yet nibble-packed.
+All numeric dense and sparse forms execute the four exact metrics. Scoring uses
+`f64` intermediates—including FP64 source vectors—and narrows only the public
+result score to `f32` after a checked range conversion. Binary search remains
+explicitly unsupported.
+
 The public contract now also validates every query before exact execution:
 dense dimensions are checked across all numeric vector types and metrics,
 dense/sparse/FTS routes must match their schema field, and unsupported binary
@@ -58,15 +69,20 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 37 passing unit and integration tests plus four
+The current baseline has 48 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
-for the same source revision.
+for the same source revision. The default test suite also passes on the
+declared Rust 1.75 MSRV; the optional Jieba dependency chain currently requires
+a newer Cargo with Rust 2024-edition manifest support.
 
-Format version 1 was never released and is not opened by the version 2 reader.
+Format versions 1 and 2 were prototype-only and are not opened by the version
+3 reader. Version 3 changes sparse FP16 persistence from misleading `f32`
+coordinates to raw half-precision bits; rejecting older manifests prevents a
+new payload from being silently reinterpreted by an older reader.
 Fault-injection hooks, WAL-pruning crash tests, real approximate indexes,
-indexed FTS, quantized/binary search semantics, fuzzing, and the full platform
-matrix remain roadmap work.
+indexed FTS, scale-bearing index quantization, binary search, fuzzing, and the
+full platform matrix remain roadmap work.
 
 ## Configuration policy
 
@@ -93,11 +109,13 @@ macOS arm64/x86_64 with macOS 12.0 as the Intel minimum. C/C++ runtimes,
 Linux-only `io_uring`, and required architecture-specific SIMD are not part of
 the correctness path.
 
-The default feature set is pure Rust. Chinese Jieba tokenization is opt-in with
+The default feature set is pure Rust and is tested on Rust 1.75. `zvec-core`
+currently permits any Rayon 1.x release, so this crate pins Rayon to the latest
+line compatible with that MSRV. Chinese Jieba tokenization is opt-in with
 `--features jieba`; that feature currently pulls Jieba's compressed dictionary
-build chain, including `zstd-sys` and a C compiler. Requesting the `jieba`
-tokenizer without the feature returns `NotSupported` instead of silently using
-a different tokenizer.
+build chain, including Rust 2024-edition manifests, `zstd-sys`, and a C
+compiler. Requesting the `jieba` tokenizer without the feature returns
+`NotSupported` instead of silently using a different tokenizer.
 
 ## Development
 
@@ -108,6 +126,7 @@ cargo fmt --manifest-path crates/vec/Cargo.toml -- --check
 cargo test --manifest-path crates/vec/Cargo.toml
 cargo test --manifest-path crates/vec/Cargo.toml --no-default-features
 cargo test --manifest-path crates/vec/Cargo.toml --all-features
+cargo +1.75.0 test --manifest-path crates/vec/Cargo.toml --locked
 cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets -- -D warnings
 cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets --all-features -- -D warnings
 ```

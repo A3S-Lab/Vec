@@ -1,10 +1,15 @@
 //! Typed documents and lossless JSON representation.
 
+mod vector_api;
+mod vector_codec;
+
 use crate::error::{Error, Result};
 use crate::types::DataType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
+
+use vector_codec::validate_vector;
 
 /// Scalar and array field values accepted by a collection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,6 +116,10 @@ impl FieldValue {
 }
 
 /// Dense and sparse vector payloads.
+///
+/// FP16 values are raw IEEE 754 half-precision bits. INT4/INT8/INT16 values
+/// are authoritative integer coordinates, not scale-bearing index
+/// quantization. Binary values are packed bytes in 32- or 64-bit chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum VectorValue {
@@ -122,104 +131,8 @@ pub enum VectorValue {
     Int4(Vec<i8>),
     Int8(Vec<i8>),
     Int16(Vec<i16>),
-    SparseFp16 { indices: Vec<u32>, values: Vec<f32> },
+    SparseFp16 { indices: Vec<u32>, values: Vec<u16> },
     SparseFp32 { indices: Vec<u32>, values: Vec<f32> },
-}
-
-impl VectorValue {
-    pub fn data_type(&self) -> DataType {
-        match self {
-            Self::Binary32(_) => DataType::VectorBinary32,
-            Self::Binary64(_) => DataType::VectorBinary64,
-            Self::Fp16(_) => DataType::VectorFp16,
-            Self::Fp32(_) => DataType::VectorFp32,
-            Self::Fp64(_) => DataType::VectorFp64,
-            Self::Int4(_) => DataType::VectorInt4,
-            Self::Int8(_) => DataType::VectorInt8,
-            Self::Int16(_) => DataType::VectorInt16,
-            Self::SparseFp16 { .. } => DataType::SparseVectorFp16,
-            Self::SparseFp32 { .. } => DataType::SparseVectorFp32,
-        }
-    }
-
-    #[allow(clippy::match_same_arms)]
-    pub fn dimension(&self) -> usize {
-        match self {
-            Self::Binary32(v) => v.len().saturating_mul(8),
-            Self::Binary64(v) => v.len().saturating_mul(8),
-            Self::Fp16(v) => v.len(),
-            Self::Fp32(v) => v.len(),
-            Self::Fp64(v) => v.len(),
-            Self::Int4(v) => v.len(),
-            Self::Int8(v) => v.len(),
-            Self::Int16(v) => v.len(),
-            Self::SparseFp16 { indices, .. } | Self::SparseFp32 { indices, .. } => indices
-                .iter()
-                .max()
-                .map_or(0, |v| (*v as usize).saturating_add(1)),
-        }
-    }
-
-    pub fn is_sparse(&self) -> bool {
-        matches!(self, Self::SparseFp16 { .. } | Self::SparseFp32 { .. })
-    }
-
-    /// Decodes all numeric dense forms to f32 for the portable scoring path.
-    pub fn to_dense_f32(&self) -> Option<Vec<f32>> {
-        match self {
-            Self::Fp16(values) => Some(values.iter().map(|v| fp16_to_f32(*v)).collect()),
-            Self::Fp32(values) => Some(values.clone()),
-            Self::Fp64(values) => values.iter().copied().map(f64_to_f32).collect(),
-            Self::Int4(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
-            Self::Int8(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
-            Self::Int16(values) => Some(values.iter().map(|v| f32::from(*v)).collect()),
-            _ => None,
-        }
-    }
-
-    pub fn to_sparse_f64(&self) -> Option<BTreeMap<u32, f64>> {
-        match self {
-            Self::SparseFp16 { indices, values } | Self::SparseFp32 { indices, values } => {
-                if indices.len() != values.len() {
-                    return None;
-                }
-                Some(
-                    indices
-                        .iter()
-                        .copied()
-                        .zip(values.iter().map(|v| f64::from(*v)))
-                        .collect(),
-                )
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn to_core(&self) -> Option<zvec_core::model::StoredVector> {
-        use zvec_core::model::StoredVector;
-        Some(match self {
-            Self::Fp32(v) => StoredVector::Dense(v.clone()),
-            Self::Fp64(v) => {
-                StoredVector::Dense(v.iter().copied().map(f64_to_f32).collect::<Option<_>>()?)
-            }
-            Self::Fp16(v) => StoredVector::Dense(v.iter().map(|x| fp16_to_f32(*x)).collect()),
-            Self::Int4(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
-            Self::Int8(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
-            Self::Int16(v) => StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect()),
-            Self::Binary32(v) | Self::Binary64(v) => {
-                StoredVector::Dense(v.iter().map(|x| f32::from(*x)).collect())
-            }
-            Self::SparseFp16 { indices, values } | Self::SparseFp32 { indices, values } => {
-                let map = indices
-                    .iter()
-                    .copied()
-                    .zip(values.iter().map(|v| f64::from(*v)))
-                    .map(|(i, v)| (i.to_string(), v))
-                    .collect();
-                StoredVector::Sparse(map)
-            }
-        })
-    }
 }
 
 /// A typed document.  `BTreeMap` gives deterministic snapshots and tie-breaks.
@@ -378,62 +291,6 @@ impl Doc {
         self.set_field_value(name, FieldValue::Binary(value.to_vec()))
     }
 
-    pub fn add_vector_f32(&mut self, name: &str, vector: &[f32]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Fp32(vector.to_vec()))
-    }
-
-    pub fn add_vector_f64(&mut self, name: &str, vector: &[f64]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Fp64(vector.to_vec()))
-    }
-
-    pub fn add_vector_i8(&mut self, name: &str, vector: &[i8]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Int8(vector.to_vec()))
-    }
-
-    pub fn add_vector_i16(&mut self, name: &str, vector: &[i16]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Int16(vector.to_vec()))
-    }
-
-    pub fn add_vector_fp16(&mut self, name: &str, vector: &[u16]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Fp16(vector.to_vec()))
-    }
-
-    pub fn add_vector_i4(&mut self, name: &str, vector: &[i8]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Int4(vector.to_vec()))
-    }
-
-    pub fn add_vector_binary32(&mut self, name: &str, vector: &[u8]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Binary32(vector.to_vec()))
-    }
-
-    pub fn add_vector_binary64(&mut self, name: &str, vector: &[u8]) -> Result<()> {
-        self.set_vector_value(name, VectorValue::Binary64(vector.to_vec()))
-    }
-
-    pub fn add_sparse_vector(&mut self, name: &str, indices: &[u32], values: &[f32]) -> Result<()> {
-        if indices.len() != values.len() || indices.is_empty() {
-            return Err(Error::invalid_argument(
-                "sparse vector indices and values must have equal non-zero length",
-            ));
-        }
-        self.set_vector_value(
-            name,
-            VectorValue::SparseFp32 {
-                indices: indices.to_vec(),
-                values: values.to_vec(),
-            },
-        )
-    }
-
-    pub fn add_sparse_vector_f32(
-        &mut self,
-        name: &str,
-        indices: &[u32],
-        values: &[f32],
-    ) -> Result<()> {
-        self.add_sparse_vector(name, indices, values)
-    }
-
     pub fn add_array_binary(&mut self, name: &str, values: &[Vec<u8>]) -> Result<()> {
         self.set_field_value(name, FieldValue::ArrayBinary(values.to_vec()))
     }
@@ -586,34 +443,6 @@ impl Doc {
         )
     }
 
-    pub fn get_vector_f32(&self, name: &str) -> Result<Option<Vec<f32>>> {
-        self.get_vector_dense(name, DataType::VectorFp32)
-    }
-
-    pub fn get_vector_f64(&self, name: &str) -> Result<Option<Vec<f64>>> {
-        match self.vectors.get(name) {
-            None => Ok(None),
-            Some(VectorValue::Fp64(v)) => Ok(Some(v.clone())),
-            Some(_) => Err(type_error(name, DataType::VectorFp64)),
-        }
-    }
-
-    pub fn get_vector_i8(&self, name: &str) -> Result<Option<Vec<i8>>> {
-        match self.vectors.get(name) {
-            None => Ok(None),
-            Some(VectorValue::Int8(v)) => Ok(Some(v.clone())),
-            Some(_) => Err(type_error(name, DataType::VectorInt8)),
-        }
-    }
-
-    pub fn get_vector_i16(&self, name: &str) -> Result<Option<Vec<i16>>> {
-        match self.vectors.get(name) {
-            None => Ok(None),
-            Some(VectorValue::Int16(v)) => Ok(Some(v.clone())),
-            Some(_) => Err(type_error(name, DataType::VectorInt16)),
-        }
-    }
-
     pub fn get_array_i32(&self, name: &str) -> Result<Option<Vec<i32>>> {
         self.get_array(
             name,
@@ -742,14 +571,6 @@ impl Doc {
     {
         self.get_scalar(name, f, expected)
     }
-
-    fn get_vector_dense(&self, name: &str, expected: DataType) -> Result<Option<Vec<f32>>> {
-        match self.vectors.get(name) {
-            None => Ok(None),
-            Some(VectorValue::Fp32(v)) => Ok(Some(v.clone())),
-            Some(_) => Err(type_error(name, expected)),
-        }
-    }
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -772,34 +593,6 @@ fn validate_field_finite(value: &FieldValue) -> Result<()> {
     finite
         .then_some(())
         .ok_or_else(|| Error::invalid_argument("floating-point field values must be finite"))
-}
-
-fn validate_vector(value: &VectorValue) -> Result<()> {
-    match value {
-        VectorValue::SparseFp16 { indices, values }
-        | VectorValue::SparseFp32 { indices, values } => {
-            if indices.len() != values.len() || indices.is_empty() {
-                return Err(Error::invalid_argument(
-                    "sparse vector indices and values must have equal non-zero length",
-                ));
-            }
-            if !values.iter().all(|v| v.is_finite()) {
-                return Err(Error::invalid_argument(
-                    "sparse vector values must be finite",
-                ));
-            }
-        }
-        VectorValue::Fp32(values) => {
-            if !values.iter().all(|v| v.is_finite()) {
-                return Err(Error::invalid_argument("vector values must be finite"));
-            }
-        }
-        VectorValue::Fp64(values) if !values.iter().all(|v| v.is_finite()) => {
-            return Err(Error::invalid_argument("vector values must be finite"));
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn type_error(name: &str, expected: DataType) -> Error {
@@ -833,34 +626,4 @@ fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn f64_to_f32(value: f64) -> Option<f32> {
-    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
-        .then_some(value as f32)
-}
-
-fn fp16_to_f32(bits: u16) -> f32 {
-    let sign = u32::from(bits & 0x8000) << 16;
-    let exp = (bits >> 10) & 0x1f;
-    let frac = u32::from(bits & 0x03ff);
-    let raw = if exp == 0 {
-        if frac == 0 {
-            sign
-        } else {
-            let mut fraction = frac;
-            let mut exponent: u32 = 127 - 14;
-            while fraction & 0x400 == 0 {
-                fraction <<= 1;
-                exponent = exponent.saturating_sub(1);
-            }
-            sign | (exponent << 23) | ((fraction & 0x3ff) << 13)
-        }
-    } else if exp == 0x1f {
-        sign | 0x7f80_0000 | (frac << 13)
-    } else {
-        sign | (((u32::from(exp) + 112) & 0xff) << 23) | (frac << 13)
-    };
-    f32::from_bits(raw)
 }

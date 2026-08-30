@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 pub(super) const MAX_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

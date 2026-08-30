@@ -9,6 +9,8 @@
 //! A collection's document snapshot and WAL are authoritative. Flat queries
 //! execute against that snapshot. ANN, scalar-index, and indexed-FTS controls
 //! return typed unsupported errors until real derived implementations exist.
+//! Native numeric vector encodings are preserved at rest and scored by the
+//! exact oracle; they are distinct from future scale-bearing ANN quantizers.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
