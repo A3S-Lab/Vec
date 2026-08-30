@@ -49,6 +49,8 @@ crates/vec/
 │   ├── config.rs              # process and collection configuration
 │   ├── types.rs               # public type vocabulary
 │   ├── schema.rs              # field/vector/collection schemas and builders
+│   ├── schema/
+│   │   └── index_contract.rs  # executable index-configuration allowlist
 │   ├── doc.rs                 # typed document values and projection
 │   ├── query.rs               # vector, FTS, group, and query parameters
 │   ├── multi_query.rs         # routes and RRF/weighted fusion
@@ -58,7 +60,7 @@ crates/vec/
 │   │   ├── query_api.rs       # query/fetch/iterator collection API
 │   │   ├── query_contract.rs  # schema-derived route/type/dimension checks
 │   │   ├── query_engine.rs    # exact vector/filter/FTS oracle
-│   │   └── validation.rs      # write validation and index metadata
+│   │   └── validation.rs      # write normalization and validation
 │   ├── iterator.rs            # isolated document iterators
 │   ├── stats.rs               # counters, index status, and health
 │   ├── embedding.rs           # caller-owned dense/sparse embedding traits
@@ -71,7 +73,8 @@ crates/vec/
 │       └── tests.rs           # storage-boundary fault simulations
 └── tests/
     ├── contracts.rs           # typed query/write contract coverage
-    └── durability.rs          # public lifecycle/restart coverage
+    ├── durability.rs          # public lifecycle/restart coverage
+    └── execution_contracts.rs # executable/unsupported option matrix
 ```
 
 Real `index/` and `planner/` modules are added only when their phase gates have
@@ -93,20 +96,21 @@ re-exported as part of the A3S contract.
 ```text
 Collection
   └── Arc<CollectionInner>
-      ├── RwLock<LogicalState>       # schema + document snapshot
-      ├── RwLock<IndexCatalog>       # generation-tagged derived indexes
-      ├── AtomicU64 revision
-      ├── WriterLock                  # process and file lock
-      ├── CollectionOptions
-      └── StatsRegistry
+      ├── RwLock<CollectionState>    # schema + docs + revision + resolved options
+      ├── Mutex<StorageHandle>       # manifest + file lock
+      ├── Mutex<()>                  # in-process writer serialization
+      └── AtomicBool                 # closed lifecycle state
 ```
 
 Readers acquire a snapshot guard and release it before expensive result
 materialisation. Writers are serialized per collection and publish a new
-logical revision atomically. Index builds run on a snapshot and are installed
-only when their input revision still matches; otherwise the build is discarded
-and retried. This gives multiple processes read access while preserving the
-zvec single-process writer contract.
+logical revision atomically. `StatsRegistry` is shared from the collection
+state, while Flat index statistics are derived from the current schema,
+revision, and document count rather than duplicated mutable metadata. Future
+derived-index builds will need snapshot-generation installation semantics, but
+no placeholder catalog or background build is present today. The file lock
+allows multiple read-only processes while preserving the single-writer
+contract.
 
 No async runtime is required by the core API. Optional async helpers use
 `spawn_blocking` around the same synchronous transaction boundaries, so a
@@ -120,6 +124,15 @@ threading, logging, I/O backend, mmap, buffer, and segment controls are not
 public until they select a real bounded implementation. The resolved process
 defaults are captured when a collection is created or opened, so a later
 `initialize` call cannot change an active collection's acknowledgement policy.
+
+Index and query configuration follows the same rule. The exact executor owns
+Flat metrics and query `metric`/`radius`; scan FTS owns only its tokenizer.
+HNSW, IVF, DiskANN/Vamana, inverted-index, quantization, refinement, FTS
+operator/filter/extra, and physical optimize requests return `NotSupported`
+before mutation. Unknown deserialized query/configuration keys return
+`InvalidArgument`. Non-zero segment sizing and add/alter concurrency return
+`NotSupported`. Only Flat appears in ready-index telemetry, and the ANN counter
+remains zero while all vector execution is exact.
 
 ## 4. Data and storage model
 
@@ -200,25 +213,25 @@ The target and fallback implementations are:
 | Scalar filters | Hash/B-tree postings and bitsets | AST scan fallback |
 | FTS | Standard, whitespace, n-gram, optional jieba tokenizers + BM25 | Token scan fallback |
 
-Index metadata always includes the source data revision, schema digest,
-dimension, metric, and a format version. A mismatch makes the planner ignore
-the index rather than return unverifiable results.
+A future derived-index format must include the source data revision, schema
+digest, dimension, metric, and a format version. A mismatch must make the
+planner ignore the index rather than return unverifiable results.
 
 At the current baseline, collection queries always execute the exact oracle.
-Schema metadata may describe a requested future index, but it does not change
-execution to an approximate algorithm or indexed FTS path.
+Standalone descriptors for future indexes remain serializable for adapters,
+but attaching them to a schema returns `NotSupported`. Schema-attached Flat
+metrics and FTS tokenizers select only their exact scan consumers.
 
 ## 6. Query pipeline
 
 ```text
 Request
-  → resolve the schema field and validate route/type/dimension/limits
+  → acquire one schema/document snapshot
+  → resolve the schema field and validate route/type/dimension/limits/options
   → parse filter and FTS expressions
-  → acquire one data/index snapshot
-  → build scalar candidate set (if available)
-  → execute dense, sparse, and/or FTS routes
-  → merge candidates and exact re-rank
-  → apply radius, top-k, group-by, and fusion rules
+  → execute exact dense, sparse, and/or scan-FTS routes
+  → fuse exact branch results when requested
+  → apply radius, top-k, and group-by limits
   → project requested fields/vectors
   → deterministic sort (score, then primary key)
 ```

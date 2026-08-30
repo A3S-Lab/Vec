@@ -1,12 +1,12 @@
-//! Write-boundary document validation and derived index metadata.
+//! Write-boundary document normalization and validation.
 
-use super::{write_error, write_success, CollectionState, DocWriteResult, Mutation, RuntimeIndex};
+use super::{write_error, write_success, CollectionState, DocWriteResult, Mutation};
 use crate::doc::{Doc, FieldValue};
 use crate::error::{Error, ErrorCode, Result};
 use crate::schema::CollectionSchema;
 use crate::types::DataType;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 pub(super) fn prepare_mutation_batch(
     state: &CollectionState,
@@ -71,39 +71,6 @@ pub(super) fn prepare_mutation_batch(
         outcomes.push(write_success());
     }
     (accepted, outcomes)
-}
-
-pub(super) fn runtime_indexes(
-    schema: &CollectionSchema,
-    revision: u64,
-    document_count: u64,
-) -> BTreeMap<String, RuntimeIndex> {
-    schema
-        .fields
-        .iter()
-        .filter_map(|field| {
-            field
-                .index_params
-                .clone()
-                .map(|params| (field.name.clone(), params))
-        })
-        .chain(schema.vectors.iter().filter_map(|field| {
-            field
-                .index_params
-                .clone()
-                .map(|params| (field.name.clone(), params))
-        }))
-        .map(|(name, params)| {
-            (
-                name,
-                RuntimeIndex {
-                    params,
-                    source_revision: revision,
-                    document_count,
-                },
-            )
-        })
-        .collect()
 }
 
 pub(super) fn validate_doc(schema: &CollectionSchema, doc: &Doc, require_all: bool) -> Result<()> {

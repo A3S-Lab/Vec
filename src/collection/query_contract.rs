@@ -13,24 +13,6 @@ pub(super) struct QueryField<'a> {
     pub(super) index_params: Option<&'a IndexParams>,
 }
 
-pub(super) fn schema_index_params<'a>(
-    schema: &'a CollectionSchema,
-    field_name: &str,
-) -> Option<&'a IndexParams> {
-    schema
-        .fields
-        .iter()
-        .find(|field| field.name == field_name)
-        .and_then(|field| field.index_params.as_ref())
-        .or_else(|| {
-            schema
-                .vectors
-                .iter()
-                .find(|field| field.name == field_name)
-                .and_then(|field| field.index_params.as_ref())
-        })
-}
-
 pub(super) fn validate_query_contract<'a>(
     schema: &'a CollectionSchema,
     query: &SearchQuery,
@@ -48,6 +30,7 @@ pub(super) fn validate_query_contract<'a>(
             "query must select exactly one FTS, dense, sparse, or source-id route",
         ));
     }
+    validate_query_parameters(query)?;
 
     if query.fts.is_some() {
         if field.data_type != DataType::String {
@@ -89,6 +72,41 @@ pub(super) fn validate_query_contract<'a>(
         }
     }
     Ok(field)
+}
+
+fn validate_query_parameters(query: &SearchQuery) -> Result<()> {
+    const FUTURE_PARAMETERS: &[&str] = &[
+        "type",
+        "ef",
+        "nprobe",
+        "is_linear",
+        "is_using_refiner",
+        "scale_factor",
+        "list_size",
+        "operator",
+    ];
+    if let Some(name) = query
+        .params
+        .keys()
+        .find(|name| FUTURE_PARAMETERS.contains(&name.as_str()))
+    {
+        return Err(Error::not_supported(format!(
+            "query parameter '{name}' has no execution consumer"
+        )));
+    }
+    for name in query.params.keys() {
+        if name != "metric" && name != "radius" {
+            return Err(Error::invalid_argument(format!(
+                "unknown query parameter '{name}'"
+            )));
+        }
+        if query.fts.is_some() {
+            return Err(Error::invalid_argument(format!(
+                "query parameter '{name}' is not valid for FTS"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn query_metric(field: &QueryField<'_>, query: &SearchQuery) -> Result<MetricType> {

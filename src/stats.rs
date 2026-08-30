@@ -56,7 +56,6 @@ pub(crate) struct QueryObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryKind {
     Exact,
-    Ann,
     Fts,
 }
 
@@ -66,11 +65,7 @@ impl StatsRegistry {
         if observation.kind == QueryKind::Fts {
             self.fts_query_count.fetch_add(1, Ordering::Relaxed);
         }
-        if observation.kind == QueryKind::Ann {
-            self.ann_query_count.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.exact_query_count.fetch_add(1, Ordering::Relaxed);
-        }
+        self.exact_query_count.fetch_add(1, Ordering::Relaxed);
         if observation.filtered {
             self.filtered_query_count.fetch_add(1, Ordering::Relaxed);
         }

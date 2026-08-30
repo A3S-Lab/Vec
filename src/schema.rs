@@ -1,10 +1,14 @@
 //! Collection and index schemas.
 
+mod index_contract;
+
 use crate::error::{Error, Result};
 use crate::types::{DataType, IndexType, MetricType, QuantizeType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+
+use index_contract::validate_index_configuration;
 
 /// HNSW build parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,8 +83,12 @@ pub struct FtsIndexParam {
     pub extra_params: Option<String>,
 }
 
-/// Serializable index configuration.  `params` is intentionally retained so
-/// new zvec knobs can be persisted before a dedicated Rust field is added.
+/// Serializable index configuration.
+///
+/// The open `params` map is retained for adapter compatibility, but collection
+/// schemas reject entries that do not have an execution consumer. Constructing
+/// a future index descriptor is therefore harmless; attaching it to a field
+/// returns [`crate::ErrorCode::NotSupported`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexParams {
     pub index_type: IndexType,
@@ -265,11 +273,6 @@ impl IndexParams {
         self.params.insert(name.into(), value);
         self
     }
-    pub(crate) fn marked_built(&self, built: bool) -> Self {
-        let mut out = self.clone();
-        out.params.insert("built".into(), json!(built));
-        out
-    }
 }
 
 impl IndexType {
@@ -401,15 +404,7 @@ impl FieldSchema {
         })
     }
     pub fn set_index_params(&mut self, params: &IndexParams) -> Result<()> {
-        if params.index_type.is_vector_index() != self.data_type.is_vector() {
-            return Err(Error::invalid_argument(format!(
-                "index type {:?} is incompatible with field '{}'",
-                params.index_type, self.name
-            )));
-        }
-        if params.index_type == IndexType::Fts && self.data_type != DataType::String {
-            return Err(Error::invalid_argument("FTS index requires a string field"));
-        }
+        validate_index_configuration(&self.name, self.data_type, params)?;
         self.index_params = Some(params.clone());
         Ok(())
     }
@@ -526,6 +521,9 @@ impl CollectionSchema {
     }
     pub fn add_field(&mut self, field: &FieldSchema) -> Result<()> {
         self.ensure_unique(&field.name)?;
+        if let Some(params) = &field.index_params {
+            validate_index_configuration(&field.name, field.data_type, params)?;
+        }
         if field.data_type.is_vector() {
             self.vectors.push(VectorSchema {
                 name: field.name.clone(),
@@ -544,6 +542,9 @@ impl CollectionSchema {
             return Err(Error::invalid_argument(
                 "vector field requires vector data type",
             ));
+        }
+        if let Some(params) = &field.index_params {
+            validate_index_configuration(&field.name, field.data_type, params)?;
         }
         self.vectors.push(field.clone());
         Ok(())
@@ -588,6 +589,19 @@ impl CollectionSchema {
         }
         Err(Error::not_found(format!("field '{field_name}' not found")))
     }
+    pub(crate) fn check_index_configuration(
+        &self,
+        field_name: &str,
+        params: &IndexParams,
+    ) -> Result<()> {
+        if let Some(field) = self.fields.iter().find(|field| field.name == field_name) {
+            return validate_index_configuration(&field.name, field.data_type, params);
+        }
+        if let Some(field) = self.vectors.iter().find(|field| field.name == field_name) {
+            return validate_index_configuration(&field.name, field.data_type, params);
+        }
+        Err(Error::not_found(format!("field '{field_name}' not found")))
+    }
     pub fn drop_index(&mut self, field_name: &str) -> Result<()> {
         if let Some(field) = self.fields.iter_mut().find(|f| f.name == field_name) {
             field.index_params = None;
@@ -600,29 +614,50 @@ impl CollectionSchema {
         Err(Error::not_found(format!("field '{field_name}' not found")))
     }
     pub fn set_max_doc_count_per_segment(&mut self, count: u64) -> Result<()> {
-        self.max_doc_count_per_segment = count;
-        Ok(())
+        if count == 0 {
+            self.max_doc_count_per_segment = 0;
+            Ok(())
+        } else {
+            Err(Error::not_supported(
+                "max_doc_count_per_segment requires a segmented storage executor",
+            ))
+        }
     }
     pub fn max_doc_count_per_segment(&self) -> u64 {
         self.max_doc_count_per_segment
     }
     pub fn validate(&self) -> Result<()> {
+        if self.max_doc_count_per_segment != 0 {
+            return Err(Error::not_supported(
+                "max_doc_count_per_segment requires a segmented storage executor",
+            ));
+        }
         if self.fields.len() + self.vectors.len() == 0 {
             return Err(Error::invalid_argument(
                 "collection schema must contain at least one field",
             ));
         }
         let mut names = BTreeSet::new();
-        for name in self
-            .fields
-            .iter()
-            .map(|f| &f.name)
-            .chain(self.vectors.iter().map(|f| &f.name))
-        {
-            if !names.insert(name) {
+        for field in &self.fields {
+            if !names.insert(&field.name) {
                 return Err(Error::invalid_argument(format!(
-                    "duplicate field name '{name}'"
+                    "duplicate field name '{}'",
+                    field.name
                 )));
+            }
+            if let Some(params) = &field.index_params {
+                validate_index_configuration(&field.name, field.data_type, params)?;
+            }
+        }
+        for field in &self.vectors {
+            if !names.insert(&field.name) {
+                return Err(Error::invalid_argument(format!(
+                    "duplicate field name '{}'",
+                    field.name
+                )));
+            }
+            if let Some(params) = &field.index_params {
+                validate_index_configuration(&field.name, field.data_type, params)?;
             }
         }
         Ok(())
@@ -711,7 +746,7 @@ impl CollectionSchemaBuilder {
             schema.add_field(&field)?;
         }
         if let Some(count) = self.max_doc_count_per_segment {
-            schema.max_doc_count_per_segment = count;
+            schema.set_max_doc_count_per_segment(count)?;
         }
         schema.validate()?;
         Ok(schema)
