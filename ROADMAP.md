@@ -20,10 +20,12 @@ monotonic DML/schema revisions, read-only lifecycle semantics, and bounded
 recovery reads. The external algorithm kernel is private and has a negative
 compile-time API fixture. Inert process/collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
-tested. The baseline has 29 passing unit/integration tests plus four compile-
-fail doctests in each of the default, no-default-feature, and all-feature
-configurations. Formatting, default/all-feature Clippy with `-D warnings`, and
-rustdoc are green.
+tested. Future index/query/schema tuning now fails explicitly unless it has an
+exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
+built FTS index. The baseline has 37 passing unit/integration tests plus four
+compile-fail doctests in each of the default, no-default-feature, and all-
+feature configurations. Formatting, default/all-feature Clippy with
+`-D warnings`, and rustdoc are green.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
@@ -75,10 +77,15 @@ cannot be mistaken for shipped ANN behaviour.
 - Partially completed: removed inert memory/thread/logging/I/O/mmap/buffer/
   segment controls, fixed process-versus-collection durability precedence, and
   added execution tests for WAL operation/byte checkpoint thresholds.
+- Completed: future physical index descriptors, query tuning parameters,
+  segment sizing, and non-zero schema-evolution concurrency fail with typed
+  errors before mutation. Flat remains the sole ready exact index; scan FTS
+  tokenizer configuration and multi-query fusion never increment ANN
+  telemetry.
 - Open: encoded binary and quantized round trips/error bounds, broader
-  nullability/overflow fixtures, truthful handling of future index/query and
-  schema-evolution tuning knobs, and the supported-platform matrix required by
-  the full Phase 1 exit gate.
+  nullability/overflow fixtures, differential FTS/vector and concurrency
+  evidence, and the supported-platform matrix required by the full Phase 1
+  exit gate.
 
 ## Phase 2 — Correct in-memory collection
 

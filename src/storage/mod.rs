@@ -95,6 +95,7 @@ impl StorageHandle {
                 manifest.revision, manifest.checkpoint_revision
             )));
         }
+        schema.validate()?;
         Ok((
             Self {
                 root: path.to_path_buf(),

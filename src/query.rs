@@ -396,44 +396,17 @@ impl SearchQuery {
         self.output_fields = Some(fields.iter().map(|s| (*s).to_string()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("hnsw"));
-        self.params.insert("ef".into(), json!(params.ef));
-        self.params.insert("radius".into(), json!(params.radius));
-        self.params
-            .insert("is_linear".into(), json!(params.is_linear));
-        self.params
-            .insert("is_using_refiner".into(), json!(params.is_using_refiner));
-        Ok(())
+    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
+        unsupported_query_controls("HNSW")
     }
-    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("ivf"));
-        self.params.insert("nprobe".into(), json!(params.nprobe));
-        self.params
-            .insert("is_using_refiner".into(), json!(params.is_using_refiner));
-        self.params
-            .insert("scale_factor".into(), json!(params.scale_factor));
-        Ok(())
+    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF")
     }
-    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("ivf_rabitq"));
-        self.params.insert("nprobe".into(), json!(params.nprobe));
-        self.params.insert("radius".into(), json!(params.radius));
-        self.params
-            .insert("is_linear".into(), json!(params.is_linear));
-        self.params
-            .insert("is_using_refiner".into(), json!(params.is_using_refiner));
-        self.params
-            .insert("scale_factor".into(), json!(params.scale_factor));
-        Ok(())
+    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF RaBitQ")
     }
-    pub fn set_flat_params(&mut self, params: FlatQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("flat"));
-        self.params
-            .insert("is_using_refiner".into(), json!(params.is_using_refiner));
-        self.params
-            .insert("scale_factor".into(), json!(params.scale_factor));
-        Ok(())
+    pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
+        unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
         if params.list_size <= 0 {
@@ -441,16 +414,10 @@ impl SearchQuery {
                 "DiskANN list_size must be positive",
             ));
         }
-        self.params.insert("type".into(), json!("diskann"));
-        self.params
-            .insert("list_size".into(), json!(params.list_size));
-        Ok(())
+        unsupported_query_controls("DiskANN")
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
-        if let Some(op) = params.default_operator {
-            self.params.insert("operator".into(), json!(op));
-        }
-        Ok(())
+        validate_fts_query_controls(params)
     }
     pub fn set_fts(&mut self, fts: &Fts) -> Result<()> {
         if fts.query_string.is_none() && fts.match_string.is_none() {
@@ -622,26 +589,17 @@ impl GroupBySearchQuery {
         self.output_fields = Some(fields.iter().map(|s| (*s).to_string()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("hnsw"));
-        self.params.insert("ef".into(), json!(params.ef));
-        Ok(())
+    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
+        unsupported_query_controls("HNSW")
     }
-    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("ivf"));
-        self.params.insert("nprobe".into(), json!(params.nprobe));
-        Ok(())
+    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF")
     }
-    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("ivf_rabitq"));
-        self.params.insert("nprobe".into(), json!(params.nprobe));
-        Ok(())
+    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF RaBitQ")
     }
-    pub fn set_flat_params(&mut self, params: FlatQueryParams) -> Result<()> {
-        self.params.insert("type".into(), json!("flat"));
-        self.params
-            .insert("is_using_refiner".into(), json!(params.is_using_refiner));
-        Ok(())
+    pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
+        unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
         if params.list_size <= 0 {
@@ -649,9 +607,21 @@ impl GroupBySearchQuery {
                 "DiskANN list_size must be positive",
             ));
         }
-        self.params.insert("type".into(), json!("diskann"));
-        self.params
-            .insert("list_size".into(), json!(params.list_size));
+        unsupported_query_controls("DiskANN")
+    }
+}
+
+pub(crate) fn unsupported_query_controls(name: &str) -> Result<()> {
+    Err(Error::not_supported(format!(
+        "{name} query controls have no execution consumer"
+    )))
+}
+
+pub(crate) fn validate_fts_query_controls(params: FtsQueryParams) -> Result<()> {
+    let FtsQueryParams { default_operator } = params;
+    if default_operator.is_some() {
+        unsupported_query_controls("FTS operator")
+    } else {
         Ok(())
     }
 }

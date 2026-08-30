@@ -1,6 +1,5 @@
 //! Collection query, fetch, and iterator APIs.
 
-use super::query_contract::schema_index_params;
 use super::query_engine::{count_to_f64, execute_query, normalize_scores, score_to_f32, sort_docs};
 use super::Collection;
 use crate::doc::Doc;
@@ -9,7 +8,6 @@ use crate::iterator::DocIterator;
 use crate::multi_query::{MultiQuery, RerankMethod};
 use crate::query::{GroupBySearchQuery, SearchQuery};
 use crate::stats::{QueryKind, QueryObservation};
-use crate::types::IndexType;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -20,14 +18,9 @@ impl Collection {
         let (schema, docs, _revision, stats) = self.snapshot_state()?;
         let result = execute_query(&schema, &docs, query)?;
         let has_fts = query.fts.is_some();
-        let has_ann = schema_index_params(&schema, &query.field_name).is_some_and(|params| {
-            params.index_type.is_vector_index() && params.index_type != IndexType::Flat
-        });
         stats.record_query(QueryObservation {
             kind: if has_fts {
                 QueryKind::Fts
-            } else if has_ann {
-                QueryKind::Ann
             } else {
                 QueryKind::Exact
             },
@@ -99,8 +92,8 @@ impl Collection {
             .map_err(|_| Error::invalid_argument("multi-query topk must be non-negative"))?;
         output.truncate(topk);
         stats.record_query(QueryObservation {
-            kind: if query.queries.len() > 1 {
-                QueryKind::Ann
+            kind: if query.queries.iter().any(|branch| branch.fts.is_some()) {
+                QueryKind::Fts
             } else {
                 QueryKind::Exact
             },

@@ -23,7 +23,10 @@ The engine-specific design and gates are in
 
 The current implementation is a prototype. The collection query path is an
 exact-scan correctness oracle; HNSW, IVF, DiskANN, and indexed FTS are not yet
-implemented and are not advertised as active indexes.
+implemented and are not advertised as active indexes. Only Flat vector
+configuration is reported as a ready index, because it directly executes over
+the authoritative document snapshot; scan-time FTS tokenizer configuration is
+not reported as a built index.
 
 `zvec-core` is a private algorithm dependency. It is not re-exported through
 the public API, so callers depend only on the A3S-owned collection, schema,
@@ -55,7 +58,7 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 29 passing unit and integration tests plus four
+The current baseline has 37 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision.
@@ -77,8 +80,11 @@ later process reconfiguration does not change an active handle.
 Memory/thread/logging controls, selectable I/O backends, mmap/buffer/segment
 knobs, and their placeholder types are not exposed until distinct bounded
 implementations exist. Compile-fail doctests guard this boundary. Future index
-and query tuning fields remain schema contracts and are tracked separately in
-the roadmap until their execution paths fail explicitly or are implemented.
+descriptors remain constructible for adapter compatibility, but attaching or
+building them returns `NotSupported`. Future query setters return
+`NotSupported` without mutating the query, and deserialized future or unknown
+parameters are rejected again at execution. Non-zero schema segment sizing and
+schema-evolution concurrency are rejected until they have execution owners.
 
 ## Platform policy
 

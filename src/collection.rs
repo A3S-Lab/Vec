@@ -15,6 +15,7 @@ use crate::schema::{
 pub use crate::stats::IndexStat;
 use crate::stats::{StatsRegistry, StatsSnapshot};
 use crate::storage::{StorageHandle, WalOperation};
+use crate::types::IndexType;
 use configuration::options_config;
 use query_engine::{matches_filter, parse_filter_expression};
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
 use validation::{
-    merge_patch, normalize_doc, parse_default_expression, prepare_mutation_batch, runtime_indexes,
-    validate_doc,
+    merge_patch, normalize_doc, parse_default_expression, prepare_mutation_batch, validate_doc,
 };
 
 /// Supported options for creating or opening a collection.
@@ -103,13 +103,6 @@ pub struct CollectionStats {
 }
 
 #[derive(Debug, Clone)]
-struct RuntimeIndex {
-    params: IndexParams,
-    source_revision: u64,
-    document_count: u64,
-}
-
-#[derive(Debug, Clone)]
 struct CollectionState {
     path: PathBuf,
     schema: CollectionSchema,
@@ -117,7 +110,6 @@ struct CollectionState {
     revision: u64,
     options: CollectionOptions,
     config: ConfigBuilder,
-    indexes: BTreeMap<String, RuntimeIndex>,
     stats: Arc<StatsRegistry>,
 }
 
@@ -152,7 +144,6 @@ impl Collection {
             revision: 0,
             options,
             config,
-            indexes: runtime_indexes(schema, 0, 0),
             stats: Arc::new(StatsRegistry::default()),
         };
         Ok(Self {
@@ -203,7 +194,6 @@ impl Collection {
             }
         }
         let docs = recovered_docs;
-        let document_count = docs.len() as u64;
         let state = CollectionState {
             path: PathBuf::from(path),
             schema: schema.clone(),
@@ -211,7 +201,6 @@ impl Collection {
             revision,
             options,
             config,
-            indexes: runtime_indexes(&schema, revision, document_count),
             stats: Arc::new(StatsRegistry::default()),
         };
         Ok(Self {
@@ -313,23 +302,22 @@ impl Collection {
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
         let indexes = state
-            .indexes
+            .schema
+            .vectors
             .iter()
-            .map(|(name, index)| IndexStat {
-                name: name.clone(),
-                index_type: index.params.index_type,
-                completeness: if index.source_revision == state.revision {
-                    1.0
-                } else {
-                    0.0
-                },
-                source_revision: index.source_revision,
-                document_count: index.document_count,
-                state: if index.source_revision == state.revision {
-                    "ready".into()
-                } else {
-                    "stale".into()
-                },
+            .filter(|field| {
+                field
+                    .index_params
+                    .as_ref()
+                    .is_some_and(|params| params.index_type == IndexType::Flat)
+            })
+            .map(|field| IndexStat {
+                name: field.name.clone(),
+                index_type: IndexType::Flat,
+                completeness: 1.0,
+                source_revision: state.revision,
+                document_count: state.docs.len() as u64,
+                state: "ready".into(),
             })
             .collect();
         Ok(CollectionStats {
@@ -575,19 +563,15 @@ impl Collection {
             .write()
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
         ensure_writable(&state.options)?;
+        state.schema.check_index_configuration(field_name, params)?;
+        if params.index_type != IndexType::Flat {
+            return Err(Error::not_supported(format!(
+                "{:?} physical index creation is not implemented",
+                params.index_type
+            )));
+        }
         let mut next = state.clone();
-        next.schema
-            .add_index(field_name, &params.marked_built(true))?;
-        let count = next.docs.len() as u64;
-        let revision = next_revision(state.revision)?;
-        next.indexes.insert(
-            field_name.to_string(),
-            RuntimeIndex {
-                params: params.marked_built(true),
-                source_revision: revision,
-                document_count: count,
-            },
-        );
+        next.schema.add_index(field_name, params)?;
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -612,7 +596,6 @@ impl Collection {
         ensure_writable(&state.options)?;
         let mut next = state.clone();
         next.schema.drop_index(field_name)?;
-        next.indexes.remove(field_name);
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -629,30 +612,15 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let state = self
             .inner
             .state
-            .write()
+            .read()
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
         ensure_writable(&state.options)?;
-        let mut next = state.clone();
-        let revision = next_revision(next.revision)?;
-        let document_count = next.docs.len() as u64;
-        for index in next.indexes.values_mut() {
-            index.source_revision = revision;
-            index.document_count = document_count;
-        }
-        next.revision = revision;
-        let schema = next.schema.clone();
-        let docs: Vec<Doc> = next.docs.values().cloned().collect();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        storage.checkpoint(&schema, &docs, revision, true)?;
-        *state = next;
-        Ok(())
+        Err(Error::not_supported(
+            "physical index optimization is not implemented",
+        ))
     }
 
     pub fn add_column(&self, field_schema: &FieldSchema, default_expr: Option<&str>) -> Result<()> {
@@ -663,9 +631,14 @@ impl Collection {
         &self,
         field_schema: &FieldSchema,
         default_expr: Option<&str>,
-        _option: AddColumnOption,
+        option: AddColumnOption,
     ) -> Result<()> {
         self.ensure_open()?;
+        if option.concurrency != 0 {
+            return Err(Error::not_supported(
+                "add-column concurrency has no parallel schema executor",
+            ));
+        }
         let _writer = self
             .inner
             .writer
@@ -789,9 +762,14 @@ impl Collection {
     pub fn alter_column(
         &self,
         field_schema: &FieldSchema,
-        _option: AlterColumnOption,
+        option: AlterColumnOption,
     ) -> Result<()> {
         self.ensure_open()?;
+        if option.concurrency != 0 {
+            return Err(Error::not_supported(
+                "alter-column concurrency has no parallel schema executor",
+            ));
+        }
         let _writer = self
             .inner
             .writer

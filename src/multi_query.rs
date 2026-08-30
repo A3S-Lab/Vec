@@ -2,8 +2,8 @@
 
 use crate::error::{Error, Result};
 use crate::query::{
-    DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, HnswQueryParams, IvfQueryParams,
-    IvfRabitqQueryParams, SearchQuery,
+    unsupported_query_controls, validate_fts_query_controls, DiskannQueryParams, FlatQueryParams,
+    Fts, FtsQueryParams, HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,60 +125,17 @@ impl SubQuery {
         self.sparse_vector = Some(indices.into_iter().zip(values.iter().copied()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
-        self.params.insert("type".into(), serde_json::json!("hnsw"));
-        self.params
-            .insert("ef".into(), serde_json::json!(params.ef));
-        self.params
-            .insert("radius".into(), serde_json::json!(params.radius));
-        self.params
-            .insert("is_linear".into(), serde_json::json!(params.is_linear));
-        self.params.insert(
-            "is_using_refiner".into(),
-            serde_json::json!(params.is_using_refiner),
-        );
-        Ok(())
+    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
+        unsupported_query_controls("HNSW")
     }
-    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
-        self.params.insert("type".into(), serde_json::json!("ivf"));
-        self.params
-            .insert("nprobe".into(), serde_json::json!(params.nprobe));
-        self.params.insert(
-            "is_using_refiner".into(),
-            serde_json::json!(params.is_using_refiner),
-        );
-        self.params.insert(
-            "scale_factor".into(),
-            serde_json::json!(params.scale_factor),
-        );
-        Ok(())
+    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF")
     }
-    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
-        self.params
-            .insert("type".into(), serde_json::json!("ivf_rabitq"));
-        self.params
-            .insert("nprobe".into(), serde_json::json!(params.nprobe));
-        self.params
-            .insert("radius".into(), serde_json::json!(params.radius));
-        self.params
-            .insert("is_linear".into(), serde_json::json!(params.is_linear));
-        self.params.insert(
-            "is_using_refiner".into(),
-            serde_json::json!(params.is_using_refiner),
-        );
-        Ok(())
+    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
+        unsupported_query_controls("IVF RaBitQ")
     }
-    pub fn set_flat_params(&mut self, params: FlatQueryParams) -> Result<()> {
-        self.params.insert("type".into(), serde_json::json!("flat"));
-        self.params.insert(
-            "is_using_refiner".into(),
-            serde_json::json!(params.is_using_refiner),
-        );
-        self.params.insert(
-            "scale_factor".into(),
-            serde_json::json!(params.scale_factor),
-        );
-        Ok(())
+    pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
+        unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
         if params.list_size <= 0 {
@@ -186,17 +143,10 @@ impl SubQuery {
                 "DiskANN list_size must be positive",
             ));
         }
-        self.params
-            .insert("type".into(), serde_json::json!("diskann"));
-        self.params
-            .insert("list_size".into(), serde_json::json!(params.list_size));
-        Ok(())
+        unsupported_query_controls("DiskANN")
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
-        if let Some(op) = params.default_operator {
-            self.params.insert("operator".into(), serde_json::json!(op));
-        }
-        Ok(())
+        validate_fts_query_controls(params)
     }
     pub fn set_fts(&mut self, fts: &Fts) -> Result<()> {
         if fts.query_string.is_none() && fts.match_string.is_none() {

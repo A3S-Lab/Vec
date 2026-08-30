@@ -6,9 +6,9 @@
 //! runtime dependency, which makes the same source usable on Intel macOS 12,
 //! Apple Silicon, Linux, and Windows.
 //!
-//! A collection's document snapshot and WAL are authoritative.  ANN, scalar,
-//! and full-text indexes are derived data and are rebuilt or safely bypassed
-//! when their generation does not match the snapshot.
+//! A collection's document snapshot and WAL are authoritative. Flat queries
+//! execute against that snapshot. ANN, scalar-index, and indexed-FTS controls
+//! return typed unsupported errors until real derived implementations exist.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
