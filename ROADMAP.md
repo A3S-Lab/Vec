@@ -35,7 +35,7 @@ tested. Missing, typed-null, and JSON-null behavior is checked for every scalar
 and array type, and numeric scalar/array conversion is checked at both extrema
 and beyond each representable boundary. Future index/query/schema tuning now
 fails explicitly unless it has an exact execution consumer; Flat and scan FTS
-telemetry no longer claim ANN or a built FTS index. The baseline has 66 passing
+telemetry no longer claim ANN or a built FTS index. The baseline has 71 passing
 unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
@@ -49,11 +49,14 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
-every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
-macOS 12 Intel runtime smoke remain open. Approximate index and indexed-FTS
-names are schema/query contracts only; the unused exact-facade implementations
-were removed so they cannot be mistaken for shipped ANN behaviour.
+Phase 3's portable implementation gate is complete: per-handle deterministic
+fault injection covers all 18 write/sync/rename/prune boundaries, including
+WAL and snapshot cleanup; lock conflicts include bounded owner metadata; and
+both fixed-seed mutation fuzzing and a libFuzzer/AddressSanitizer smoke target
+exercise recovery. The actual macOS 12 Intel runtime smoke remains external
+runner work. Approximate index and indexed-FTS names are schema/query contracts
+only; the unused exact-facade implementations were removed so they cannot be
+mistaken for shipped ANN behaviour.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -185,9 +188,22 @@ were removed so they cannot be mistaken for shipped ANN behaviour.
   rename, and drop; corruption tests for checksum mismatch, committed
   truncation, partial uncommitted tails, orphan snapshots, and oversized
   snapshots.
-- Open: fault-injection hooks, every-boundary crash matrix, explicit WAL-prune
-  crash evidence, stale-lock owner diagnostics, recovery fuzzing, and the
-  macOS 12 Intel runtime smoke.
+- Completed: a handle-local injector names all 18 WAL, snapshot, manifest, and
+  cleanup boundaries. Crash-equivalent tests prove the manifest commit point,
+  replacement of uncommitted WAL tails, orphan-candidate isolation, and safe
+  interruption before/after WAL and snapshot removal. Pruned directories are
+  synchronized where the platform supports directory fsync.
+- Completed: the lock file records a bounded PID/acquisition-time diagnostic
+  after the kernel lock succeeds. Contention reports that record, while stale
+  or malformed metadata never becomes lock authority and is replaced by the
+  next exclusive owner.
+- Completed: fixed-seed recovery mutation fuzzing flips every persisted byte,
+  truncates and appends structural cases, and runs 256 combined mutations per
+  manifest/snapshot/WAL file. A separate cargo-fuzz target exercises the same
+  public recovery boundary under libFuzzer and AddressSanitizer; CI runs 256
+  smoke iterations.
+- Open: the actual macOS 12 Intel runtime smoke requires a self-hosted or
+  external runner.
 
 ## Phase 4 — Memory ANN indexes
 
