@@ -18,10 +18,12 @@ validated before execution or persistence. Storage format version 2 provides
 generation-specific snapshots, manifest-committed WAL byte boundaries,
 monotonic DML/schema revisions, read-only lifecycle semantics, and bounded
 recovery reads. The external algorithm kernel is private and has a negative
-compile-time API fixture. The baseline has 26 passing unit/integration tests
-plus that compile-fail doctest in each of the default, no-default-feature, and
-all-feature configurations. Formatting, default/all-feature Clippy with
-`-D warnings`, and rustdoc are green.
+compile-time API fixture. Inert process/collection controls have been removed;
+the retained durability policy and WAL checkpoint limits are connected and
+tested. The baseline has 29 passing unit/integration tests plus four compile-
+fail doctests in each of the default, no-default-feature, and all-feature
+configurations. Formatting, default/all-feature Clippy with `-D warnings`, and
+rustdoc are green.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
@@ -70,8 +72,12 @@ cannot be mistaken for shipped ANN behaviour.
   validation for replacement upserts.
 - Completed: the `zvec-core` implementation dependency is no longer re-exported
   through the A3S public surface; a compile-fail doctest guards the boundary.
+- Partially completed: removed inert memory/thread/logging/I/O/mmap/buffer/
+  segment controls, fixed process-versus-collection durability precedence, and
+  added execution tests for WAL operation/byte checkpoint thresholds.
 - Open: encoded binary and quantized round trips/error bounds, broader
-  nullability/overflow fixtures, and the supported-platform matrix required by
+  nullability/overflow fixtures, truthful handling of future index/query and
+  schema-evolution tuning knobs, and the supported-platform matrix required by
   the full Phase 1 exit gate.
 
 ## Phase 2 — Correct in-memory collection

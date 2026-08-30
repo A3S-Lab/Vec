@@ -256,49 +256,6 @@ impl fmt::Display for QuantizeType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(u32)]
-pub enum LogLevel {
-    Debug = 0,
-    Info = 1,
-    Warn = 2,
-    Error = 3,
-    Fatal = 4,
-}
-
-impl From<u32> for LogLevel {
-    fn from(value: u32) -> Self {
-        match value {
-            1 => Self::Info,
-            2 => Self::Warn,
-            3 => Self::Error,
-            4 => Self::Fatal,
-            _ => Self::Debug,
-        }
-    }
-}
-
-impl From<LogLevel> for u32 {
-    fn from(value: LogLevel) -> Self {
-        value as u32
-    }
-}
-
-impl fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-/// Log destination.  The core does not install a global logger; adapters may
-/// use this value when configuring their own logger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum LogType {
-    Console,
-    File,
-    Custom,
-}
-
 /// DML operation kind used by write-ahead records and telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DocOperator {

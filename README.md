@@ -55,14 +55,30 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 26 passing unit and integration tests in each of the
-default, no-default-feature, and all-feature configurations. Strict Clippy and
-rustdoc warning gates pass for the same source revision.
+The current baseline has 29 passing unit and integration tests plus four
+compile-fail API-boundary doctests in each of the default, no-default-feature,
+and all-feature configurations. Strict Clippy and rustdoc warning gates pass
+for the same source revision.
 
 Format version 1 was never released and is not opened by the version 2 reader.
 Fault-injection hooks, WAL-pruning crash tests, real approximate indexes,
 indexed FTS, quantized/binary search semantics, fuzzing, and the full platform
 matrix remain roadmap work.
+
+## Configuration policy
+
+Only controls with an execution consumer are public. `ConfigBuilder` sets the
+process durability default and the WAL operation/byte checkpoint thresholds;
+`CollectionOptions` exposes read-only mode and an optional per-collection
+durability override. A collection without an override inherits the process
+durability policy and captures it when the collection is created or opened;
+later process reconfiguration does not change an active handle.
+
+Memory/thread/logging controls, selectable I/O backends, mmap/buffer/segment
+knobs, and their placeholder types are not exposed until distinct bounded
+implementations exist. Compile-fail doctests guard this boundary. Future index
+and query tuning fields remain schema contracts and are tracked separately in
+the roadmap until their execution paths fail explicitly or are implemented.
 
 ## Platform policy
 

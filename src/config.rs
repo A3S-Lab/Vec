@@ -1,6 +1,6 @@
 //! Process-wide configuration and lifecycle.
 
-use crate::error::{Error, ErrorCode, Result};
+use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 
@@ -16,70 +16,44 @@ pub enum Durability {
     Manual,
 }
 
-/// Portable I/O policy.  `Portable` is deliberately the default and works on
-/// Intel macOS 12 without optional kernel or SIMD APIs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum IoBackend {
-    #[default]
-    Portable,
-    Pread,
-    Mmap,
-}
-
-/// Configuration collected before library initialization.
+/// Supported process-wide durability configuration.
+///
+/// Resource, logging, and I/O-backend controls are intentionally absent until
+/// they have an implemented execution path:
+///
+/// ```compile_fail
+/// use a3s_vec::ConfigBuilder;
+///
+/// let _ = ConfigBuilder::new()
+///     .memory_limit(1024)
+///     .num_threads(2)
+///     .enable_console_log(true)
+///     .fts_brute_force_by_keys_ratio(0.5);
+/// ```
+///
+/// ```compile_fail
+/// use a3s_vec::{ConfigBuilder, IoBackend, LogLevel, LogType};
+///
+/// let _ = (ConfigBuilder::new().io_backend(IoBackend::Mmap), LogLevel::Info, LogType::Console);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigBuilder {
-    pub memory_limit: u64,
-    pub num_threads: u32,
-    pub enable_console_log: bool,
-    pub fts_brute_force_by_keys_ratio: Option<f32>,
-    pub durability: Durability,
-    pub io_backend: IoBackend,
-    pub wal_max_ops: Option<u64>,
-    pub wal_max_bytes: Option<u64>,
+    pub(crate) durability: Durability,
+    pub(crate) wal_max_ops: Option<u64>,
+    pub(crate) wal_max_bytes: Option<u64>,
 }
 
 impl ConfigBuilder {
     pub fn new() -> Self {
         Self {
-            memory_limit: 0,
-            num_threads: 0,
-            enable_console_log: false,
-            fts_brute_force_by_keys_ratio: None,
             durability: Durability::Always,
-            io_backend: IoBackend::Portable,
             wal_max_ops: None,
             wal_max_bytes: None,
         }
     }
 
-    pub fn memory_limit(mut self, bytes: u64) -> Self {
-        self.memory_limit = bytes;
-        self
-    }
-
-    pub fn num_threads(mut self, count: u32) -> Self {
-        self.num_threads = count;
-        self
-    }
-
-    pub fn enable_console_log(mut self, enable: bool) -> Self {
-        self.enable_console_log = enable;
-        self
-    }
-
-    pub fn fts_brute_force_by_keys_ratio(mut self, ratio: f32) -> Self {
-        self.fts_brute_force_by_keys_ratio = Some(ratio);
-        self
-    }
-
     pub fn durability(mut self, durability: Durability) -> Self {
         self.durability = durability;
-        self
-    }
-
-    pub fn io_backend(mut self, backend: IoBackend) -> Self {
-        self.io_backend = backend;
         self
     }
 
@@ -116,18 +90,10 @@ pub fn default_config() -> ConfigBuilder {
     ConfigBuilder::default()
 }
 
-/// Initializes the process-wide runtime.  Initialization is idempotent; a
-/// later call replaces configuration only when no collection is doing work.
+/// Sets the process defaults captured by collections created or opened after
+/// this call. Existing collection handles retain their resolved configuration.
 pub fn initialize(config: Option<&ConfigBuilder>) -> Result<()> {
     let chosen = config.cloned().unwrap_or_default();
-    if let Some(ratio) = chosen.fts_brute_force_by_keys_ratio {
-        if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "fts brute-force ratio must be finite and between 0 and 1",
-            ));
-        }
-    }
     *config_cell()
         .write()
         .map_err(|_| Error::internal("configuration lock poisoned"))? = chosen;
@@ -152,8 +118,11 @@ pub(crate) fn current_config() -> ConfigBuilder {
         .map_or_else(|_| ConfigBuilder::default(), |v| v.clone())
 }
 
-/// Marks the runtime initialized and releases process-level resources.
+/// Resets process defaults and marks the runtime uninitialized.
 pub fn shutdown() -> Result<()> {
+    *config_cell()
+        .write()
+        .map_err(|_| Error::internal("configuration lock poisoned"))? = ConfigBuilder::default();
     INITIALIZED.store(false, std::sync::atomic::Ordering::Release);
     Ok(())
 }
@@ -202,14 +171,12 @@ mod tests {
     fn defaults_are_portable() {
         let cfg = ConfigBuilder::default();
         assert_eq!(cfg.durability, Durability::Always);
-        assert_eq!(cfg.io_backend, IoBackend::Portable);
     }
 
     #[test]
-    fn invalid_ratio_is_rejected() {
-        let result = initialize(Some(
-            &ConfigBuilder::default().fts_brute_force_by_keys_ratio(2.0),
-        ));
-        assert!(result.is_err());
+    fn zero_checkpoint_limits_are_disabled() {
+        let cfg = ConfigBuilder::default().wal_max_ops(0).wal_max_bytes(0);
+        assert_eq!(cfg.wal_max_ops, None);
+        assert_eq!(cfg.wal_max_bytes, None);
     }
 }

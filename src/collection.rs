@@ -1,11 +1,12 @@
 //! Thread-safe collection handle and transaction coordinator.
 
+mod configuration;
 mod query_api;
 mod query_contract;
 mod query_engine;
 mod validation;
 
-use crate::config::{current_config, ConfigBuilder, Durability, IoBackend};
+use crate::config::{ConfigBuilder, Durability};
 use crate::doc::Doc;
 use crate::error::{Error, ErrorCode, Result};
 use crate::schema::{
@@ -14,6 +15,7 @@ use crate::schema::{
 pub use crate::stats::IndexStat;
 use crate::stats::{StatsRegistry, StatsSnapshot};
 use crate::storage::{StorageHandle, WalOperation};
+use configuration::options_config;
 use query_engine::{matches_filter, parse_filter_expression};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -25,34 +27,28 @@ use validation::{
     validate_doc,
 };
 
-/// Options for creating or opening a collection.
-#[derive(Debug, Clone)]
+/// Supported options for creating or opening a collection.
+///
+/// Storage layout and I/O backend knobs remain outside the public contract
+/// until distinct implementations exist:
+///
+/// ```compile_fail
+/// use a3s_vec::CollectionOptions;
+///
+/// let mut options = CollectionOptions::new().unwrap();
+/// options.set_enable_mmap(false).unwrap();
+/// options.set_max_buffer_size(1024).unwrap();
+/// options.set_segment_num(2).unwrap();
+/// ```
+#[derive(Debug, Clone, Default)]
 pub struct CollectionOptions {
-    pub read_only: bool,
-    pub enable_mmap: bool,
-    pub max_buffer_size: u64,
-    pub segment_num: u32,
-    pub durability: Durability,
-    pub io_backend: IoBackend,
+    read_only: bool,
+    durability: Option<Durability>,
 }
 
 impl CollectionOptions {
     pub fn new() -> Result<Self> {
         Ok(Self::default())
-    }
-    pub fn set_enable_mmap(&mut self, enable: bool) -> Result<()> {
-        self.enable_mmap = enable;
-        Ok(())
-    }
-    pub fn enable_mmap(&self) -> bool {
-        self.enable_mmap
-    }
-    pub fn set_max_buffer_size(&mut self, size: u64) -> Result<()> {
-        self.max_buffer_size = size;
-        Ok(())
-    }
-    pub fn max_buffer_size(&self) -> u64 {
-        self.max_buffer_size
     }
     pub fn set_read_only(&mut self, read_only: bool) -> Result<()> {
         self.read_only = read_only;
@@ -61,33 +57,12 @@ impl CollectionOptions {
     pub fn read_only(&self) -> bool {
         self.read_only
     }
-    pub fn set_segment_num(&mut self, count: u32) -> Result<()> {
-        if count > 1024 {
-            return Err(Error::invalid_argument("segment_num must be at most 1024"));
-        }
-        self.segment_num = count;
-        Ok(())
-    }
     pub fn set_durability(&mut self, value: Durability) -> Result<()> {
-        self.durability = value;
+        self.durability = Some(value);
         Ok(())
     }
-    pub fn set_io_backend(&mut self, value: IoBackend) -> Result<()> {
-        self.io_backend = value;
-        Ok(())
-    }
-}
-
-impl Default for CollectionOptions {
-    fn default() -> Self {
-        Self {
-            read_only: false,
-            enable_mmap: true,
-            max_buffer_size: 0,
-            segment_num: 0,
-            durability: Durability::Always,
-            io_backend: IoBackend::Portable,
-        }
+    pub fn durability(&self) -> Option<Durability> {
+        self.durability
     }
 }
 
@@ -141,6 +116,7 @@ struct CollectionState {
     docs: BTreeMap<String, Doc>,
     revision: u64,
     options: CollectionOptions,
+    config: ConfigBuilder,
     indexes: BTreeMap<String, RuntimeIndex>,
     stats: Arc<StatsRegistry>,
 }
@@ -166,6 +142,7 @@ impl Collection {
         options: Option<&CollectionOptions>,
     ) -> Result<Self> {
         let options = options.cloned().unwrap_or_default();
+        let config = options_config(&options);
         let root = Path::new(path);
         let storage = StorageHandle::create(root, schema, options.read_only)?;
         let state = CollectionState {
@@ -174,6 +151,7 @@ impl Collection {
             docs: BTreeMap::new(),
             revision: 0,
             options,
+            config,
             indexes: runtime_indexes(schema, 0, 0),
             stats: Arc::new(StatsRegistry::default()),
         };
@@ -197,6 +175,7 @@ impl Collection {
 
     pub fn open(path: &str, options: Option<&CollectionOptions>) -> Result<Self> {
         let options = options.cloned().unwrap_or_default();
+        let config = options_config(&options);
         let (storage, schema, docs) = StorageHandle::open(Path::new(path), options.read_only)?;
         if schema.name.trim().is_empty() {
             return Err(Error::internal("persisted collection has an empty name"));
@@ -231,6 +210,7 @@ impl Collection {
             docs,
             revision,
             options,
+            config,
             indexes: runtime_indexes(&schema, revision, document_count),
             stats: Arc::new(StatsRegistry::default()),
         };
@@ -456,7 +436,7 @@ impl Collection {
             }
         }
         if !ids.is_empty() {
-            let config = options_config(&state.options);
+            let config = state.config.clone();
             let revision = next_revision(state.revision)?;
             let mut next_docs = state.docs.clone();
             for id in &ids {
@@ -500,7 +480,7 @@ impl Collection {
             parse_filter_expression(filter)?;
             return Ok(());
         }
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let revision = next_revision(state.revision)?;
         let mut next_docs = state.docs.clone();
         for id in &ids {
@@ -548,7 +528,7 @@ impl Collection {
                 docs: accepted.clone(),
             },
         };
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let revision = next_revision(state.revision)?;
         let mut next_docs = state.docs.clone();
         for doc in &accepted {
@@ -608,7 +588,7 @@ impl Collection {
                 document_count: count,
             },
         );
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -633,7 +613,7 @@ impl Collection {
         let mut next = state.clone();
         next.schema.drop_index(field_name)?;
         next.indexes.remove(field_name);
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -710,7 +690,7 @@ impl Collection {
         for doc in next.docs.values() {
             validate_doc(&next.schema, doc, true)?;
         }
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -737,7 +717,7 @@ impl Collection {
         for doc in next.docs.values_mut() {
             doc.remove_field(name)?;
         }
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -797,7 +777,7 @@ impl Collection {
                 doc.set_vector_value(new_name, value)?;
             }
         }
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -837,7 +817,7 @@ impl Collection {
             ));
         }
         *target = field_schema.clone();
-        let config = options_config(&state.options);
+        let config = state.config.clone();
         let mut storage = self
             .inner
             .storage
@@ -874,13 +854,6 @@ enum Mutation {
     Insert,
     Update,
     Upsert,
-}
-
-fn options_config(options: &CollectionOptions) -> ConfigBuilder {
-    let mut config = current_config();
-    config.durability = options.durability;
-    config.io_backend = options.io_backend;
-    config
 }
 
 fn ensure_writable(options: &CollectionOptions) -> Result<()> {
