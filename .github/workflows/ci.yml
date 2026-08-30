@@ -60,7 +60,7 @@ jobs:
             deployment_target: ""
           - name: macOS arm64
             os: macos-15
-            deployment_target: ""
+            deployment_target: "15.0"
           - name: macOS Intel
             os: macos-15-intel
             deployment_target: "12.0"

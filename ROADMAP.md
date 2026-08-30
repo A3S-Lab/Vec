@@ -33,7 +33,7 @@ collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
 tested. Future index/query/schema tuning now fails explicitly unless it has an
 exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
-built FTS index. The baseline has 62 passing unit/integration tests plus four
+built FTS index. The baseline has 63 passing unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
 `-D warnings`, and rustdoc are green. The full default-feature suite also
