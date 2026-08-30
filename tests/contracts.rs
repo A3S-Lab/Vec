@@ -176,17 +176,22 @@ fn json_adapter_values_are_typed_or_rejected_at_the_write_boundary() {
     invalid
         .set_field_value("age", FieldValue::Json(json!("not an integer")))
         .expect("adapter JSON must be accepted by the document container");
+    let mut invalid_null = valid_doc("invalid-null");
+    invalid_null
+        .set_field_value("age", FieldValue::Json(json!(null)))
+        .expect("adapter JSON null must be accepted by the document container");
     let mut compatible = valid_doc("compatible");
     compatible
         .set_field_value("age", FieldValue::Json(json!(43)))
         .expect("adapter JSON must be accepted by the document container");
 
     let result = collection
-        .insert(&[&invalid, &compatible])
+        .insert(&[&invalid, &invalid_null, &compatible])
         .expect("batch result must be returned");
     assert_eq!(result.success_count, 1);
-    assert_eq!(result.error_count, 1);
+    assert_eq!(result.error_count, 2);
     assert_eq!(result.results[0].code, ErrorCode::InvalidArgument);
+    assert_eq!(result.results[1].code, ErrorCode::InvalidArgument);
 
     let stored = collection
         .fetch(&["compatible"])
