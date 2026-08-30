@@ -70,6 +70,11 @@ pub(super) fn validate_query_contract<'a>(
         if !radius.is_finite() {
             return Err(Error::invalid_argument("query radius must be finite"));
         }
+        if radius < 0.0 && query_metric(&field, query)? == MetricType::L2 {
+            return Err(Error::invalid_argument(
+                "L2 query radius must be non-negative",
+            ));
+        }
     }
     Ok(field)
 }

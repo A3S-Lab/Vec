@@ -76,6 +76,8 @@ crates/vec/
 │       └── tests.rs           # storage-boundary fault simulations
 └── tests/
     ├── contracts.rs           # typed query/write contract coverage
+    ├── differential_fts.rs    # independent scan-BM25 reference
+    ├── differential_oracle.rs # independent dense/sparse reference
     ├── durability.rs          # public lifecycle/restart coverage
     ├── execution_contracts.rs # executable/unsupported option matrix
     └── vector_codecs.rs       # native codec/metric/storage contracts
@@ -160,8 +162,10 @@ variant into another schema type.
 
 The exact oracle decodes native numeric vectors into `f64` intermediates for
 L2, inner product, cosine, and MIPS-L2. This preserves FP64 coordinates through
-accumulation; only the public document score is checked and narrowed to `f32`.
-Binary search has no exact consumer yet and returns `NotSupported`. Future
+accumulation and result ordering; only after exact ranking is the public
+document score checked and narrowed to `f32`. L2 radius is a non-negative
+distance and is compared with the negative squared-distance score. Binary
+search has no exact consumer yet and returns `NotSupported`. Future
 scale-bearing FP16/INT8/packed-INT4 quantizers are derived index state with
 full-vector refinement; their options remain rejected until Phase 4 provides
 that implementation and re-ranking evidence.
@@ -245,6 +249,13 @@ Standalone descriptors for future indexes remain serializable for adapters,
 but attaching them to a schema returns `NotSupported`. Schema-attached Flat
 metrics and FTS tokenizers select only their exact scan consumers.
 
+Scan FTS computes BM25 corpus statistics only over documents that contain the
+queried text field. Simple token expressions are supported. Boolean, phrase,
+wildcard, and fielded `query_string` syntax fails with `NotSupported` instead
+of being approximated as an unrelated bag-of-words query; selecting both
+`match_string` and `query_string` is an invalid ambiguous request. Phase 5 owns
+those richer semantics and the indexed implementation.
+
 ## 6. Query pipeline
 
 ```text
@@ -254,9 +265,9 @@ Request
   → parse filter and FTS expressions
   → execute exact dense, sparse, and/or scan-FTS routes
   → fuse exact branch results when requested
-  → apply radius, top-k, and group-by limits
+  → apply radius, exact-score ordering, top-k, and group-by limits
   → project requested fields/vectors
-  → deterministic sort (score, then primary key)
+  → expose the checked `f32` score after deterministic exact ordering
 ```
 
 Malformed filters, unsupported parameter combinations, dimension mismatches,

@@ -57,8 +57,18 @@ A schema accepts only its exact physical vector type. These native integer
 forms are not scale-bearing ANN quantizers and INT4 is not yet nibble-packed.
 All numeric dense and sparse forms execute the four exact metrics. Scoring uses
 `f64` intermediates—including FP64 source vectors—and narrows only the public
-result score to `f32` after a checked range conversion. Binary search remains
+result score to `f32` after exact ranking and a checked range conversion.
+Deterministic differential fixtures compare dense and sparse filtering,
+radius, top-k, score, and primary-key ordering with an independent reference
+scan. Euclidean radius is non-negative by contract. Binary search remains
 explicitly unsupported.
+
+Scan-time FTS has an independent BM25 fixture and defines its corpus as the
+documents that contain the queried text field; nullable documents without that
+field do not change document frequency or average length. Plain token
+`match_string` and `query_string` expressions are supported. Boolean, phrase,
+wildcard, and fielded query-string syntax returns `NotSupported` until Phase 5
+implements it, and providing both expression forms is rejected as ambiguous.
 
 The public contract now also validates every query before exact execution:
 dense dimensions are checked across all numeric vector types and metrics,
@@ -69,7 +79,7 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 48 passing unit and integration tests plus four
+The current baseline has 57 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision. The default test suite also passes on the

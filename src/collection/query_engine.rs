@@ -10,6 +10,20 @@ use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+struct ScoredDoc {
+    exact_score: f64,
+    doc: Doc,
+}
+
+impl ScoredDoc {
+    fn new(exact_score: f64, doc: Doc) -> Result<Self> {
+        if !exact_score.is_finite() {
+            return Err(Error::resource_exhausted("query score is not finite"));
+        }
+        Ok(Self { exact_score, doc })
+    }
+}
+
 /// Query scores are exposed as `f32`; reject non-finite and out-of-range
 /// intermediates before performing the intentional narrowing cast.
 #[allow(clippy::cast_possible_truncation)]
@@ -79,6 +93,21 @@ pub(super) fn sort_docs(docs: &mut [Doc]) {
     });
 }
 
+fn sort_scored_docs(docs: &mut [ScoredDoc]) {
+    docs.sort_by(|left, right| {
+        right
+            .exact_score
+            .partial_cmp(&left.exact_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                left.doc
+                    .get_pk()
+                    .unwrap_or_default()
+                    .cmp(right.doc.get_pk().unwrap_or_default())
+            })
+    });
+}
+
 pub(super) fn parse_filter_expression(expression: &str) -> Result<zvec_core::filter::FilterExpr> {
     if expression.trim().is_empty() {
         return Err(Error::invalid_argument(
@@ -114,18 +143,21 @@ pub(super) fn execute_query(
     } else {
         execute_vector(docs, query, metric)?
     };
-    sort_docs(&mut scored);
+    sort_scored_docs(&mut scored);
     let topk = usize::try_from(query.topk)
         .map_err(|_| Error::invalid_argument("query topk must be positive"))?;
     scored.truncate(topk);
     let output_fields = query.output_fields.as_deref();
-    Ok(scored
+    scored
         .into_iter()
-        .map(|doc| doc.project(output_fields, query.include_vector))
-        .collect())
+        .map(|mut scored| {
+            scored.doc.set_score(score_to_f32(scored.exact_score)?)?;
+            Ok(scored.doc.project(output_fields, query.include_vector))
+        })
+        .collect()
 }
 
-fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Result<Vec<Doc>> {
+fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Result<Vec<ScoredDoc>> {
     let dense_query = if let Some(vector) = &query.vector {
         Some(vector.iter().map(|value| f64::from(*value)).collect())
     } else if let Some(id) = &query.id {
@@ -179,9 +211,7 @@ fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Resu
                 continue;
             }
         }
-        let mut copy = doc.clone();
-        copy.set_score(score_to_f32(score)?)?;
-        result.push(copy);
+        result.push(ScoredDoc::new(score, doc.clone())?);
     }
     Ok(result)
 }
@@ -236,57 +266,68 @@ fn execute_fts(
     docs: &[Doc],
     query: &SearchQuery,
     index_params: Option<&IndexParams>,
-) -> Result<Vec<Doc>> {
+) -> Result<Vec<ScoredDoc>> {
     let fts = query
         .fts
         .as_ref()
         .ok_or_else(|| Error::invalid_argument("FTS payload is missing"))?;
-    let expression = fts
-        .match_string
-        .as_deref()
-        .or(fts.query_string.as_deref())
-        .unwrap_or_default();
+    let (expression, advanced) = match (fts.match_string.as_deref(), fts.query_string.as_deref()) {
+        (Some(expression), None) => (expression, false),
+        (None, Some(expression)) => (expression, true),
+        (Some(_), Some(_)) => {
+            return Err(Error::invalid_argument(
+                "FTS query must select exactly one expression form",
+            ))
+        }
+        (None, None) => ("", false),
+    };
     if expression.trim().is_empty() {
         return Err(Error::invalid_argument("FTS query is empty"));
+    }
+    if advanced {
+        validate_simple_fts_syntax(expression)?;
     }
     let tokenizer = index_params
         .and_then(|params| params.params.get("tokenizer_name"))
         .and_then(Value::as_str)
         .unwrap_or("standard");
     validate_tokenizer(tokenizer)?;
-    let terms = fts_terms(expression, fts.query_string.is_some());
-    let total_docs = count_to_f64(docs.len().max(1));
-    let average_length = docs
+    let terms = tokenize(expression, tokenizer);
+    if terms.is_empty() {
+        return Err(Error::invalid_argument("FTS query has no searchable terms"));
+    }
+    let corpus: Vec<(&Doc, Vec<String>)> = docs
         .iter()
         .filter_map(|doc| {
-            text_value(doc, &query.field_name)
-                .map(|text| count_to_f64(tokenize(text, tokenizer).len()))
+            text_value(doc, &query.field_name).map(|text| (doc, tokenize(text, tokenizer)))
         })
+        .collect();
+    if corpus.is_empty() {
+        return Ok(Vec::new());
+    }
+    let document_count = count_to_f64(corpus.len());
+    let average_length = corpus
+        .iter()
+        .map(|(_, tokens)| count_to_f64(tokens.len()))
         .sum::<f64>()
-        / total_docs;
+        / document_count;
+    let document_frequency = document_frequencies(&corpus, &terms);
     let mut result = Vec::new();
-    for doc in docs {
+    for (doc, tokens) in corpus {
         if !matches_filter(doc, query.filter.as_deref()) {
             continue;
         }
-        let Some(text) = text_value(doc, &query.field_name) else {
-            continue;
-        };
-        let tokens = tokenize(text, tokenizer);
         let score = bm25(
             &tokens,
             &terms,
-            docs,
-            &query.field_name,
-            tokenizer,
+            &document_frequency,
+            document_count,
             average_length,
         );
         if score <= 0.0 {
             continue;
         }
-        let mut copy = doc.clone();
-        copy.set_score(score_to_f32(score)?)?;
-        result.push(copy);
+        result.push(ScoredDoc::new(score, doc.clone())?);
     }
     Ok(result)
 }
@@ -304,50 +345,42 @@ fn tokenize(text: &str, tokenizer: &str) -> Vec<String> {
     zvec_core::engine::fts::tokenize_with(text, tokenizer)
 }
 
-fn fts_terms(expression: &str, advanced: bool) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for character in expression.chars() {
-        match character {
-            '"' => {
-                quoted = !quoted;
-                if !quoted && !current.trim().is_empty() {
-                    terms.push(current.trim().to_string());
-                    current.clear();
-                }
-            }
-            value if value.is_whitespace() && !quoted => {
-                if !current.trim().is_empty() {
-                    terms.push(current.trim().to_string());
-                    current.clear();
-                }
-            }
-            value => current.push(value),
-        }
+fn validate_simple_fts_syntax(expression: &str) -> Result<()> {
+    let has_operator = expression
+        .split_whitespace()
+        .any(|term| matches!(term.to_ascii_uppercase().as_str(), "AND" | "OR" | "NOT"));
+    let has_query_syntax = expression.chars().any(|character| {
+        !(character.is_alphanumeric() || character.is_whitespace() || character == '_')
+    });
+    if has_operator || has_query_syntax {
+        return Err(Error::not_supported(
+            "FTS query_string supports only whitespace-separated terms",
+        ));
     }
-    if !current.trim().is_empty() {
-        terms.push(current.trim().to_string());
+    Ok(())
+}
+
+fn document_frequencies(
+    corpus: &[(&Doc, Vec<String>)],
+    query_terms: &[String],
+) -> BTreeMap<String, usize> {
+    let mut frequencies = BTreeMap::new();
+    for term in query_terms {
+        frequencies.entry(term.clone()).or_insert_with(|| {
+            corpus
+                .iter()
+                .filter(|(_, tokens)| tokens.contains(term))
+                .count()
+        });
     }
-    if advanced {
-        terms
-            .into_iter()
-            .filter(|term| {
-                let upper = term.to_ascii_uppercase();
-                !matches!(upper.as_str(), "AND" | "OR" | "NOT")
-            })
-            .collect()
-    } else {
-        terms
-    }
+    frequencies
 }
 
 fn bm25(
     document_tokens: &[String],
     query_terms: &[String],
-    docs: &[Doc],
-    field_name: &str,
-    tokenizer: &str,
+    document_frequencies: &BTreeMap<String, usize>,
+    document_count: f64,
     average_length: f64,
 ) -> f64 {
     if document_tokens.is_empty() || query_terms.is_empty() {
@@ -355,14 +388,14 @@ fn bm25(
     }
     let mut score = 0.0;
     let document_length = count_to_f64(document_tokens.len());
+    let normalized_length = if average_length == 0.0 {
+        0.0
+    } else {
+        document_length / average_length
+    };
     let k1 = 1.2;
     let b = 0.75;
-    for raw_term in query_terms {
-        let normalized = tokenize(raw_term, tokenizer);
-        if normalized.is_empty() {
-            continue;
-        }
-        let term = &normalized[0];
+    for term in query_terms {
         let frequency = count_to_f64(
             document_tokens
                 .iter()
@@ -370,31 +403,13 @@ fn bm25(
                 .count(),
         );
         if frequency == 0.0 {
-            let wildcard_hit = if let Some(prefix) = term.strip_suffix('*') {
-                document_tokens
-                    .iter()
-                    .any(|token| token.starts_with(prefix))
-            } else if let Some(suffix) = term.strip_prefix('*') {
-                document_tokens.iter().any(|token| token.ends_with(suffix))
-            } else {
-                false
-            };
-            if !wildcard_hit {
-                continue;
-            }
+            continue;
         }
-        let document_frequency = count_to_f64(
-            docs.iter()
-                .filter_map(|doc| text_value(doc, field_name))
-                .filter(|text| tokenize(text, tokenizer).iter().any(|token| token == term))
-                .count(),
-        );
-        let idf = ((count_to_f64(docs.len()) - document_frequency + 0.5)
-            / (document_frequency + 0.5)
-            + 1.0)
-            .ln();
-        let denominator =
-            frequency + k1 * (1.0 - b + b * document_length / average_length.max(1.0));
+        let document_frequency =
+            count_to_f64(document_frequencies.get(term).copied().unwrap_or_default());
+        let idf =
+            ((document_count - document_frequency + 0.5) / (document_frequency + 0.5) + 1.0).ln();
+        let denominator = frequency + k1 * (1.0 - b + b * normalized_length);
         score += idf * (frequency * (k1 + 1.0) / denominator.max(1e-12));
     }
     score.max(0.0)
