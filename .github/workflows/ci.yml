@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Formatting, lint, docs, and features
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Lint default features
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - name: Lint all features
+        run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test all features
+        run: cargo +stable test --locked --all-features
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo +stable doc --locked --no-deps --all-features
+
+  msrv:
+    name: Rust 1.75 MSRV
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install Rust 1.75
+        run: rustup toolchain install 1.75.0 --profile minimal
+      - name: Test locked default feature graph
+        run: cargo +1.75.0 test --locked
+
+  platform:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            deployment_target: ""
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            deployment_target: ""
+          - name: Windows x86_64
+            os: windows-2025
+            deployment_target: ""
+          - name: macOS arm64
+            os: macos-15
+            deployment_target: "15.0"
+          - name: macOS Intel
+            os: macos-15-intel
+            deployment_target: "12.0"
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Run default-feature suite
+        run: cargo +stable test --locked

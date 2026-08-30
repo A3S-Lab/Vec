@@ -2,10 +2,13 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::fs::File;
 
 pub const FORMAT_VERSION: u32 = 3;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -142,20 +145,46 @@ fn sync_directory(path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn sync_directory(path: &Path) -> Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    let directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .map_err(|e| Error::internal(format!("open storage directory: {e}")))?;
-    directory
-        .sync_all()
-        .map_err(|e| Error::internal(format!("sync storage directory: {e}")))
+fn sync_directory(_path: &Path) -> Result<()> {
+    // Rust's Windows `File::sync_all` calls `FlushFileBuffers`, which requires
+    // a handle with GENERIC_WRITE access. Directories cannot be opened that
+    // way through the safe standard-library API, so attempting to flush a
+    // FILE_FLAG_BACKUP_SEMANTICS handle fails with ERROR_ACCESS_DENIED. The
+    // temporary file itself has already been synced before the same-volume
+    // atomic replacement. Do not turn a successful publication into a false
+    // durability error by issuing an unsupported directory flush.
+    Ok(())
 }
 
 pub fn checksum(bytes: &[u8]) -> u32 {
     crc32fast::hash(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_write;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn atomic_write_replaces_an_existing_file_without_leaking_a_temporary() {
+        let temporary = tempdir().expect("temporary directory must be available");
+        let target = Path::new("state.json");
+
+        atomic_write(temporary.path(), target, b"first", true)
+            .expect("first atomic write must succeed");
+        atomic_write(temporary.path(), target, b"second", true)
+            .expect("replacement atomic write must succeed");
+
+        assert_eq!(
+            fs::read(temporary.path().join(target)).expect("published file must be readable"),
+            b"second"
+        );
+        let entries: Vec<_> = fs::read_dir(temporary.path())
+            .expect("temporary directory must be readable")
+            .map(|entry| entry.expect("directory entry must be readable").file_name())
+            .collect();
+        assert_eq!(entries, [target.as_os_str()]);
+    }
 }

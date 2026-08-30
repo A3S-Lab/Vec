@@ -60,12 +60,15 @@ All numeric dense and sparse forms execute the four exact metrics. Scoring uses
 result score to `f32` after exact ranking and a checked range conversion.
 Deterministic differential fixtures compare dense and sparse filtering,
 radius, top-k, score, and primary-key ordering with an independent reference
-scan. Euclidean radius is non-negative by contract. Binary search remains
-explicitly unsupported.
+scan. A dependency-free fixed-seed generator also checks a persisted and
+reopened 256-document corpus across 100 dense metric/filter combinations.
+Euclidean radius is non-negative by contract. Binary search remains explicitly
+unsupported.
 
-Scan-time FTS has an independent BM25 fixture and defines its corpus as the
-documents that contain the queried text field; nullable documents without that
-field do not change document frequency or average length. Plain token
+Scan-time FTS has independent BM25 fixtures, including 24 generated
+query/filter combinations, and defines its corpus as the documents that
+contain the queried text field; nullable documents without that field do not
+change document frequency or average length. Plain token
 `match_string` and `query_string` expressions are supported. Boolean, phrase,
 wildcard, and fielded query-string syntax returns `NotSupported` until Phase 5
 implements it, and providing both expression forms is rejected as ambiguous.
@@ -85,7 +88,7 @@ incompatible, overflowing, and binary JSON values are rejected. Schema
 backfills and replacement upserts are validated against the resulting complete
 document.
 
-The current baseline has 60 passing unit and integration tests plus four
+The current baseline has 63 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision. The default test suite also passes on the
@@ -96,9 +99,12 @@ Format versions 1 and 2 were prototype-only and are not opened by the version
 3 reader. Version 3 changes sparse FP16 persistence from misleading `f32`
 coordinates to raw half-precision bits; rejecting older manifests prevents a
 new payload from being silently reinterpreted by an older reader.
-Fault-injection hooks, WAL-pruning crash tests, real approximate indexes,
-indexed FTS, scale-bearing index quantization, binary search, fuzzing, and the
-full platform matrix remain roadmap work.
+GitHub Actions runs the full default-feature suite on Linux x86_64/arm64,
+Windows x86_64, and macOS arm64/Intel. The Intel job uses a macOS 12.0
+deployment target, but GitHub's hosted runner executes a newer macOS release;
+an actual macOS 12 Intel runtime smoke remains open. Fault-injection hooks,
+WAL-pruning crash tests, real approximate indexes, indexed FTS, scale-bearing
+index quantization, binary search, and fuzzing remain roadmap work.
 
 ## Configuration policy
 
