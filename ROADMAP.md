@@ -22,7 +22,9 @@ strict physical-type validation and lossless persistence; dense and sparse
 numeric vectors share exact L2/IP/cosine/MIPS-L2 scoring with `f64`
 intermediates and are ranked before the public score is narrowed to `f32`.
 Independent differential fixtures now cover deterministic dense/sparse scores,
-filters, radius/top-k ordering, and scan BM25 corpus statistics. Advanced FTS
+filters, radius/top-k ordering, and scan BM25 corpus statistics. A fixed-seed
+256-document corpus adds 100 dense metric/filter combinations and 24
+BM25/filter combinations, including a flush/reopen boundary. Advanced FTS
 syntax fails explicitly instead of being approximated. Concurrent public-API
 fixtures prove serialized disjoint updates, revision-pinned iterators, and
 atomic multi-document publication to readers. The external algorithm kernel
@@ -31,22 +33,24 @@ collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
 tested. Future index/query/schema tuning now fails explicitly unless it has an
 exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
-built FTS index. The baseline has 60 passing unit/integration tests plus four
+built FTS index. The baseline has 62 passing unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
 `-D warnings`, and rustdoc are green. The full default-feature suite also
 passes on the declared Rust 1.75 MSRV after constraining `zvec-core`'s broad
 Rayon dependency to its compatible release line; optional Jieba still requires
 a newer Cargo because its current compressed-dictionary chain uses Rust 2024
-manifests.
+manifests. GitHub Actions runs the full default-feature suite on Linux x86_64
+and arm64, Windows x86_64, and macOS arm64 and Intel, while separate jobs gate
+Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
+uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
+requires a self-hosted or external runner.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
-platform matrix remain open. Phase 2 still needs a broader generated
-differential corpus and supported-platform evidence. Approximate index and
-indexed-FTS names are schema/query contracts only; the unused exact-facade
-implementations were removed so they cannot be mistaken for shipped ANN
-behaviour.
+macOS 12 Intel runtime smoke remain open. Approximate index and indexed-FTS
+names are schema/query contracts only; the unused exact-facade implementations
+were removed so they cannot be mistaken for shipped ANN behaviour.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -110,8 +114,14 @@ behaviour.
   including a nullable missing-field case. Ambiguous expression forms are
   rejected, and unimplemented boolean, phrase, wildcard, and fielded syntax
   returns `NotSupported` rather than silently changing query meaning.
-- Open: broader nullability/overflow fixtures, a larger generated vector/FTS
-  differential corpus and the supported-platform matrix
+- Completed: a dependency-free fixed-seed generator produces 256 mixed
+  documents and checks 100 dense metric/filter combinations plus 24
+  BM25/filter combinations against independent references after persistence
+  and reopen.
+- Completed for hosted runners: the default suite runs on Linux x86_64/arm64,
+  Windows x86_64, and macOS arm64/Intel. The Intel job compiles with a 12.0
+  deployment target, but an actual macOS 12 runtime smoke remains open.
+- Open: broader nullability/overflow fixtures and the macOS 12 Intel runtime
   required by the full Phase 1 exit gate. Scale-bearing FP16/INT8/INT4 index
   quantization with exact re-ranking remains Phase 4 work; binary query
   execution remains unsupported.
@@ -139,8 +149,9 @@ behaviour.
   preserve both patches and monotonic revisions; iterators retain one captured
   revision; synchronized readers racing repeated two-document upserts observe
   only a complete previous or next batch.
-- Open: expand the generated corpus and repeat the concurrency fixtures across
-  the supported platform matrix.
+- Completed: the fixed-seed 256-document differential corpus and concurrency
+  fixtures run in the hosted Linux x86_64/arm64, Windows x86_64, and macOS
+  arm64/Intel matrix.
 
 ## Phase 3 — Durability and recovery
 
@@ -168,8 +179,8 @@ behaviour.
   truncation, partial uncommitted tails, orphan snapshots, and oversized
   snapshots.
 - Open: fault-injection hooks, every-boundary crash matrix, explicit WAL-prune
-  crash evidence, stale-lock owner diagnostics, recovery fuzzing, and platform
-  CI.
+  crash evidence, stale-lock owner diagnostics, recovery fuzzing, and the
+  macOS 12 Intel runtime smoke.
 
 ## Phase 4 — Memory ANN indexes
 
