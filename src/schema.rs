@@ -26,7 +26,7 @@ pub struct IVFIndexParam {
 
 pub type IvfIndexParam = IVFIndexParam;
 
-/// IVF RaBitQ build parameters.
+/// IVF `RaBitQ` build parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvfRabitqIndexParam {
     pub metric: MetricType,
@@ -53,7 +53,7 @@ pub struct DiskAnnIndexParam {
 
 pub type DiskANNIndexParam = DiskAnnIndexParam;
 
-/// Vamana graph parameters.  DiskANN uses the same graph with a disk layout.
+/// Vamana graph parameters.  `DiskANN` uses the same graph with a disk layout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VamanaIndexParam {
     pub metric: MetricType,
@@ -102,19 +102,24 @@ impl IndexParams {
         quantize: QuantizeType,
     ) -> Result<Self> {
         if m <= 0 || ef_construction <= 0 {
-            return Err(Error::invalid_argument("HNSW m and ef_construction must be positive"));
+            return Err(Error::invalid_argument(
+                "HNSW m and ef_construction must be positive",
+            ));
         }
         let mut out = Self::new(IndexType::Hnsw, metric);
         out.quantize_type = quantize;
         out.params.insert("m".into(), json!(m));
-        out.params.insert("ef_construction".into(), json!(ef_construction));
+        out.params
+            .insert("ef_construction".into(), json!(ef_construction));
         out.params.insert("quantize_type".into(), json!(quantize));
         Ok(out)
     }
 
     pub fn ivf(metric: MetricType, n_list: i32, n_iters: i32, use_soar: bool) -> Result<Self> {
         if n_list <= 0 || n_iters < 0 {
-            return Err(Error::invalid_argument("IVF n_list must be positive and n_iters non-negative"));
+            return Err(Error::invalid_argument(
+                "IVF n_list must be positive and n_iters non-negative",
+            ));
         }
         let mut out = Self::new(IndexType::Ivf, metric);
         out.params.insert("n_list".into(), json!(n_list));
@@ -123,14 +128,22 @@ impl IndexParams {
         Ok(out)
     }
 
-    pub fn ivf_rabitq(metric: MetricType, nlist: i32, total_bits: i32, sample_count: i32) -> Result<Self> {
+    pub fn ivf_rabitq(
+        metric: MetricType,
+        nlist: i32,
+        total_bits: i32,
+        sample_count: i32,
+    ) -> Result<Self> {
         if nlist <= 0 || total_bits <= 0 || sample_count < 0 {
-            return Err(Error::invalid_argument("IVF RaBitQ parameters are out of range"));
+            return Err(Error::invalid_argument(
+                "IVF RaBitQ parameters are out of range",
+            ));
         }
         let mut out = Self::new(IndexType::IvfRabitq, metric);
         out.params.insert("n_list".into(), json!(nlist));
         out.params.insert("total_bits".into(), json!(total_bits));
-        out.params.insert("sample_count".into(), json!(sample_count));
+        out.params
+            .insert("sample_count".into(), json!(sample_count));
         Ok(out)
     }
 
@@ -138,25 +151,41 @@ impl IndexParams {
         Ok(Self::new(IndexType::Flat, metric))
     }
 
-    pub fn diskann(metric: MetricType, max_degree: i32, list_size: i32, pq_chunk_num: i32) -> Result<Self> {
+    pub fn diskann(
+        metric: MetricType,
+        max_degree: i32,
+        list_size: i32,
+        pq_chunk_num: i32,
+    ) -> Result<Self> {
         if max_degree <= 0 || list_size <= 0 || pq_chunk_num < 0 {
-            return Err(Error::invalid_argument("DiskANN parameters are out of range"));
+            return Err(Error::invalid_argument(
+                "DiskANN parameters are out of range",
+            ));
         }
         let mut out = Self::new(IndexType::Diskann, metric);
         out.params.insert("max_degree".into(), json!(max_degree));
         out.params.insert("list_size".into(), json!(list_size));
-        out.params.insert("pq_chunk_num".into(), json!(pq_chunk_num));
+        out.params
+            .insert("pq_chunk_num".into(), json!(pq_chunk_num));
         out.params.insert("alpha".into(), json!(1.2));
         Ok(out)
     }
 
-    pub fn vamana(metric: MetricType, max_degree: i32, search_list_size: i32, alpha: f64) -> Result<Self> {
+    pub fn vamana(
+        metric: MetricType,
+        max_degree: i32,
+        search_list_size: i32,
+        alpha: f64,
+    ) -> Result<Self> {
         if max_degree <= 0 || search_list_size <= 0 || !alpha.is_finite() || alpha <= 0.0 {
-            return Err(Error::invalid_argument("Vamana parameters are out of range"));
+            return Err(Error::invalid_argument(
+                "Vamana parameters are out of range",
+            ));
         }
         let mut out = Self::new(IndexType::Vamana, metric);
         out.params.insert("max_degree".into(), json!(max_degree));
-        out.params.insert("search_list_size".into(), json!(search_list_size));
+        out.params
+            .insert("search_list_size".into(), json!(search_list_size));
         out.params.insert("alpha".into(), json!(alpha));
         out.params.insert("max_occlusion".into(), json!(0));
         out.params.insert("saturate".into(), json!(false));
@@ -171,22 +200,28 @@ impl IndexParams {
 
     pub fn invert(enable_range_opt: bool, enable_wildcard: bool) -> Result<Self> {
         let mut out = Self::new(IndexType::Invert, MetricType::Undefined);
-        out.params.insert("enable_range_optimization".into(), json!(enable_range_opt));
-        out.params.insert("enable_wildcard".into(), json!(enable_wildcard));
+        out.params
+            .insert("enable_range_optimization".into(), json!(enable_range_opt));
+        out.params
+            .insert("enable_wildcard".into(), json!(enable_wildcard));
         Ok(out)
     }
 
-    pub fn fts(tokenizer_name: Option<&str>, filters: Option<&[&str]>, extra_params: Option<&str>) -> Result<Self> {
+    pub fn fts(
+        tokenizer_name: Option<&str>,
+        filters: Option<&[&str]>,
+        extra_params: Option<&str>,
+    ) -> Result<Self> {
         let tokenizer = tokenizer_name.unwrap_or("standard").trim();
         if tokenizer.is_empty() {
-            return Err(Error::invalid_argument("FTS tokenizer name must not be empty"));
+            return Err(Error::invalid_argument(
+                "FTS tokenizer name must not be empty",
+            ));
         }
         let mut out = Self::new(IndexType::Fts, MetricType::Undefined);
         out.params.insert("tokenizer_name".into(), json!(tokenizer));
-        out.params.insert(
-            "filters".into(),
-            json!(filters.unwrap_or(&[]).iter().copied().collect::<Vec<_>>()),
-        );
+        out.params
+            .insert("filters".into(), json!(filters.unwrap_or(&[]).to_vec()));
         if let Some(extra) = extra_params {
             out.params.insert("extra_params".into(), json!(extra));
         }
@@ -202,9 +237,15 @@ impl IndexParams {
         }
     }
 
-    pub fn index_type(&self) -> IndexType { self.index_type }
-    pub fn metric_type(&self) -> MetricType { self.metric_type }
-    pub fn quantize_type(&self) -> QuantizeType { self.quantize_type }
+    pub fn index_type(&self) -> IndexType {
+        self.index_type
+    }
+    pub fn metric_type(&self) -> MetricType {
+        self.metric_type
+    }
+    pub fn quantize_type(&self) -> QuantizeType {
+        self.quantize_type
+    }
     pub fn set_metric_type(&mut self, metric: MetricType) -> Result<()> {
         if metric == MetricType::Undefined && self.index_type.is_vector_index() {
             return Err(Error::invalid_argument("vector index requires a metric"));
@@ -217,7 +258,9 @@ impl IndexParams {
         self.params.insert("quantize_type".into(), json!(quantize));
         Ok(())
     }
-    pub fn parameter(&self, name: &str) -> Option<&Value> { self.params.get(name) }
+    pub fn parameter(&self, name: &str) -> Option<&Value> {
+        self.params.get(name)
+    }
     pub fn with_parameter(mut self, name: impl Into<String>, value: Value) -> Self {
         self.params.insert(name.into(), value);
         self
@@ -231,7 +274,16 @@ impl IndexParams {
 
 impl IndexType {
     pub fn is_vector_index(self) -> bool {
-        matches!(self, Self::Hnsw | Self::HnswRabitq | Self::Ivf | Self::IvfRabitq | Self::Flat | Self::Diskann | Self::Vamana)
+        matches!(
+            self,
+            Self::Hnsw
+                | Self::HnswRabitq
+                | Self::Ivf
+                | Self::IvfRabitq
+                | Self::Flat
+                | Self::Diskann
+                | Self::Vamana
+        )
     }
 }
 
@@ -243,23 +295,71 @@ pub struct IndexParamsBuilder {
 
 impl IndexParamsBuilder {
     pub fn new(index_type: IndexType) -> Self {
-        Self { params: IndexParams::new(index_type, MetricType::Undefined) }
+        Self {
+            params: IndexParams::new(index_type, MetricType::Undefined),
+        }
     }
-    pub fn metric_type(mut self, metric: MetricType) -> Self { self.params.metric_type = metric; self }
-    pub fn metric(self, metric: MetricType) -> Self { self.metric_type(metric) }
-    pub fn quantize_type(mut self, quantize: QuantizeType) -> Self { self.params.quantize_type = quantize; self }
-    pub fn m(mut self, value: u32) -> Self { self.params.params.insert("m".into(), json!(value)); self }
-    pub fn ef_construction(mut self, value: u32) -> Self { self.params.params.insert("ef_construction".into(), json!(value)); self }
-    pub fn n_list(mut self, value: u32) -> Self { self.params.params.insert("n_list".into(), json!(value)); self }
-    pub fn n_iters(mut self, value: u32) -> Self { self.params.params.insert("n_iters".into(), json!(value)); self }
-    pub fn use_soar(mut self, value: bool) -> Self { self.params.params.insert("use_soar".into(), json!(value)); self }
-    pub fn max_degree(mut self, value: u32) -> Self { self.params.params.insert("max_degree".into(), json!(value)); self }
-    pub fn list_size(mut self, value: u32) -> Self { self.params.params.insert("list_size".into(), json!(value)); self }
-    pub fn pq_chunk_num(mut self, value: u32) -> Self { self.params.params.insert("pq_chunk_num".into(), json!(value)); self }
-    pub fn tokenizer(mut self, value: impl Into<String>) -> Self { self.params.params.insert("tokenizer_name".into(), json!(value.into())); self }
-    pub fn parameter(mut self, name: impl Into<String>, value: Value) -> Self { self.params.params.insert(name.into(), value); self }
+    pub fn metric_type(mut self, metric: MetricType) -> Self {
+        self.params.metric_type = metric;
+        self
+    }
+    pub fn metric(self, metric: MetricType) -> Self {
+        self.metric_type(metric)
+    }
+    pub fn quantize_type(mut self, quantize: QuantizeType) -> Self {
+        self.params.quantize_type = quantize;
+        self
+    }
+    pub fn m(mut self, value: u32) -> Self {
+        self.params.params.insert("m".into(), json!(value));
+        self
+    }
+    pub fn ef_construction(mut self, value: u32) -> Self {
+        self.params
+            .params
+            .insert("ef_construction".into(), json!(value));
+        self
+    }
+    pub fn n_list(mut self, value: u32) -> Self {
+        self.params.params.insert("n_list".into(), json!(value));
+        self
+    }
+    pub fn n_iters(mut self, value: u32) -> Self {
+        self.params.params.insert("n_iters".into(), json!(value));
+        self
+    }
+    pub fn use_soar(mut self, value: bool) -> Self {
+        self.params.params.insert("use_soar".into(), json!(value));
+        self
+    }
+    pub fn max_degree(mut self, value: u32) -> Self {
+        self.params.params.insert("max_degree".into(), json!(value));
+        self
+    }
+    pub fn list_size(mut self, value: u32) -> Self {
+        self.params.params.insert("list_size".into(), json!(value));
+        self
+    }
+    pub fn pq_chunk_num(mut self, value: u32) -> Self {
+        self.params
+            .params
+            .insert("pq_chunk_num".into(), json!(value));
+        self
+    }
+    pub fn tokenizer(mut self, value: impl Into<String>) -> Self {
+        self.params
+            .params
+            .insert("tokenizer_name".into(), json!(value.into()));
+        self
+    }
+    pub fn parameter(mut self, name: impl Into<String>, value: Value) -> Self {
+        self.params.params.insert(name.into(), value);
+        self
+    }
     pub fn build(self) -> Result<IndexParams> {
-        if self.params.index_type.is_vector_index() && self.params.metric_type == MetricType::Undefined {
+        if self.params.index_type.is_vector_index()
+            && self.params.metric_type == MetricType::Undefined
+        {
             return Err(Error::invalid_argument("vector index requires a metric"));
         }
         Ok(self.params)
@@ -283,16 +383,29 @@ impl FieldSchema {
             return Err(Error::invalid_argument("field data type must be defined"));
         }
         if data_type.is_vector() && !data_type.is_sparse_vector() && dimension == 0 {
-            return Err(Error::invalid_argument("dense vector dimension must be positive"));
+            return Err(Error::invalid_argument(
+                "dense vector dimension must be positive",
+            ));
         }
         if !data_type.is_vector() && dimension != 0 {
-            return Err(Error::invalid_argument("non-vector field dimension must be zero"));
+            return Err(Error::invalid_argument(
+                "non-vector field dimension must be zero",
+            ));
         }
-        Ok(Self { name: name.to_string(), data_type, nullable, dimension, index_params: None })
+        Ok(Self {
+            name: name.to_string(),
+            data_type,
+            nullable,
+            dimension,
+            index_params: None,
+        })
     }
     pub fn set_index_params(&mut self, params: &IndexParams) -> Result<()> {
         if params.index_type.is_vector_index() != self.data_type.is_vector() {
-            return Err(Error::invalid_argument(format!("index type {:?} is incompatible with field '{}'", params.index_type, self.name)));
+            return Err(Error::invalid_argument(format!(
+                "index type {:?} is incompatible with field '{}'",
+                params.index_type, self.name
+            )));
         }
         if params.index_type == IndexType::Fts && self.data_type != DataType::String {
             return Err(Error::invalid_argument("FTS index requires a string field"));
@@ -300,17 +413,41 @@ impl FieldSchema {
         self.index_params = Some(params.clone());
         Ok(())
     }
-    pub fn name(&self) -> &str { &self.name }
-    pub fn data_type(&self) -> DataType { self.data_type }
-    pub fn dimension(&self) -> u32 { self.dimension }
-    pub fn is_nullable(&self) -> bool { self.nullable }
-    pub fn is_vector_field(&self) -> bool { self.data_type.is_vector() }
-    pub fn is_dense_vector(&self) -> bool { self.data_type.is_dense_vector() }
-    pub fn is_sparse_vector(&self) -> bool { self.data_type.is_sparse_vector() }
-    pub fn has_index(&self) -> bool { self.index_params.is_some() }
-    pub fn index_type(&self) -> IndexType { self.index_params.as_ref().map_or(IndexType::Undefined, IndexParams::index_type) }
-    pub fn is_array_type(&self) -> bool { self.data_type.is_array() }
-    pub fn index_params(&self) -> Option<&IndexParams> { self.index_params.as_ref() }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn data_type(&self) -> DataType {
+        self.data_type
+    }
+    pub fn dimension(&self) -> u32 {
+        self.dimension
+    }
+    pub fn is_nullable(&self) -> bool {
+        self.nullable
+    }
+    pub fn is_vector_field(&self) -> bool {
+        self.data_type.is_vector()
+    }
+    pub fn is_dense_vector(&self) -> bool {
+        self.data_type.is_dense_vector()
+    }
+    pub fn is_sparse_vector(&self) -> bool {
+        self.data_type.is_sparse_vector()
+    }
+    pub fn has_index(&self) -> bool {
+        self.index_params.is_some()
+    }
+    pub fn index_type(&self) -> IndexType {
+        self.index_params
+            .as_ref()
+            .map_or(IndexType::Undefined, IndexParams::index_type)
+    }
+    pub fn is_array_type(&self) -> bool {
+        self.data_type.is_array()
+    }
+    pub fn index_params(&self) -> Option<&IndexParams> {
+        self.index_params.as_ref()
+    }
 }
 
 /// Explicit vector schema (also useful to adapters that keep vectors separate).
@@ -325,8 +462,17 @@ pub struct VectorSchema {
 impl VectorSchema {
     pub fn new(name: &str, data_type: DataType, dimension: u32) -> Result<Self> {
         let field = FieldSchema::new(name, data_type, false, dimension)?;
-        if !field.is_vector_field() { return Err(Error::invalid_argument("vector schema requires a vector data type")); }
-        Ok(Self { name: field.name, data_type, dimension, index_params: None })
+        if !field.is_vector_field() {
+            return Err(Error::invalid_argument(
+                "vector schema requires a vector data type",
+            ));
+        }
+        Ok(Self {
+            name: field.name,
+            data_type,
+            dimension,
+            index_params: None,
+        })
     }
     pub fn set_index_params(&mut self, params: &IndexParams) -> Result<()> {
         let mut field = FieldSchema::new(&self.name, self.data_type, false, self.dimension)?;
@@ -334,11 +480,23 @@ impl VectorSchema {
         self.index_params = field.index_params;
         Ok(())
     }
-    pub fn name(&self) -> &str { &self.name }
-    pub fn dimension(&self) -> u32 { self.dimension }
-    pub fn data_type(&self) -> DataType { self.data_type }
-    pub fn has_index(&self) -> bool { self.index_params.is_some() }
-    pub fn index_type(&self) -> IndexType { self.index_params.as_ref().map_or(IndexType::Undefined, IndexParams::index_type) }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn dimension(&self) -> u32 {
+        self.dimension
+    }
+    pub fn data_type(&self) -> DataType {
+        self.data_type
+    }
+    pub fn has_index(&self) -> bool {
+        self.index_params.is_some()
+    }
+    pub fn index_type(&self) -> IndexType {
+        self.index_params
+            .as_ref()
+            .map_or(IndexType::Undefined, IndexParams::index_type)
+    }
 }
 
 /// Collection schema containing scalar and vector fields.
@@ -353,51 +511,119 @@ pub struct CollectionSchema {
 impl CollectionSchema {
     pub fn new(name: &str) -> Result<Self> {
         validate_name(name)?;
-        Ok(Self { name: name.to_string(), fields: Vec::new(), vectors: Vec::new(), max_doc_count_per_segment: 0 })
+        Ok(Self {
+            name: name.to_string(),
+            fields: Vec::new(),
+            vectors: Vec::new(),
+            max_doc_count_per_segment: 0,
+        })
     }
-    pub fn builder(name: &str) -> CollectionSchemaBuilder { CollectionSchemaBuilder::new(name) }
-    pub fn name(&self) -> &str { &self.name }
+    pub fn builder(name: &str) -> CollectionSchemaBuilder {
+        CollectionSchemaBuilder::new(name)
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
     pub fn add_field(&mut self, field: &FieldSchema) -> Result<()> {
         self.ensure_unique(&field.name)?;
         if field.data_type.is_vector() {
-            self.vectors.push(VectorSchema { name: field.name.clone(), data_type: field.data_type, dimension: field.dimension, index_params: field.index_params.clone() });
-        } else { self.fields.push(field.clone()); }
+            self.vectors.push(VectorSchema {
+                name: field.name.clone(),
+                data_type: field.data_type,
+                dimension: field.dimension,
+                index_params: field.index_params.clone(),
+            });
+        } else {
+            self.fields.push(field.clone());
+        }
         Ok(())
     }
     pub fn add_vector_field(&mut self, field: &VectorSchema) -> Result<()> {
         self.ensure_unique(&field.name)?;
-        if !field.data_type.is_vector() { return Err(Error::invalid_argument("vector field requires vector data type")); }
+        if !field.data_type.is_vector() {
+            return Err(Error::invalid_argument(
+                "vector field requires vector data type",
+            ));
+        }
         self.vectors.push(field.clone());
         Ok(())
     }
-    pub fn has_field(&self, name: &str) -> bool { self.fields.iter().any(|f| f.name == name) || self.vectors.iter().any(|f| f.name == name) }
-    pub fn field(&self, name: &str) -> Option<&FieldSchema> { self.fields.iter().find(|f| f.name == name) }
-    pub fn vector(&self, name: &str) -> Option<&VectorSchema> { self.vectors.iter().find(|f| f.name == name) }
-    pub fn has_index(&self, name: &str) -> bool { self.fields.iter().find(|f| f.name == name).and_then(|f| f.index_params.as_ref()).is_some() || self.vectors.iter().find(|f| f.name == name).and_then(|f| f.index_params.as_ref()).is_some() }
+    pub fn has_field(&self, name: &str) -> bool {
+        self.fields.iter().any(|f| f.name == name) || self.vectors.iter().any(|f| f.name == name)
+    }
+    pub fn field(&self, name: &str) -> Option<&FieldSchema> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+    pub fn vector(&self, name: &str) -> Option<&VectorSchema> {
+        self.vectors.iter().find(|f| f.name == name)
+    }
+    pub fn has_index(&self, name: &str) -> bool {
+        self.fields
+            .iter()
+            .find(|f| f.name == name)
+            .and_then(|f| f.index_params.as_ref())
+            .is_some()
+            || self
+                .vectors
+                .iter()
+                .find(|f| f.name == name)
+                .and_then(|f| f.index_params.as_ref())
+                .is_some()
+    }
     pub fn drop_field(&mut self, name: &str) -> Result<()> {
         let before = self.fields.len() + self.vectors.len();
         self.fields.retain(|f| f.name != name);
         self.vectors.retain(|f| f.name != name);
-        if before == self.fields.len() + self.vectors.len() { return Err(Error::not_found(format!("field '{name}' not found"))); }
+        if before == self.fields.len() + self.vectors.len() {
+            return Err(Error::not_found(format!("field '{name}' not found")));
+        }
         Ok(())
     }
     pub fn add_index(&mut self, field_name: &str, params: &IndexParams) -> Result<()> {
-        if let Some(field) = self.fields.iter_mut().find(|f| f.name == field_name) { return field.set_index_params(params); }
-        if let Some(field) = self.vectors.iter_mut().find(|f| f.name == field_name) { return field.set_index_params(params); }
+        if let Some(field) = self.fields.iter_mut().find(|f| f.name == field_name) {
+            return field.set_index_params(params);
+        }
+        if let Some(field) = self.vectors.iter_mut().find(|f| f.name == field_name) {
+            return field.set_index_params(params);
+        }
         Err(Error::not_found(format!("field '{field_name}' not found")))
     }
     pub fn drop_index(&mut self, field_name: &str) -> Result<()> {
-        if let Some(field) = self.fields.iter_mut().find(|f| f.name == field_name) { field.index_params = None; return Ok(()); }
-        if let Some(field) = self.vectors.iter_mut().find(|f| f.name == field_name) { field.index_params = None; return Ok(()); }
+        if let Some(field) = self.fields.iter_mut().find(|f| f.name == field_name) {
+            field.index_params = None;
+            return Ok(());
+        }
+        if let Some(field) = self.vectors.iter_mut().find(|f| f.name == field_name) {
+            field.index_params = None;
+            return Ok(());
+        }
         Err(Error::not_found(format!("field '{field_name}' not found")))
     }
-    pub fn set_max_doc_count_per_segment(&mut self, count: u64) -> Result<()> { self.max_doc_count_per_segment = count; Ok(()) }
-    pub fn max_doc_count_per_segment(&self) -> u64 { self.max_doc_count_per_segment }
+    pub fn set_max_doc_count_per_segment(&mut self, count: u64) -> Result<()> {
+        self.max_doc_count_per_segment = count;
+        Ok(())
+    }
+    pub fn max_doc_count_per_segment(&self) -> u64 {
+        self.max_doc_count_per_segment
+    }
     pub fn validate(&self) -> Result<()> {
-        if self.fields.len() + self.vectors.len() == 0 { return Err(Error::invalid_argument("collection schema must contain at least one field")); }
+        if self.fields.len() + self.vectors.len() == 0 {
+            return Err(Error::invalid_argument(
+                "collection schema must contain at least one field",
+            ));
+        }
         let mut names = BTreeSet::new();
-        for name in self.fields.iter().map(|f| &f.name).chain(self.vectors.iter().map(|f| &f.name)) {
-            if !names.insert(name) { return Err(Error::invalid_argument(format!("duplicate field name '{name}'"))); }
+        for name in self
+            .fields
+            .iter()
+            .map(|f| &f.name)
+            .chain(self.vectors.iter().map(|f| &f.name))
+        {
+            if !names.insert(name) {
+                return Err(Error::invalid_argument(format!(
+                    "duplicate field name '{name}'"
+                )));
+            }
         }
         Ok(())
     }
@@ -405,9 +631,21 @@ impl CollectionSchema {
         let bytes = serde_json::to_vec(self).unwrap_or_default();
         format!("{:08x}", crc32fast::hash(&bytes))
     }
-    pub fn fields(&self) -> &[FieldSchema] { &self.fields }
-    pub fn vectors(&self) -> &[VectorSchema] { &self.vectors }
-    fn ensure_unique(&self, name: &str) -> Result<()> { if self.has_field(name) { Err(Error::already_exists(format!("field '{name}' already exists"))) } else { Ok(()) } }
+    pub fn fields(&self) -> &[FieldSchema] {
+        &self.fields
+    }
+    pub fn vectors(&self) -> &[VectorSchema] {
+        &self.vectors
+    }
+    fn ensure_unique(&self, name: &str) -> Result<()> {
+        if self.has_field(name) {
+            Err(Error::already_exists(format!(
+                "field '{name}' already exists"
+            )))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Fluent collection schema builder.
@@ -420,46 +658,81 @@ pub struct CollectionSchemaBuilder {
 }
 
 impl CollectionSchemaBuilder {
-    pub fn new(name: &str) -> Self { Self { name: name.to_string(), fields: Vec::new(), max_doc_count_per_segment: None, deferred_error: None } }
-    pub fn add_field(mut self, field: FieldSchema) -> Self { self.fields.push((field, None)); self }
-    pub fn add_vector_field(mut self, name: &str, data_type: DataType, dimension: u32, index_params: IndexParams) -> Self {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            fields: Vec::new(),
+            max_doc_count_per_segment: None,
+            deferred_error: None,
+        }
+    }
+    pub fn add_field(mut self, field: FieldSchema) -> Self {
+        self.fields.push((field, None));
+        self
+    }
+    pub fn add_vector_field(
+        mut self,
+        name: &str,
+        data_type: DataType,
+        dimension: u32,
+        index_params: IndexParams,
+    ) -> Self {
         match FieldSchema::new(name, data_type, false, dimension) {
             Ok(field) => self.fields.push((field, Some(index_params))),
             Err(error) => self.deferred_error = Some(error),
         }
         self
     }
-    pub fn add_indexed_field(mut self, name: &str, data_type: DataType, index_params: IndexParams) -> Self {
+    pub fn add_indexed_field(
+        mut self,
+        name: &str,
+        data_type: DataType,
+        index_params: IndexParams,
+    ) -> Self {
         match FieldSchema::new(name, data_type, false, 0) {
             Ok(field) => self.fields.push((field, Some(index_params))),
             Err(error) => self.deferred_error = Some(error),
         }
         self
     }
-    pub fn max_doc_count_per_segment(mut self, count: u64) -> Self { self.max_doc_count_per_segment = Some(count); self }
+    pub fn max_doc_count_per_segment(mut self, count: u64) -> Self {
+        self.max_doc_count_per_segment = Some(count);
+        self
+    }
     pub fn build(self) -> Result<CollectionSchema> {
-        if let Some(error) = self.deferred_error { return Err(error); }
+        if let Some(error) = self.deferred_error {
+            return Err(error);
+        }
         let mut schema = CollectionSchema::new(&self.name)?;
         for (mut field, params) in self.fields {
-            if let Some(params) = params { field.set_index_params(&params)?; }
+            if let Some(params) = params {
+                field.set_index_params(&params)?;
+            }
             schema.add_field(&field)?;
         }
-        if let Some(count) = self.max_doc_count_per_segment { schema.max_doc_count_per_segment = count; }
+        if let Some(count) = self.max_doc_count_per_segment {
+            schema.max_doc_count_per_segment = count;
+        }
         schema.validate()?;
         Ok(schema)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AddColumnOption { pub concurrency: u32 }
-impl Default for AddColumnOption { fn default() -> Self { Self { concurrency: 0 } } }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AlterColumnOption { pub concurrency: u32 }
-impl Default for AlterColumnOption { fn default() -> Self { Self { concurrency: 0 } } }
-
-fn validate_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() || name.contains('\0') { return Err(Error::invalid_argument("name must be non-empty and contain no NUL byte")); }
-    Ok(())
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AddColumnOption {
+    pub concurrency: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AlterColumnOption {
+    pub concurrency: u32,
+}
+
+fn validate_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() || name.contains('\0') {
+        return Err(Error::invalid_argument(
+            "name must be non-empty and contain no NUL byte",
+        ));
+    }
+    Ok(())
+}

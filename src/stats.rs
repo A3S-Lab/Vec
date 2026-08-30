@@ -45,23 +45,39 @@ pub(crate) struct StatsRegistry {
     pub candidates_scanned: AtomicU64,
 }
 
-impl StatsRegistry {
-    pub fn record_query(&self, fts: bool, ann: bool, filtered: bool, radius: bool, candidates: u64) {
-        self.query_count.fetch_add(1, Ordering::Relaxed);
-        if fts { self.fts_query_count.fetch_add(1, Ordering::Relaxed); }
-        if ann { self.ann_query_count.fetch_add(1, Ordering::Relaxed); } else { self.exact_query_count.fetch_add(1, Ordering::Relaxed); }
-        if filtered { self.filtered_query_count.fetch_add(1, Ordering::Relaxed); }
-        if radius { self.radius_query_count.fetch_add(1, Ordering::Relaxed); }
-        self.candidates_scanned.fetch_add(candidates, Ordering::Relaxed);
-    }
-    pub fn reset(&self) {
-        self.query_count.store(0, Ordering::Relaxed);
-        self.fts_query_count.store(0, Ordering::Relaxed);
-        self.ann_query_count.store(0, Ordering::Relaxed);
-        self.exact_query_count.store(0, Ordering::Relaxed);
-        self.filtered_query_count.store(0, Ordering::Relaxed);
-        self.radius_query_count.store(0, Ordering::Relaxed);
-        self.candidates_scanned.store(0, Ordering::Relaxed);
-    }
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QueryObservation {
+    pub kind: QueryKind,
+    pub filtered: bool,
+    pub radius: bool,
+    pub candidates: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryKind {
+    Exact,
+    Ann,
+    Fts,
+}
+
+impl StatsRegistry {
+    pub fn record_query(&self, observation: QueryObservation) {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+        if observation.kind == QueryKind::Fts {
+            self.fts_query_count.fetch_add(1, Ordering::Relaxed);
+        }
+        if observation.kind == QueryKind::Ann {
+            self.ann_query_count.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.exact_query_count.fetch_add(1, Ordering::Relaxed);
+        }
+        if observation.filtered {
+            self.filtered_query_count.fetch_add(1, Ordering::Relaxed);
+        }
+        if observation.radius {
+            self.radius_query_count.fetch_add(1, Ordering::Relaxed);
+        }
+        self.candidates_scanned
+            .fetch_add(observation.candidates, Ordering::Relaxed);
+    }
+}

@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 
 /// WAL acknowledgement policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Durability {
     /// Sync the WAL file before acknowledging each mutation.
+    #[default]
     Always,
     /// Sync after the configured operation/byte threshold.
     Interval,
@@ -15,25 +16,14 @@ pub enum Durability {
     Manual,
 }
 
-impl Default for Durability {
-    fn default() -> Self {
-        Self::Always
-    }
-}
-
 /// Portable I/O policy.  `Portable` is deliberately the default and works on
 /// Intel macOS 12 without optional kernel or SIMD APIs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum IoBackend {
+    #[default]
     Portable,
     Pread,
     Mmap,
-}
-
-impl Default for IoBackend {
-    fn default() -> Self {
-        Self::Portable
-    }
 }
 
 /// Configuration collected before library initialization.
@@ -153,15 +143,13 @@ pub fn is_initialized() -> bool {
     INITIALIZED.load(std::sync::atomic::Ordering::Acquire)
 }
 
-static INITIALIZED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Returns a clone of the active configuration for internal consumers.
 pub(crate) fn current_config() -> ConfigBuilder {
     config_cell()
         .read()
-        .map(|v| v.clone())
-        .unwrap_or_else(|_| ConfigBuilder::default())
+        .map_or_else(|_| ConfigBuilder::default(), |v| v.clone())
 }
 
 /// Marks the runtime initialized and releases process-level resources.
@@ -178,9 +166,18 @@ pub fn version() -> String {
 pub fn check_version(major: i32, minor: i32, patch: i32) -> bool {
     let mut pieces = env!("CARGO_PKG_VERSION").split('.');
     let current = (
-        pieces.next().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0),
-        pieces.next().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0),
-        pieces.next().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0),
+        pieces
+            .next()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0),
+        pieces
+            .next()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0),
+        pieces
+            .next()
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0),
     );
     current >= (major, minor, patch)
 }
@@ -210,7 +207,9 @@ mod tests {
 
     #[test]
     fn invalid_ratio_is_rejected() {
-        let result = initialize(Some(&ConfigBuilder::default().fts_brute_force_by_keys_ratio(2.0)));
+        let result = initialize(Some(
+            &ConfigBuilder::default().fts_brute_force_by_keys_ratio(2.0),
+        ));
         assert!(result.is_err());
     }
 }

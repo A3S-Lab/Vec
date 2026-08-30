@@ -15,11 +15,15 @@ pub enum EmbeddingInput {
 }
 
 impl From<&str> for EmbeddingInput {
-    fn from(value: &str) -> Self { Self::Text(value.to_string()) }
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_string())
+    }
 }
 
 impl From<String> for EmbeddingInput {
-    fn from(value: String) -> Self { Self::Text(value) }
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
 }
 
 /// Dense embedding provider.  Implementations should be pure with respect to
@@ -35,6 +39,10 @@ pub trait SparseEmbedding: Send + Sync {
 
 /// Optional convenience for executing a query after embedding text.
 pub trait QueryExecutor: Send + Sync {
-    fn execute_text(&self, input: &EmbeddingInput, field_name: &str, topk: usize) -> Result<Vec<crate::Doc>>;
+    fn execute_text(
+        &self,
+        input: &EmbeddingInput,
+        field_name: &str,
+        topk: usize,
+    ) -> Result<Vec<crate::Doc>>;
 }
-

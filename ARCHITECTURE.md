@@ -38,55 +38,42 @@ The engine is built around six invariants:
 
 ## 2. Module layout
 
+The checked-in implementation is intentionally smaller than the target index
+layout:
+
 ```text
 crates/vec/
-├── Cargo.toml
-├── README.md
-├── ARCHITECTURE.md
-├── ROADMAP.md
 ├── src/
 │   ├── lib.rs                 # public API and prelude
 │   ├── error.rs               # typed errors and zvec status mapping
 │   ├── config.rs              # process and collection configuration
-│   ├── types.rs               # DataType, MetricType, IndexType, quantizers
+│   ├── types.rs               # public type vocabulary
 │   ├── schema.rs              # field/vector/collection schemas and builders
 │   ├── doc.rs                 # typed document values and projection
 │   ├── query.rs               # vector, FTS, group, and query parameters
 │   ├── multi_query.rs         # routes and RRF/weighted fusion
-│   ├── collection.rs          # thread-safe collection handle
-│   ├── iterator.rs             # isolated document iterators
+│   ├── collection.rs          # lifecycle and write transaction coordinator
+│   ├── collection/
+│   │   ├── query_api.rs       # query/fetch/iterator collection API
+│   │   ├── query_engine.rs    # exact vector/filter/FTS oracle
+│   │   └── validation.rs      # write validation and index metadata
+│   ├── iterator.rs            # isolated document iterators
 │   ├── stats.rs               # counters, index status, and health
 │   ├── embedding.rs           # caller-owned dense/sparse embedding traits
-│   ├── storage/
-│   │   ├── mod.rs
-│   │   ├── manifest.rs        # generation and checksum metadata
-│   │   ├── wal.rs             # framed WAL and replay
-│   │   ├── snapshot.rs        # immutable segment snapshots
-│   │   └── lock.rs            # single-writer/multi-reader lock
-│   ├── index/
-│   │   ├── mod.rs             # VectorIndex and ScalarIndex contracts
-│   │   ├── flat.rs             # exact dense/sparse scan
-│   │   ├── hnsw.rs             # in-memory HNSW
-│   │   ├── ivf.rs              # IVF coarse quantizer and postings
-│   │   ├── diskann.rs          # Vamana/DiskANN disk index
-│   │   ├── pq.rs               # product quantization
-│   │   ├── rabitq.rs           # RaBitQ encoding and refinement
-│   │   ├── quantize.rs         # FP16/INT8/INT4 codecs
-│   │   ├── scalar.rs           # equality/range inverted indexes
-│   │   └── fts.rs              # tokenizers, postings, and BM25
-│   └── planner/
-│       ├── mod.rs              # query planning and validation
-│       ├── filter.rs           # parsed filter AST and bitmap execution
-│       ├── hybrid.rs           # dense/sparse/FTS route execution
-│       ├── fusion.rs           # normalization and result fusion
-│       └── projection.rs       # output-field/vector shaping
+│   └── storage/
+│       ├── mod.rs             # recovery and commit coordination
+│       ├── manifest.rs        # generation and checksum metadata
+│       ├── wal.rs             # revisioned framed WAL and replay
+│       ├── snapshot.rs        # immutable generation snapshots
+│       ├── lock.rs            # single-writer/multi-reader lock
+│       └── tests.rs           # storage-boundary fault simulations
 └── tests/
-    ├── api_compat.rs
-    ├── crud_and_query.rs
-    ├── durability.rs
-    ├── indexes.rs
-    └── concurrency.rs
+    └── durability.rs          # public lifecycle/restart coverage
 ```
+
+Real `index/` and `planner/` modules are added only when their phase gates have
+recall, fallback, corruption, and persistence evidence. Private exact wrappers
+named HNSW/IVF/DiskANN are not kept as placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
@@ -132,27 +119,41 @@ quantizer metadata.
 
 ```text
 <collection>/
-├── manifest.json                 # active generation, revisions, checksums
-├── schema.json                   # canonical schema
-├── wal/wal-<sequence>.log       # length + payload + CRC framed records
-├── segments/segment-<generation>-<n>.bin
-└── indexes/<field>/<generation>.idx
+├── .a3s-vec.lock
+├── manifest.json                       # sole commit point
+├── wal/wal-<sequence:020>.bin          # version + length + payload + CRC
+└── segments/snapshot-<generation:020>.json
 ```
 
-The manifest is the commit point. A checkpoint writes new segment and index
-files to temporary names, fsyncs according to the selected durability mode,
-renames them, and finally publishes the manifest. Recovery validates the
-manifest, loads the last complete generation, and replays WAL records after its
-checkpoint sequence. A truncated final WAL frame is tolerated; corruption in
-an earlier frame is reported as an error.
+The format-2 manifest is the commit point. Each acknowledged mutation first
+writes a WAL record containing a monotonic revision/operation identity, then
+publishes the manifest with the committed byte boundary for the active WAL
+segment. Recovery reads only that boundary. Bytes after it—including a partial
+frame—are uncommitted and ignored; truncation or corruption inside the boundary
+is an error.
 
-The format is versioned and checksummed. Compatibility with the Alibaba C++
+A checkpoint writes a new immutable snapshot generation to a temporary file,
+optionally fsyncs it and its directory according to the caller's durability
+boundary, renames it, and finally publishes the manifest. Only after that
+manifest commit may old WAL and snapshot generations be pruned. Recovery loads
+exactly the snapshot named by the manifest and replays consecutive WAL
+revisions from `checkpoint_revision + 1` through `revision`.
+
+Schema and backfilled documents are carried in the schema WAL operation until
+the immediately following checkpoint publishes their snapshot. This keeps a
+single replay transaction authoritative while the schema-change encoding is
+still a prototype; a more compact schema delta format may replace it only with
+equivalent recovery tests.
+
+Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
+committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
+deserialization. The format is versioned and checksummed. Compatibility with the Alibaba C++
 binary files is provided through an explicit importer/exporter milestone; the
 native format is not silently interpreted as a different schema.
 
 ## 5. Index contracts
 
-All index implementations satisfy the same contract:
+Future index implementations satisfy the following contract:
 
 ```rust,ignore
 trait VectorIndex: Send + Sync {
@@ -167,7 +168,7 @@ trait VectorIndex: Send + Sync {
 }
 ```
 
-The initial and fallback implementations are:
+The target and fallback implementations are:
 
 | Capability | Implementation | Correctness path |
 | --- | --- | --- |
@@ -183,6 +184,10 @@ The initial and fallback implementations are:
 Index metadata always includes the source data revision, schema digest,
 dimension, metric, and a format version. A mismatch makes the planner ignore
 the index rather than return unverifiable results.
+
+At the current baseline, collection queries always execute the exact oracle.
+Schema metadata may describe a requested future index, but it does not change
+execution to an approximate algorithm or indexed FTS path.
 
 ## 6. Query pipeline
 

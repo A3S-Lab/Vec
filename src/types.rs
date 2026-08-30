@@ -140,7 +140,7 @@ pub enum IndexType {
     Ivf = 2,
     Flat = 3,
     Diskann = 5,
-    /// Vamana is the graph-construction name used by DiskANN.
+    /// Vamana is the graph-construction name used by `DiskANN`.
     Vamana = 6,
     IvfRabitq = 7,
     HnswRabitq = 8,
