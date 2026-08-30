@@ -17,9 +17,11 @@ indices, JSON adapter values, schema defaults, and replacement upserts are
 validated before execution or persistence. Storage format version 2 provides
 generation-specific snapshots, manifest-committed WAL byte boundaries,
 monotonic DML/schema revisions, read-only lifecycle semantics, and bounded
-recovery reads. The baseline has 26 passing unit/integration tests in each of
-the default, no-default-feature, and all-feature configurations. Formatting,
-default/all-feature Clippy with `-D warnings`, and rustdoc are green.
+recovery reads. The external algorithm kernel is private and has a negative
+compile-time API fixture. The baseline has 26 passing unit/integration tests
+plus that compile-fail doctest in each of the default, no-default-feature, and
+all-feature configurations. Formatting, default/all-feature Clippy with
+`-D warnings`, and rustdoc are green.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
@@ -66,6 +68,8 @@ cannot be mistaken for shipped ANN behaviour.
   WAL append. Recovered documents use the same normalization and validation.
 - Completed: typed schema-default backfill validation and complete-document
   validation for replacement upserts.
+- Completed: the `zvec-core` implementation dependency is no longer re-exported
+  through the A3S public surface; a compile-fail doctest guards the boundary.
 - Open: encoded binary and quantized round trips/error bounds, broader
   nullability/overflow fixtures, and the supported-platform matrix required by
   the full Phase 1 exit gate.
