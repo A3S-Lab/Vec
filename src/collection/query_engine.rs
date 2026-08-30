@@ -29,8 +29,8 @@ pub(super) fn count_to_f64(value: usize) -> f64 {
     value as f64
 }
 
-fn dense_score(query: &[f32], vector: &VectorValue, metric: MetricType) -> Option<f32> {
-    let values = vector.to_dense_f32()?;
+fn dense_score(query: &[f64], vector: &VectorValue, metric: MetricType) -> Option<f64> {
+    let values = vector.to_dense_f64()?;
     if values.len() != query.len() {
         return None;
     }
@@ -42,15 +42,15 @@ fn dense_score(query: &[f32], vector: &VectorValue, metric: MetricType) -> Optio
                 let difference = *left - *right;
                 difference * difference
             })
-            .sum::<f32>(),
+            .sum::<f64>(),
         MetricType::Cosine => {
             let dot = query
                 .iter()
                 .zip(values.iter())
                 .map(|(left, right)| *left * *right)
-                .sum::<f32>();
-            let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
-            let value_norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+                .sum::<f64>();
+            let query_norm = query.iter().map(|value| value * value).sum::<f64>().sqrt();
+            let value_norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
             if query_norm == 0.0 || value_norm == 0.0 {
                 0.0
             } else {
@@ -127,12 +127,12 @@ pub(super) fn execute_query(
 
 fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Result<Vec<Doc>> {
     let dense_query = if let Some(vector) = &query.vector {
-        Some(vector.clone())
+        Some(vector.iter().map(|value| f64::from(*value)).collect())
     } else if let Some(id) = &query.id {
         docs.iter()
             .find(|doc| doc.get_pk() == Some(id.as_str()))
             .and_then(|doc| doc.vector(&query.field_name))
-            .and_then(VectorValue::to_dense_f32)
+            .and_then(VectorValue::to_dense_f64)
     } else {
         None
     };
@@ -160,17 +160,14 @@ fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Resu
             let Some(score) = dense_score(dense, vector, metric) else {
                 continue;
             };
-            f64::from(score)
+            score
         } else {
             let Some(stored) = vector.to_sparse_f64() else {
                 continue;
             };
-            sparse_query.as_ref().map_or(0.0, |candidate| {
-                candidate
-                    .iter()
-                    .filter_map(|(index, value)| stored.get(index).map(|other| value * other))
-                    .sum()
-            })
+            sparse_query
+                .as_ref()
+                .map_or(0.0, |candidate| sparse_score(candidate, &stored, metric))
         };
         if let Some(radius) = radius {
             let passes = if metric == MetricType::L2 {
@@ -187,6 +184,52 @@ fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Resu
         result.push(copy);
     }
     Ok(result)
+}
+
+fn sparse_score(
+    query: &BTreeMap<u32, f64>,
+    stored: &BTreeMap<u32, f64>,
+    metric: MetricType,
+) -> f64 {
+    let dot = query
+        .iter()
+        .filter_map(|(index, value)| stored.get(index).map(|other| value * other))
+        .sum::<f64>();
+    match metric {
+        MetricType::L2 => {
+            let query_distance = query
+                .iter()
+                .map(|(index, value)| {
+                    let difference = value - stored.get(index).copied().unwrap_or_default();
+                    difference * difference
+                })
+                .sum::<f64>();
+            let stored_distance = stored
+                .iter()
+                .filter(|(index, _)| !query.contains_key(index))
+                .map(|(_, value)| value * value)
+                .sum::<f64>();
+            -(query_distance + stored_distance)
+        }
+        MetricType::Cosine => {
+            let query_norm = query
+                .values()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            let stored_norm = stored
+                .values()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if query_norm == 0.0 || stored_norm == 0.0 {
+                0.0
+            } else {
+                dot / (query_norm * stored_norm)
+            }
+        }
+        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => dot,
+    }
 }
 
 fn execute_fts(

@@ -112,9 +112,14 @@ fn sparse_and_binary_query_contracts_fail_explicitly() {
 
     for data_type in [DataType::VectorBinary32, DataType::VectorBinary64] {
         let path = temporary.path().join(format!("{data_type:?}"));
+        let dimension = if data_type == DataType::VectorBinary32 {
+            32
+        } else {
+            64
+        };
         let schema = CollectionSchema::builder("binary-contract")
             .add_field(
-                FieldSchema::new("embedding", data_type, false, 32)
+                FieldSchema::new("embedding", data_type, false, dimension)
                     .expect("binary schema must be valid"),
             )
             .build()
@@ -125,7 +130,7 @@ fn sparse_and_binary_query_contracts_fail_explicitly() {
             None,
         )
         .expect("collection must be created");
-        let query = SearchQuery::new("embedding", &[0.0; 32], 10)
+        let query = SearchQuery::new("embedding", &vec![0.0; dimension as usize], 10)
             .expect("binary-shaped query must be created");
         let error = collection
             .query(&query)

@@ -121,15 +121,19 @@ pub(super) fn validate_doc(schema: &CollectionSchema, doc: &Doc, require_all: bo
     }
     for field in &schema.vectors {
         if let Some(value) = doc.vector(&field.name) {
+            value.validate().map_err(|error| {
+                Error::new(
+                    error.code,
+                    format!("vector '{}': {}", field.name, error.message),
+                )
+            })?;
             if value.data_type() != field.data_type {
-                let numeric_dense =
-                    field.data_type.is_dense_vector() && value.data_type().is_dense_vector();
-                if !numeric_dense {
-                    return Err(Error::invalid_argument(format!(
-                        "vector '{}' has a value incompatible with {}",
-                        field.name, field.data_type
-                    )));
-                }
+                return Err(Error::invalid_argument(format!(
+                    "vector '{}' has a {:?} payload but schema requires {}",
+                    field.name,
+                    value.data_type(),
+                    field.data_type
+                )));
             }
             if field.dimension > 0
                 && !value.is_sparse()

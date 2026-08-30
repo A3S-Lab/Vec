@@ -390,6 +390,18 @@ impl FieldSchema {
                 "dense vector dimension must be positive",
             ));
         }
+        let binary_alignment = match data_type {
+            DataType::VectorBinary32 => Some(32),
+            DataType::VectorBinary64 => Some(64),
+            _ => None,
+        };
+        if let Some(alignment) = binary_alignment {
+            if dimension % alignment != 0 {
+                return Err(Error::invalid_argument(format!(
+                    "{data_type} dimension must be a multiple of {alignment}"
+                )));
+            }
+        }
         if !data_type.is_vector() && dimension != 0 {
             return Err(Error::invalid_argument(
                 "non-vector field dimension must be zero",

@@ -14,18 +14,25 @@ not replace an earlier correctness gate.
 **2026-08-30:** Phase 1's query/write contract hardening and Phase 3's core
 recovery transaction are implemented. Query routes, dense dimensions, sparse
 indices, JSON adapter values, schema defaults, and replacement upserts are
-validated before execution or persistence. Storage format version 2 provides
+validated before execution or persistence. Storage format version 3 provides
 generation-specific snapshots, manifest-committed WAL byte boundaries,
 monotonic DML/schema revisions, read-only lifecycle semantics, and bounded
-recovery reads. The external algorithm kernel is private and has a negative
+recovery reads. Native FP16, INT4, INT8, INT16, and binary payloads now have
+strict physical-type validation and lossless persistence; dense and sparse
+numeric vectors share exact L2/IP/cosine/MIPS-L2 scoring with `f64`
+intermediates. The external algorithm kernel is private and has a negative
 compile-time API fixture. Inert process/collection controls have been removed;
 the retained durability policy and WAL checkpoint limits are connected and
 tested. Future index/query/schema tuning now fails explicitly unless it has an
 exact execution consumer; Flat and scan FTS telemetry no longer claim ANN or a
-built FTS index. The baseline has 37 passing unit/integration tests plus four
+built FTS index. The baseline has 48 passing unit/integration tests plus four
 compile-fail doctests in each of the default, no-default-feature, and all-
 feature configurations. Formatting, default/all-feature Clippy with
-`-D warnings`, and rustdoc are green.
+`-D warnings`, and rustdoc are green. The full default-feature suite also
+passes on the declared Rust 1.75 MSRV after constraining `zvec-core`'s broad
+Rayon dependency to its compatible release line; optional Jieba still requires
+a newer Cargo because its current compressed-dictionary chain uses Rust 2024
+manifests.
 
 Phase 3 is not complete: deterministic fault-injection hooks, crash tests at
 every fsync/rename/prune boundary, stale-lock diagnostics, fuzzing, and the
@@ -82,10 +89,16 @@ cannot be mistaken for shipped ANN behaviour.
   errors before mutation. Flat remains the sole ready exact index; scan FTS
   tokenizer configuration and multi-query fusion never increment ANN
   telemetry.
-- Open: encoded binary and quantized round trips/error bounds, broader
-  nullability/overflow fixtures, differential FTS/vector and concurrency
-  evidence, and the supported-platform matrix required by the full Phase 1
-  exit gate.
+- Completed: dense/sparse FP16 bit encodings, signed INT4 range checks, native
+  INT8/INT16 coordinates, and Binary32/Binary64 chunk/dimension contracts have
+  positive, negative, typed-getter, and storage round-trip evidence. Every
+  native numeric type matches the exact four-metric reference, FP16 conversion
+  is round-to-nearest-even with bounded error, and FP64 scoring is not narrowed
+  before accumulation.
+- Open: broader nullability/overflow fixtures, differential FTS/vector and
+  concurrency evidence, and the supported-platform matrix required by the full
+  Phase 1 exit gate. Scale-bearing FP16/INT8/INT4 index quantization with exact
+  re-ranking remains Phase 4 work; binary query execution remains unsupported.
 
 ## Phase 2 — Correct in-memory collection
 

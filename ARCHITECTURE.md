@@ -51,7 +51,10 @@ crates/vec/
 │   ├── schema.rs              # field/vector/collection schemas and builders
 │   ├── schema/
 │   │   └── index_contract.rs  # executable index-configuration allowlist
-│   ├── doc.rs                 # typed document values and projection
+│   ├── doc.rs                 # typed scalar/document values and projection
+│   ├── doc/
+│   │   ├── vector_api.rs      # native vector conversion and typed access
+│   │   └── vector_codec.rs    # vector validation and IEEE FP16 codec
 │   ├── query.rs               # vector, FTS, group, and query parameters
 │   ├── multi_query.rs         # routes and RRF/weighted fusion
 │   ├── collection.rs          # lifecycle and write transaction coordinator
@@ -74,7 +77,8 @@ crates/vec/
 └── tests/
     ├── contracts.rs           # typed query/write contract coverage
     ├── durability.rs          # public lifecycle/restart coverage
-    └── execution_contracts.rs # executable/unsupported option matrix
+    ├── execution_contracts.rs # executable/unsupported option matrix
+    └── vector_codecs.rs       # native codec/metric/storage contracts
 ```
 
 Real `index/` and `planner/` modules are added only when their phase gates have
@@ -145,7 +149,22 @@ writes canonicalize compatible JSON scalars and arrays to the schema's concrete
 `FieldValue` variant before validation, WAL append, and storage. JSON cannot
 represent binary fields in this contract. Recovery applies the same
 normalization so query code never treats untyped JSON as stored authority.
-Vector codecs preserve the original dimension and quantizer metadata.
+Vector payloads preserve their physical type and original dimension. Dense and
+sparse FP16 use raw IEEE 754 half-precision bits; the f32 adapters apply
+round-to-nearest-even and reject non-finite or out-of-range input. INT4 stores
+one authoritative signed coordinate per element and enforces `-8..=7`; it is
+not a packed scalar quantizer. INT8 and INT16 likewise represent native integer
+coordinates. Binary32/Binary64 store packed bytes, require complete 32-/64-bit
+chunks, and express schema dimensions in bits. Writes never coerce one vector
+variant into another schema type.
+
+The exact oracle decodes native numeric vectors into `f64` intermediates for
+L2, inner product, cosine, and MIPS-L2. This preserves FP64 coordinates through
+accumulation; only the public document score is checked and narrowed to `f32`.
+Binary search has no exact consumer yet and returns `NotSupported`. Future
+scale-bearing FP16/INT8/packed-INT4 quantizers are derived index state with
+full-vector refinement; their options remain rejected until Phase 4 provides
+that implementation and re-ranking evidence.
 
 ### On-disk generations
 
@@ -157,7 +176,7 @@ Vector codecs preserve the original dimension and quantizer metadata.
 └── segments/snapshot-<generation:020>.json
 ```
 
-The format-2 manifest is the commit point. Each acknowledged mutation first
+The format-3 manifest is the commit point. Each acknowledged mutation first
 writes a WAL record containing a monotonic revision/operation identity, then
 publishes the manifest with the committed byte boundary for the active WAL
 segment. Recovery reads only that boundary. Bytes after it—including a partial
@@ -181,7 +200,11 @@ Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
 committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
 deserialization. The format is versioned and checksummed. Compatibility with the Alibaba C++
 binary files is provided through an explicit importer/exporter milestone; the
-native format is not silently interpreted as a different schema.
+native format is not silently interpreted as a different schema. Prototype
+formats 1 and 2 are rejected by the version-3 manifest reader. The version
+change is deliberate because sparse FP16 now persists raw half-precision bits;
+failure-closed versioning prevents old readers from treating those bit values
+as numeric `f32` coordinates.
 
 ## 5. Index contracts
 
@@ -274,7 +297,11 @@ The default Cargo feature set is empty and its normal/build dependency graph
 does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit
 because its embedded dictionary compression currently introduces that native
 build chain. A schema that requests Jieba without the feature receives
-`NotSupported`; it is never executed with a substitute tokenizer.
+`NotSupported`; it is never executed with a substitute tokenizer. The default
+feature set and its tests honor the declared Rust 1.75 MSRV. Jieba's current
+dependency chain contains Rust 2024-edition manifests and therefore requires a
+newer Cargo; that feature-specific compiler floor remains explicit until the
+dependency is replaced or its minimum version is raised for the whole crate.
 
 ## 9. Non-negotiable quality gates
 
