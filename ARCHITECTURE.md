@@ -75,6 +75,7 @@ crates/vec/
 │       ├── lock.rs            # single-writer/multi-reader lock
 │       └── tests.rs           # storage-boundary fault simulations
 └── tests/
+    ├── concurrency.rs         # snapshot and writer-serialization evidence
     ├── contracts.rs           # typed query/write contract coverage
     ├── differential_fts.rs    # independent scan-BM25 reference
     ├── differential_oracle.rs # independent dense/sparse reference
@@ -117,6 +118,12 @@ derived-index builds will need snapshot-generation installation semantics, but
 no placeholder catalog or background build is present today. The file lock
 allows multiple read-only processes while preserving the single-writer
 contract.
+
+Public concurrency fixtures exercise these boundaries through cloned
+`Collection` handles. Concurrent disjoint patches retain both fields and
+advance separate revisions; an iterator keeps its captured revision across a
+later write; and synchronized readers racing repeated two-document upserts see
+only the complete previous or complete next batch.
 
 No async runtime is required by the core API. Optional async helpers use
 `spawn_blocking` around the same synchronous transaction boundaries, so a
