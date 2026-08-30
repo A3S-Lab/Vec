@@ -92,8 +92,10 @@ fn write_owner(path: &Path) -> Result<()> {
         .write(true)
         .open(path)
         .map_err(|error| Error::internal(format!("open collection lock owner: {error}")))?;
+    // This sidecar is diagnostic only: the kernel lock remains authoritative.
+    // Avoid an fsync on every collection open, especially in recovery fuzzing;
+    // a lost or partial record simply degrades the next contention message.
     file.write_all(&bytes)
-        .and_then(|()| file.sync_data())
         .map_err(|error| Error::internal(format!("write collection lock owner: {error}")))
 }
 
