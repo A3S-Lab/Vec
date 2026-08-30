@@ -1,5 +1,6 @@
 //! Versioned manifest and atomic JSON metadata writes.
 
+use super::fault::{FaultInjector, FaultPoint};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -12,6 +13,42 @@ use std::fs::File;
 
 pub const FORMAT_VERSION: u32 = 3;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum AtomicWriteKind {
+    Manifest,
+    Snapshot,
+}
+
+impl AtomicWriteKind {
+    const fn written(self) -> FaultPoint {
+        match self {
+            Self::Manifest => FaultPoint::ManifestWritten,
+            Self::Snapshot => FaultPoint::SnapshotWritten,
+        }
+    }
+
+    const fn synced(self) -> FaultPoint {
+        match self {
+            Self::Manifest => FaultPoint::ManifestSynced,
+            Self::Snapshot => FaultPoint::SnapshotSynced,
+        }
+    }
+
+    const fn renamed(self) -> FaultPoint {
+        match self {
+            Self::Manifest => FaultPoint::ManifestRenamed,
+            Self::Snapshot => FaultPoint::SnapshotRenamed,
+        }
+    }
+
+    const fn directory_synced(self) -> FaultPoint {
+        match self {
+            Self::Manifest => FaultPoint::ManifestDirectorySynced,
+            Self::Snapshot => FaultPoint::SnapshotDirectorySynced,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -84,7 +121,12 @@ pub fn read(path: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-pub fn write(path: &Path, manifest: &Manifest, sync: bool) -> Result<()> {
+pub(super) fn write_with_faults(
+    path: &Path,
+    manifest: &Manifest,
+    sync: bool,
+    faults: &FaultInjector,
+) -> Result<()> {
     let raw = serde_json::to_vec_pretty(manifest)
         .map_err(|e| Error::internal(format!("serialize manifest: {e}")))?;
     let byte_len = u64::try_from(raw.len())
@@ -94,10 +136,36 @@ pub fn write(path: &Path, manifest: &Manifest, sync: bool) -> Result<()> {
             "manifest exceeds the {MAX_MANIFEST_BYTES}-byte storage limit"
         )));
     }
-    atomic_write(path, Path::new("manifest.json"), &raw, sync)
+    atomic_write_with_faults(
+        path,
+        Path::new("manifest.json"),
+        &raw,
+        sync,
+        AtomicWriteKind::Manifest,
+        faults,
+    )
 }
 
+#[cfg(test)]
 pub fn atomic_write(root: &Path, relative: &Path, bytes: &[u8], sync: bool) -> Result<()> {
+    atomic_write_with_faults(
+        root,
+        relative,
+        bytes,
+        sync,
+        AtomicWriteKind::Manifest,
+        &FaultInjector::default(),
+    )
+}
+
+pub(super) fn atomic_write_with_faults(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+    sync: bool,
+    kind: AtomicWriteKind,
+    faults: &FaultInjector,
+) -> Result<()> {
     let target = root.join(relative);
     let parent = target
         .parent()
@@ -117,26 +185,38 @@ pub fn atomic_write(root: &Path, relative: &Path, bytes: &[u8], sync: bool) -> R
         .write(true)
         .open(&temporary)
         .map_err(|e| Error::internal(format!("create temporary data file: {e}")))?;
-    let write_result = file
-        .write_all(bytes)
-        .and_then(|()| if sync { file.sync_all() } else { Ok(()) });
-    if let Err(error) = write_result {
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
         let _ = fs::remove_file(&temporary);
         return Err(Error::internal(format!("write data file: {error}")));
+    }
+    // An injected failure deliberately leaves the temporary file behind: a
+    // real process crash would not execute cleanup either, and recovery must
+    // ignore unpublished candidates.
+    faults.hit(kind.written())?;
+    if sync {
+        if let Err(error) = file.sync_all() {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(Error::internal(format!("sync data file: {error}")));
+        }
+        faults.hit(kind.synced())?;
     }
     drop(file);
     if let Err(error) = fs::rename(&temporary, &target) {
         let _ = fs::remove_file(&temporary);
         return Err(Error::internal(format!("publish data file: {error}")));
     }
+    faults.hit(kind.renamed())?;
     if sync {
         sync_directory(parent)?;
+        faults.hit(kind.directory_synced())?;
     }
     Ok(())
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<()> {
+pub(super) fn sync_directory(path: &Path) -> Result<()> {
     let directory =
         File::open(path).map_err(|e| Error::internal(format!("open storage directory: {e}")))?;
     directory
@@ -145,7 +225,7 @@ fn sync_directory(path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn sync_directory(_path: &Path) -> Result<()> {
+pub(super) fn sync_directory(_path: &Path) -> Result<()> {
     // Rust's Windows `File::sync_all` calls `FlushFileBuffers`, which requires
     // a handle with GENERIC_WRITE access. Directories cannot be opened that
     // way through the safe standard-library API, so attempting to flush a

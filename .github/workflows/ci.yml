@@ -43,6 +43,19 @@ jobs:
       - name: Test locked default feature graph
         run: cargo +1.75.0 test --locked
 
+  recovery-fuzz:
+    name: Recovery fuzz smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install pinned nightly Rust
+        run: rustup toolchain install nightly-2026-08-30 --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Fuzz persisted recovery boundaries
+        run: cargo +nightly-2026-08-30 fuzz run recovery -- -runs=256 -max_len=1024
+
   platform:
     name: ${{ matrix.name }}
     strategy:

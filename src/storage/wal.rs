@@ -1,5 +1,7 @@
 //! Length-delimited, checksummed write-ahead log.
 
+use super::fault::{FaultInjector, FaultPoint};
+use super::manifest::sync_directory;
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -58,12 +60,31 @@ pub fn segment_path(root: &Path, sequence: u64) -> PathBuf {
     root.join("wal").join(format!("wal-{sequence:020}.bin"))
 }
 
+#[cfg(test)]
 pub fn append(
     root: &Path,
     sequence: u64,
     committed_bytes: u64,
     record: &WalRecord,
     sync: bool,
+) -> Result<u64> {
+    append_with_faults(
+        root,
+        sequence,
+        committed_bytes,
+        record,
+        sync,
+        &FaultInjector::default(),
+    )
+}
+
+pub(super) fn append_with_faults(
+    root: &Path,
+    sequence: u64,
+    committed_bytes: u64,
+    record: &WalRecord,
+    sync: bool,
+    faults: &FaultInjector,
 ) -> Result<u64> {
     fs::create_dir_all(root.join("wal"))
         .map_err(|e| Error::internal(format!("create WAL directory: {e}")))?;
@@ -102,12 +123,17 @@ pub fn append(
     file.set_len(committed_bytes)
         .and_then(|()| file.seek(SeekFrom::Start(committed_bytes)).map(|_| ()))
         .map_err(|e| Error::internal(format!("prepare WAL append boundary: {e}")))?;
+    faults.hit(FaultPoint::WalPrepared)?;
     file.write_all(&header)
-        .and_then(|()| file.write_all(&payload))
         .map_err(|e| Error::internal(format!("append WAL record: {e}")))?;
+    faults.hit(FaultPoint::WalHeaderWritten)?;
+    file.write_all(&payload)
+        .map_err(|e| Error::internal(format!("append WAL record: {e}")))?;
+    faults.hit(FaultPoint::WalPayloadWritten)?;
     if sync {
         file.sync_all()
             .map_err(|e| Error::internal(format!("sync WAL segment: {e}")))?;
+        faults.hit(FaultPoint::WalSynced)?;
     }
     u64::try_from(HEADER_LEN + payload.len())
         .map_err(|_| Error::resource_exhausted("WAL frame size exceeds this platform"))
@@ -227,13 +253,14 @@ fn validate_record(record: &WalRecord) -> Result<()> {
     Ok(())
 }
 
-pub fn prune(root: &Path, through: u64) -> Result<()> {
+pub(super) fn prune_with_faults(root: &Path, through: u64, faults: &FaultInjector) -> Result<()> {
     let directory = root.join("wal");
     if !directory.exists() {
         return Ok(());
     }
+    let mut removed = false;
     for entry in
-        fs::read_dir(directory).map_err(|e| Error::internal(format!("read WAL directory: {e}")))?
+        fs::read_dir(&directory).map_err(|e| Error::internal(format!("read WAL directory: {e}")))?
     {
         let entry = entry.map_err(|e| Error::internal(format!("read WAL entry: {e}")))?;
         let name = entry.file_name();
@@ -245,9 +272,16 @@ pub fn prune(root: &Path, through: u64) -> Result<()> {
             continue;
         };
         if number.parse::<u64>().is_ok_and(|seq| seq <= through) {
+            faults.hit(FaultPoint::WalPruneBeforeRemove)?;
             fs::remove_file(entry.path())
                 .map_err(|e| Error::internal(format!("prune WAL segment: {e}")))?;
+            removed = true;
+            faults.hit(FaultPoint::WalPruneAfterRemove)?;
         }
+    }
+    if removed {
+        sync_directory(&directory)?;
+        faults.hit(FaultPoint::WalPruneDirectorySynced)?;
     }
     Ok(())
 }

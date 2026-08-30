@@ -90,7 +90,7 @@ integer and floating-point extrema, array-member overflow, and durable null
 updates. Schema backfills and replacement upserts are validated against the
 resulting complete document.
 
-The current baseline has 66 passing unit and integration tests plus four
+The current baseline has 71 passing unit and integration tests plus four
 compile-fail API-boundary doctests in each of the default, no-default-feature,
 and all-feature configurations. Strict Clippy and rustdoc warning gates pass
 for the same source revision. The default test suite also passes on the
@@ -104,9 +104,13 @@ new payload from being silently reinterpreted by an older reader.
 GitHub Actions runs the full default-feature suite on Linux x86_64/arm64,
 Windows x86_64, and macOS arm64/Intel. The Intel job uses a macOS 12.0
 deployment target, but GitHub's hosted runner executes a newer macOS release;
-an actual macOS 12 Intel runtime smoke remains open. Fault-injection hooks,
-WAL-pruning crash tests, real approximate indexes, indexed FTS, scale-bearing
-index quantization, binary search, and fuzzing remain roadmap work.
+an actual macOS 12 Intel runtime smoke remains open. Per-handle fault injection
+checks all 18 WAL/snapshot/manifest write, sync, rename, and prune boundaries;
+lock contention reports recorded owner PID/time, and stale metadata never acts
+as lock authority. A fixed-seed recovery mutation corpus and a separate
+libFuzzer/AddressSanitizer target exercise manifest, snapshot, and WAL damage;
+CI runs a bounded fuzz smoke. Real approximate indexes, indexed FTS,
+scale-bearing index quantization, and binary search remain roadmap work.
 
 ## Configuration policy
 

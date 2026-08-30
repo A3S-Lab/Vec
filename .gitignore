@@ -1,3 +1,6 @@
 /target/
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/
 /.a3s-vec-test/
 .DS_Store
