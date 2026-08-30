@@ -35,7 +35,7 @@ pub use collection::{
 };
 pub use config::{
     check_version, default_config, initialize, is_initialized, shutdown, version, version_major,
-    version_minor, version_patch, ConfigBuilder, Durability, IoBackend,
+    version_minor, version_patch, ConfigBuilder, Durability,
 };
 pub use doc::{Doc, FieldValue, VectorValue};
 pub use embedding::{DenseEmbedding, EmbeddingInput, QueryExecutor, SparseEmbedding};
@@ -53,7 +53,7 @@ pub use schema::{
     IvfIndexParam, IvfRabitqIndexParam, VamanaIndexParam, VectorSchema,
 };
 pub use stats::StatsSnapshot;
-pub use types::{DataType, DocOperator, IndexType, LogLevel, LogType, MetricType, QuantizeType};
+pub use types::{DataType, DocOperator, IndexType, MetricType, QuantizeType};
 
 /// Convenient import for the common collection workflow.
 pub mod prelude {

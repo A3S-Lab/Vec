@@ -1,5 +1,5 @@
 use super::{snapshot, wal, StorageHandle, WalOperation};
-use crate::config::ConfigBuilder;
+use crate::config::{ConfigBuilder, Durability};
 use crate::doc::Doc;
 use crate::error::ErrorCode;
 use crate::schema::{CollectionSchema, FieldSchema};
@@ -231,4 +231,41 @@ fn oversized_snapshot_is_rejected_before_allocation() {
         .expect_err("oversized snapshots must be rejected before deserialization");
     assert_eq!(error.code, ErrorCode::ResourceExhausted);
     assert!(error.message.contains("recovery limit"));
+}
+
+#[test]
+fn interval_checkpoint_limits_are_consumed_by_storage() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let root = temporary.path().join("collection");
+    let mut storage =
+        StorageHandle::create(&root, &schema(), false).expect("storage must be created");
+    let operation_limit = ConfigBuilder::default()
+        .durability(Durability::Interval)
+        .wal_max_ops(2);
+
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("doc-1")],
+            },
+            &operation_limit,
+        )
+        .expect("first WAL append must commit");
+    assert!(!storage.should_checkpoint(&operation_limit));
+    storage
+        .append(
+            2,
+            WalOperation::Insert {
+                docs: vec![doc("doc-2")],
+            },
+            &operation_limit,
+        )
+        .expect("second WAL append must commit");
+    assert!(storage.should_checkpoint(&operation_limit));
+
+    let byte_limit = ConfigBuilder::default()
+        .durability(Durability::Interval)
+        .wal_max_bytes(1);
+    assert!(storage.should_checkpoint(&byte_limit));
 }

@@ -54,6 +54,7 @@ crates/vec/
 │   ├── multi_query.rs         # routes and RRF/weighted fusion
 │   ├── collection.rs          # lifecycle and write transaction coordinator
 │   ├── collection/
+│   │   ├── configuration.rs   # process defaults + collection overrides
 │   │   ├── query_api.rs       # query/fetch/iterator collection API
 │   │   ├── query_contract.rs  # schema-derived route/type/dimension checks
 │   │   ├── query_engine.rs    # exact vector/filter/FTS oracle
@@ -110,6 +111,15 @@ zvec single-process writer contract.
 No async runtime is required by the core API. Optional async helpers use
 `spawn_blocking` around the same synchronous transaction boundaries, so a
 caller never blocks an async executor thread on disk or index work.
+
+Runtime configuration follows an executable-contract rule. `ConfigBuilder`
+owns only the process durability default and WAL operation/byte checkpoint
+thresholds. `CollectionOptions` owns read-only mode plus an optional durability
+override; absence means inheritance, not a second hard-coded default. Memory,
+threading, logging, I/O backend, mmap, buffer, and segment controls are not
+public until they select a real bounded implementation. The resolved process
+defaults are captured when a collection is created or opened, so a later
+`initialize` call cannot change an active collection's acknowledgement policy.
 
 ## 4. Data and storage model
 
