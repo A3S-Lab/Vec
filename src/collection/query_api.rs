@@ -1,13 +1,16 @@
 //! Collection query, fetch, and iterator APIs.
 
-use super::query_engine::{count_to_f64, execute_query, normalize_scores, score_to_f32, sort_docs};
+use super::query_engine::{
+    count_to_f64, execute_query_with_candidates, normalize_scores, parse_optional_filter,
+    score_to_f32, sort_docs,
+};
 use super::Collection;
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::iterator::DocIterator;
 use crate::multi_query::{MultiQuery, RerankMethod};
 use crate::query::{GroupBySearchQuery, SearchQuery};
-use crate::stats::{QueryKind, QueryObservation};
+use crate::stats::{IndexUsage, QueryKind, QueryObservation};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -15,12 +18,28 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 impl Collection {
     pub fn query(&self, query: &SearchQuery) -> Result<Vec<Doc>> {
         self.ensure_open()?;
-        let (schema, docs, _revision, stats) = self.snapshot_state()?;
-        let result = execute_query(&schema, &docs, query)?;
+        let snapshot = self.snapshot_state()?;
+        let filter = parse_optional_filter(query.filter.as_deref())?;
+        let plan = snapshot.indexes.plan_candidates(
+            &snapshot.docs,
+            snapshot.revision,
+            query,
+            filter.as_ref(),
+        )?;
+        let result = execute_query_with_candidates(
+            &snapshot.schema,
+            &snapshot.docs,
+            query,
+            plan.selection.as_ref(),
+            plan.fts_scores.as_ref(),
+            filter.as_ref(),
+        )?;
         let has_fts = query.fts.is_some();
-        stats.record_query(QueryObservation {
+        snapshot.stats.record_query(QueryObservation {
             kind: if has_fts {
                 QueryKind::Fts
+            } else if plan.used_ann {
+                QueryKind::Ann
             } else {
                 QueryKind::Exact
             },
@@ -28,8 +47,9 @@ impl Collection {
                 .filter
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty()),
+            index_usage: IndexUsage::new(plan.used_scalar, plan.used_fts_index),
             radius: query.params.get("radius").is_some(),
-            candidates: docs.len() as u64,
+            candidates: plan.candidate_count(snapshot.docs.len()),
         });
         Ok(result)
     }
@@ -41,8 +61,12 @@ impl Collection {
                 "multi-query must contain at least one sub-query",
             ));
         }
-        let (schema, docs, _revision, stats) = self.snapshot_state()?;
+        let snapshot = self.snapshot_state()?;
         let mut branches: Vec<Vec<Doc>> = Vec::with_capacity(query.queries.len());
+        let mut used_ann = false;
+        let mut used_scalar = false;
+        let mut used_fts_index = false;
+        let mut candidates = 0_u64;
         for sub in &query.queries {
             let mut branch = sub.to_search_query()?;
             if let Some(filter) = query.effective_filter() {
@@ -50,7 +74,25 @@ impl Collection {
             }
             branch.include_vector = query.include_vector_value;
             branch.output_fields.clone_from(&query.output_fields);
-            branches.push(execute_query(&schema, &docs, &branch)?);
+            let filter = parse_optional_filter(branch.filter.as_deref())?;
+            let plan = snapshot.indexes.plan_candidates(
+                &snapshot.docs,
+                snapshot.revision,
+                &branch,
+                filter.as_ref(),
+            )?;
+            used_ann |= plan.used_ann;
+            used_scalar |= plan.used_scalar;
+            used_fts_index |= plan.used_fts_index;
+            candidates = candidates.saturating_add(plan.candidate_count(snapshot.docs.len()));
+            branches.push(execute_query_with_candidates(
+                &snapshot.schema,
+                &snapshot.docs,
+                &branch,
+                plan.selection.as_ref(),
+                plan.fts_scores.as_ref(),
+                filter.as_ref(),
+            )?);
         }
         let normalization = query.normalization.as_deref().unwrap_or("none");
         for branch in &mut branches {
@@ -91,15 +133,18 @@ impl Collection {
         let topk = usize::try_from(query.topk_value)
             .map_err(|_| Error::invalid_argument("multi-query topk must be non-negative"))?;
         output.truncate(topk);
-        stats.record_query(QueryObservation {
-            kind: if query.queries.iter().any(|branch| branch.fts.is_some()) {
-                QueryKind::Fts
-            } else {
-                QueryKind::Exact
+        let has_fts = query.queries.iter().any(|branch| branch.fts.is_some());
+        snapshot.stats.record_query(QueryObservation {
+            kind: match (used_ann, has_fts) {
+                (true, true) => QueryKind::AnnFts,
+                (true, false) => QueryKind::Ann,
+                (false, true) => QueryKind::Fts,
+                (false, false) => QueryKind::Exact,
             },
             filtered: query.filter.is_some(),
+            index_usage: IndexUsage::new(used_scalar, used_fts_index),
             radius: false,
-            candidates: docs.len() as u64,
+            candidates,
         });
         Ok(output)
     }

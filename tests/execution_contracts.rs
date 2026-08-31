@@ -31,7 +31,7 @@ fn valid_doc(id: &str) -> Doc {
 }
 
 #[test]
-fn unsupported_index_lifecycle_does_not_mutate_collection() {
+fn ann_and_fts_index_lifecycle_is_live() {
     let temporary = tempdir().expect("temporary directory must be available");
     let collection = Collection::create(
         temporary
@@ -43,45 +43,38 @@ fn unsupported_index_lifecycle_does_not_mutate_collection() {
         None,
     )
     .expect("collection must be created");
-    let initial = collection.stats().expect("stats must be available");
     let hnsw =
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("HNSW descriptor must be valid");
-
-    let error = collection
+    collection
         .create_index("embedding", &hnsw)
-        .expect_err("an unimplemented HNSW build must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!collection
+        .expect("HNSW build must succeed");
+    assert!(collection
         .schema()
         .expect("schema must be available")
         .has_index("embedding"));
-    assert_eq!(
-        collection.stats().expect("stats must be available"),
-        initial
-    );
+    let indexed = collection.stats().expect("stats must be available");
+    assert_eq!(indexed.indexes[0].index_type, IndexType::Hnsw);
 
     let fts =
         IndexParams::fts(Some("standard"), None, None).expect("FTS configuration must be valid");
-    let error = collection
+    collection
         .create_index("title", &fts)
-        .expect_err("scan FTS configuration must not claim a physical index build");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!collection
+        .expect("FTS index build must succeed");
+    assert!(collection
         .schema()
         .expect("schema must be available")
         .has_index("title"));
-    assert_eq!(
-        collection.stats().expect("stats must be available"),
-        initial
-    );
+    let indexed = collection.stats().expect("stats must be available");
+    assert_eq!(indexed.indexes.len(), 2);
+    assert_eq!(indexed.indexes[0].index_type, IndexType::Hnsw);
+    assert_eq!(indexed.indexes[1].index_type, IndexType::Fts);
 
-    let error = collection
+    collection
         .optimize()
-        .expect_err("unimplemented physical optimization must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
+        .expect("index optimization must succeed");
     assert_eq!(
         collection.stats().expect("stats must be available"),
-        initial
+        indexed
     );
 }
 
@@ -149,62 +142,72 @@ fn flat_index_is_a_live_exact_path_and_never_ann_telemetry() {
 }
 
 #[test]
-fn future_query_controls_fail_without_mutating_the_query() {
+fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
     let mut vector =
         SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
-    let error = vector
+    vector
         .set_hnsw_params(HnswQueryParams::new(64, 0.0, false, false))
-        .expect_err("HNSW search controls must fail until an HNSW executor exists");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(vector.params.is_empty());
+        .expect("HNSW search controls must be accepted");
+    assert_eq!(vector.params["type"], json!("hnsw"));
+    assert_eq!(vector.params["ef"], json!(64));
+
+    let mut ivf = SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
+    ivf.set_ivf_params(IvfQueryParams::new(8, false, 1.5))
+        .expect("IVF controls must be accepted");
+    assert_eq!(ivf.params["type"], json!("ivf"));
+    assert_eq!(ivf.params["nprobe"], json!(8));
 
     for error in [
-        vector
-            .set_ivf_params(IvfQueryParams::new(8, false, 1.0))
-            .expect_err("IVF controls must fail explicitly"),
-        vector
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
+            .expect("query must be valid")
             .set_ivf_rabitq_params(IvfRabitqQueryParams::new(8, 0.0, false, false))
             .expect_err("IVF RaBitQ controls must fail explicitly"),
-        vector
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
+            .expect("query must be valid")
             .set_diskann_params(DiskannQueryParams::new(32))
             .expect_err("DiskANN controls must fail explicitly"),
     ] {
         assert_eq!(error.code, ErrorCode::NotSupported);
-        assert!(vector.params.is_empty());
     }
 
-    let error = vector
+    let mut flat =
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
+    let error = flat
         .set_flat_params(FlatQueryParams::new(false, 2.0))
         .expect_err("unused Flat refinement controls must fail explicitly");
     assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(vector.params.is_empty());
+    assert!(flat.params.is_empty());
 
     let mut fts = Fts::new().expect("FTS payload must be created");
     fts.set_match_string("alpha beta")
         .expect("FTS expression must be valid");
     let mut lexical = SearchQuery::fts("title", &fts, 10).expect("FTS query must be valid");
-    let error = lexical
+    lexical
         .set_fts_params(
             FtsQueryParams::new(Some("and")).expect("FTS controls must be syntactically valid"),
         )
-        .expect_err("an unimplemented FTS operator must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(lexical.params.is_empty());
+        .expect("FTS default operator must be accepted");
+    assert_eq!(lexical.params["default_operator"], json!("and"));
 
     let mut sub = SubQuery::new().expect("sub-query must be created");
-    let error = sub
-        .set_hnsw_params(HnswQueryParams::new(64, 0.0, false, false))
-        .expect_err("sub-query ANN controls must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(sub.params.is_empty());
+    sub.set_hnsw_params(HnswQueryParams::new(64, 0.0, false, false))
+        .expect("sub-query HNSW controls must be accepted");
+    assert_eq!(sub.params["ef"], json!(64));
 
     let mut grouped = GroupBySearchQuery::new("embedding", "title", &[1.0, 0.0, 0.0], 2, 2)
         .expect("group-by query must be valid");
-    let error = grouped
+    grouped
         .set_ivf_params(IvfQueryParams::new(8, false, 1.0))
-        .expect_err("group-by ANN controls must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(grouped.params.is_empty());
+        .expect("group-by IVF controls must be accepted");
+    assert_eq!(grouped.params["nprobe"], json!(8));
+
+    let mut invalid =
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
+    let error = invalid
+        .set_hnsw_params(HnswQueryParams::new(0, 0.0, false, false))
+        .expect_err("zero ef must fail");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(invalid.params.is_empty());
 }
 
 #[test]
@@ -221,19 +224,19 @@ fn deserialized_future_and_unknown_query_controls_fail_at_execution_boundary() {
     )
     .expect("collection must be created");
 
-    for parameter in [
-        "type",
-        "ef",
-        "nprobe",
-        "is_linear",
-        "is_using_refiner",
-        "scale_factor",
-        "list_size",
-        "operator",
+    for (parameter, value) in [
+        ("type", json!("hnsw")),
+        ("ef", json!(64)),
+        ("nprobe", json!(8)),
+        ("is_linear", json!(true)),
+        ("is_using_refiner", json!(true)),
+        ("scale_factor", json!(1.5)),
+        ("list_size", json!(64)),
+        ("operator", json!("and")),
     ] {
         let mut future =
             SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
-        future.params.insert(parameter.into(), json!(64));
+        future.params.insert(parameter.into(), value);
         let error = collection
             .query(&future)
             .expect_err("deserialized future controls must not be ignored");
@@ -295,10 +298,20 @@ fn supported_exact_query_controls_are_executed_and_observed() {
 }
 
 #[test]
-fn future_index_and_unused_build_parameters_fail_at_schema_boundary() {
-    let future_vector_indexes = [
+fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundary() {
+    for params in [
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf(MetricType::Cosine, 64, 10, false).expect("descriptor must be valid"),
+    ] {
+        let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+            .expect("vector schema must be valid");
+        field
+            .set_index_params(&params)
+            .expect("native ANN indexes must enter the schema");
+        assert!(field.has_index());
+    }
+
+    let future_vector_indexes = [
         IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
             .expect("descriptor must be valid"),
         IndexParams::diskann(MetricType::Cosine, 32, 100, 8).expect("descriptor must be valid"),
@@ -317,26 +330,31 @@ fn future_index_and_unused_build_parameters_fail_at_schema_boundary() {
 
     let mut scalar =
         FieldSchema::new("title", DataType::String, false, 0).expect("title schema must be valid");
-    let error = scalar
+    scalar
         .set_index_params(&IndexParams::invert(true, true).expect("descriptor must be valid"))
-        .expect_err("an unimplemented inverted index must not enter a schema");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!scalar.has_index());
+        .expect("native inverted indexes must enter the schema");
+    assert!(scalar.has_index());
 
-    for params in [
-        IndexParams::fts(Some("standard"), Some(&["lowercase"]), None)
-            .expect("descriptor must be valid"),
-        IndexParams::fts(Some("standard"), None, Some("future=true"))
-            .expect("descriptor must be valid"),
-    ] {
-        let mut field = FieldSchema::new("title", DataType::String, false, 0)
-            .expect("title schema must be valid");
-        let error = field
-            .set_index_params(&params)
-            .expect_err("unused FTS build controls must fail explicitly");
-        assert_eq!(error.code, ErrorCode::NotSupported);
-        assert!(!field.has_index());
-    }
+    let mut analyzed = FieldSchema::new("analyzed", DataType::String, false, 0)
+        .expect("analyzed schema must be valid");
+    analyzed
+        .set_index_params(
+            &IndexParams::fts(Some("standard"), Some(&["lowercase"]), None)
+                .expect("descriptor must be valid"),
+        )
+        .expect("implemented FTS filters must enter the schema");
+    assert!(analyzed.has_index());
+
+    let mut invalid_fts = FieldSchema::new("invalid", DataType::String, false, 0)
+        .expect("invalid schema must be constructible");
+    let error = invalid_fts
+        .set_index_params(
+            &IndexParams::fts(Some("standard"), None, Some("future=true"))
+                .expect("descriptor must be valid"),
+        )
+        .expect_err("malformed FTS extra parameters must fail explicitly");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(!invalid_fts.has_index());
 
     let mut quantized =
         IndexParams::flat(MetricType::Cosine).expect("flat descriptor must be valid");
@@ -362,13 +380,16 @@ fn future_index_and_unused_build_parameters_fail_at_schema_boundary() {
 
     let mut deserialized = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
         .expect("vector schema must be valid");
-    deserialized.index_params =
-        Some(IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"));
+    deserialized.index_params = Some(
+        IndexParams::hnsw(MetricType::Cosine, 16, 100)
+            .expect("descriptor must be valid")
+            .with_parameter("future", json!(true)),
+    );
     let error = CollectionSchema::builder("deserialized-index")
         .add_field(deserialized)
         .build()
         .expect_err("public or deserialized schema fields must be revalidated");
-    assert_eq!(error.code, ErrorCode::NotSupported);
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
 }
 
 #[test]
@@ -443,14 +464,14 @@ fn unsupported_schema_tuning_does_not_mutate_schema_or_collection() {
 }
 
 #[test]
-fn scanning_fts_configuration_is_not_reported_as_a_built_index() {
+fn fts_configuration_builds_an_observable_index() {
     let fts_params = IndexParams::fts(Some("standard"), None, None)
         .expect("standard FTS configuration must be valid");
     let mut title =
         FieldSchema::new("title", DataType::String, false, 0).expect("title schema must be valid");
     title
         .set_index_params(&fts_params)
-        .expect("scan tokenizer configuration must be attachable");
+        .expect("FTS index configuration must be attachable");
     let schema = CollectionSchema::builder("fts-contract")
         .add_field(title)
         .build()
@@ -466,11 +487,10 @@ fn scanning_fts_configuration_is_not_reported_as_a_built_index() {
         None,
     )
     .expect("collection must be created");
-    assert!(collection
-        .stats()
-        .expect("stats must be available")
-        .indexes
-        .is_empty());
+    let initial = collection.stats().expect("stats must be available");
+    assert_eq!(initial.indexes.len(), 1);
+    assert_eq!(initial.indexes[0].index_type, IndexType::Fts);
+    assert_eq!(initial.indexes[0].document_count, 0);
 
     let mut doc = Doc::with_pk("doc-1").expect("primary key must be valid");
     doc.add_string("title", "alpha beta")
@@ -480,12 +500,13 @@ fn scanning_fts_configuration_is_not_reported_as_a_built_index() {
     fts.set_match_string("alpha")
         .expect("FTS expression must be valid");
     let query = SearchQuery::fts("title", &fts, 10).expect("FTS query must be valid");
-    collection.query(&query).expect("scan FTS must succeed");
+    collection.query(&query).expect("indexed FTS must succeed");
     let snapshot = collection
         .stats_snapshot()
         .expect("telemetry must be available");
-    assert_eq!(snapshot.indexed_field_count, 0);
+    assert_eq!(snapshot.indexed_field_count, 1);
     assert_eq!(snapshot.ann_query_count, 0);
     assert_eq!(snapshot.exact_query_count, 1);
     assert_eq!(snapshot.fts_query_count, 1);
+    assert_eq!(snapshot.fts_index_query_count, 1);
 }

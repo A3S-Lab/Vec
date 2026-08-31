@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::fs::File;
 
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
+pub const MIN_READABLE_FORMAT_VERSION: u32 = 3;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +97,7 @@ pub fn read(path: &Path) -> Result<Manifest> {
         fs::read(&manifest_path).map_err(|e| Error::internal(format!("read manifest: {e}")))?;
     let manifest: Manifest = serde_json::from_slice(&raw)
         .map_err(|e| Error::internal(format!("parse manifest: {e}")))?;
-    if manifest.format_version != FORMAT_VERSION {
+    if !(MIN_READABLE_FORMAT_VERSION..=FORMAT_VERSION).contains(&manifest.format_version) {
         return Err(Error::new(
             crate::error::ErrorCode::NotSupported,
             format!(

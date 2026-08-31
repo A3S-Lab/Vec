@@ -1,164 +1,267 @@
-# a3s-vec
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec: fast process-local vector and full-text retrieval for Coding Agent workspaces">
+</p>
 
-`a3s-vec` is the native Rust, in-process vector and full-text engine planned
-for A3S Code's optional `vgrep` capability. It owns collections, typed
-documents, schema validation, persistence, vector indexes, scalar indexes, and
-FTS/BM25. It does not own workspace scanning, Embedding model runtimes, Agent
-sessions, or UI policy.
+`a3s-vec` is a native Rust, process-local retrieval engine for Coding Agent
+workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
+inside one durable collection—without a server process or a C/C++ runtime.
 
-The cross-project ownership contract is in the
-[A3S local retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md).
-The engine-specific design and gates are in
-[`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md).
+The project is an active prototype. HNSW, IVF, scalar inverted indexes, and FTS
+are live; exact execution remains the correctness oracle whenever an index is
+missing, stale, or not selective enough.
 
-## Scope
+[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
+[Reproducible benchmarks](BENCHMARKS.md)
 
-- Pure Rust API and portable CPU correctness path.
-- Dense and sparse vectors with L2, inner-product, cosine, and MIPS-style
-  scoring.
-- Typed scalar/array/null values, filters, projections, FTS/BM25, hybrid and
-  multi-query fusion, group-by, and iterators.
-- WAL, checksummed snapshots, manifest generations, recovery, and locking.
-- Caller-owned Embedding traits; no implicit network access or model download.
+## What it delivers
 
-The current implementation is a prototype. The collection query path is an
-exact-scan correctness oracle; HNSW, IVF, DiskANN, and indexed FTS are not yet
-implemented and are not advertised as active indexes. Only Flat vector
-configuration is reported as a ready index, because it directly executes over
-the authoritative document snapshot; scan-time FTS tokenizer configuration is
-not reported as a built index.
+| Need | Current implementation |
+| --- | --- |
+| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, and exact re-ranking |
+| Workspace text search | BM25, Unicode n-grams, boolean groups, exact phrases, and token filters |
+| Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
+| Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, and a validated derived-index cache |
+| Predictable failure | Typed validation errors and exact fallbacks instead of silent approximation |
 
-`zvec-core` is a private algorithm dependency. It is not re-exported through
-the public API, so callers depend only on the A3S-owned collection, schema,
-document, query, error, and configuration contracts.
+All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
+That lets the planner compose bitmaps and candidates without building
+query-sized primary-key maps, then resolve only the exact top-k documents.
 
-## Verified baseline
+## Measured proof
 
-As of 2026-08-30, the storage format is version 3 and the following behaviour
-has deterministic test evidence:
+`cargo bench --bench structured_fts` builds 25,000 workspace-shaped documents
+and checks every indexed result and public score bit against scan execution.
+The second of two consecutive post-change runs on the current development
+machine produced:
 
-- immutable generation-specific snapshots with the manifest as the only
-  generation commit point;
-- revisioned and checksummed WAL records for insert, update, upsert, delete,
-  and schema/backfill operations;
-- a manifest-committed WAL byte boundary, so an incomplete or complete
-  uncommitted tail is ignored and replaced by the next commit;
-- read-only create/open/close semantics that do not create missing files or
-  checkpoint on close;
-- bounded manifest, snapshot, WAL-frame, and total-WAL recovery reads;
-- checksum, committed truncation, orphan-generation, replay, and snapshot-size
-  failure tests.
+| Query | Planner path | Candidates/query | Latency/query |
+| --- | --- | ---: | ---: |
+| Selective phrase | Indexed | 1 | 3.50 µs |
+| Selective phrase baseline | Scan | 25,000 | 13.22 ms |
+| Selective required + optional | Indexed | 1 | 1.88 µs |
+| Selective required + optional baseline | Scan | 25,000 | 13.47 ms |
+| Common phrase | Automatic scan fallback | 25,000 | 13.52 ms |
+| Broad boolean + NOT | Automatic scan fallback | 25,000 | 14.70 ms |
 
-Native vector payloads are also authoritative and lossless at rest. Dense and
-sparse FP16 store raw IEEE 754 half-precision bits; INT4 accepts only signed
-coordinates in `-8..=7`; INT8 and INT16 keep their native integer coordinates;
-and Binary32/Binary64 validate complete 32-/64-bit chunks and bit dimensions.
-A schema accepts only its exact physical vector type. These native integer
-forms are not scale-bearing ANN quantizers and INT4 is not yet nibble-packed.
-All numeric dense and sparse forms execute the four exact metrics. Scoring uses
-`f64` intermediates—including FP64 source vectors—and narrows only the public
-result score to `f32` after exact ranking and a checked range conversion.
-Deterministic differential fixtures compare dense and sparse filtering,
-radius, top-k, score, and primary-key ordering with an independent reference
-scan. A dependency-free fixed-seed generator also checks a persisted and
-reopened 256-document corpus across 100 dense metric/filter combinations.
-Euclidean radius is non-negative by contract. Binary search remains explicitly
-unsupported.
+The selective cases reduce scored candidates by 25,000×. Broad structured
+queries deliberately switch to the exact scan path when candidate-set work is
+unlikely to pay for itself. These are local regression measurements—not a
+cross-project zvec benchmark. Full methodology and repeated observations live
+in [BENCHMARKS.md](BENCHMARKS.md).
 
-Scan-time FTS has independent BM25 fixtures, including 24 generated
-query/filter combinations, and defines its corpus as the documents that
-contain the queried text field; nullable documents without that field do not
-change document frequency or average length. Plain token
-`match_string` and `query_string` expressions are supported. Boolean, phrase,
-wildcard, and fielded query-string syntax returns `NotSupported` until Phase 5
-implements it, and providing both expression forms is rejected as ambiguous.
+## Quick start
 
-The in-process concurrency contract has deterministic public-API evidence.
-Concurrent writers are serialized without losing disjoint patches, a document
-iterator remains pinned to the revision it captured while a later batch is
-published, and synchronized readers never observe a partially published
-multi-document batch.
+The A3S monorepo consumes this repository as `crates/vec`. Until a crate
+release is published, use a path dependency from the monorepo root:
 
-The public contract now also validates every query before exact execution:
-dense dimensions are checked across all numeric vector types and metrics,
-dense/sparse/FTS routes must match their schema field, and unsupported binary
-or sparse source-ID routes fail with typed errors. JSON adapter values are
-canonicalized to their declared scalar or array type at the write boundary;
-incompatible, overflowing, and binary JSON values are rejected. Table-driven
-contracts cover missing and explicit nulls for all 18 scalar/array types,
-integer and floating-point extrema, array-member overflow, and durable null
-updates. Schema backfills and replacement upserts are validated against the
-resulting complete document.
-
-The current baseline has 71 passing unit and integration tests plus four
-compile-fail API-boundary doctests in each of the default, no-default-feature,
-and all-feature configurations. Strict Clippy and rustdoc warning gates pass
-for the same source revision. The default test suite also passes on the
-declared Rust 1.75 MSRV; the optional Jieba dependency chain currently requires
-a newer Cargo with Rust 2024-edition manifest support.
-
-Format versions 1 and 2 were prototype-only and are not opened by the version
-3 reader. Version 3 changes sparse FP16 persistence from misleading `f32`
-coordinates to raw half-precision bits; rejecting older manifests prevents a
-new payload from being silently reinterpreted by an older reader.
-GitHub Actions runs the full default-feature suite on Linux x86_64/arm64,
-Windows x86_64, and macOS arm64/Intel. The Intel job uses a macOS 12.0
-deployment target, but GitHub's hosted runner executes a newer macOS release;
-an actual macOS 12 Intel runtime smoke remains open. Per-handle fault injection
-checks all 18 WAL/snapshot/manifest write, sync, rename, and prune boundaries;
-lock contention reports recorded owner PID/time, and stale metadata never acts
-as lock authority. A fixed-seed recovery mutation corpus and a separate
-libFuzzer/AddressSanitizer target exercise manifest, snapshot, and WAL damage;
-CI runs a bounded fuzz smoke. Real approximate indexes, indexed FTS,
-scale-bearing index quantization, and binary search remain roadmap work.
-
-## Configuration policy
-
-Only controls with an execution consumer are public. `ConfigBuilder` sets the
-process durability default and the WAL operation/byte checkpoint thresholds;
-`CollectionOptions` exposes read-only mode and an optional per-collection
-durability override. A collection without an override inherits the process
-durability policy and captures it when the collection is created or opened;
-later process reconfiguration does not change an active handle.
-
-Memory/thread/logging controls, selectable I/O backends, mmap/buffer/segment
-knobs, and their placeholder types are not exposed until distinct bounded
-implementations exist. Compile-fail doctests guard this boundary. Future index
-descriptors remain constructible for adapter compatibility, but attaching or
-building them returns `NotSupported`. Future query setters return
-`NotSupported` without mutating the query, and deserialized future or unknown
-parameters are rejected again at execution. Non-zero schema segment sizing and
-schema-evolution concurrency are rejected until they have execution owners.
-
-## Platform policy
-
-The baseline must compile and run on Linux x86_64/aarch64, Windows x86_64, and
-macOS arm64/x86_64 with macOS 12.0 as the Intel minimum. C/C++ runtimes,
-Linux-only `io_uring`, and required architecture-specific SIMD are not part of
-the correctness path.
-
-The default feature set is pure Rust and is tested on Rust 1.75. `zvec-core`
-currently permits any Rayon 1.x release, so this crate pins Rayon to the latest
-line compatible with that MSRV. Chinese Jieba tokenization is opt-in with
-`--features jieba`; that feature currently pulls Jieba's compressed dictionary
-build chain, including Rust 2024-edition manifests, `zstd-sys`, and a C
-compiler. Requesting the `jieba` tokenizer without the feature returns
-`NotSupported` instead of silently using a different tokenizer.
-
-## Development
-
-Run checks from this crate directory or with its manifest:
-
-```sh
-cargo fmt --manifest-path crates/vec/Cargo.toml -- --check
-cargo test --manifest-path crates/vec/Cargo.toml
-cargo test --manifest-path crates/vec/Cargo.toml --no-default-features
-cargo test --manifest-path crates/vec/Cargo.toml --all-features
-cargo +1.75.0 test --manifest-path crates/vec/Cargo.toml --locked
-cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets -- -D warnings
-cargo clippy --manifest-path crates/vec/Cargo.toml --all-targets --all-features -- -D warnings
+```toml
+[dependencies]
+a3s-vec = { path = "crates/vec" }
 ```
 
+This complete example creates a durable FTS collection, inserts one workspace
+document, and executes a structured query:
+
+```rust
+use a3s_vec::{
+    Collection, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams,
+    Result, SearchQuery,
+};
+
+fn main() -> Result<()> {
+    let mut body = FieldSchema::new("body", DataType::String, false, 0)?;
+    body.set_index_params(&IndexParams::fts(Some("standard"), None, None)?)?;
+    let schema = CollectionSchema::builder("workspace")
+        .add_field(body)
+        .build()?;
+
+    let collection = Collection::create("./workspace-index", &schema, None)?;
+    let mut doc = Doc::with_pk("src/index.rs")?;
+    doc.add_string("body", "Rust vector database for workspace retrieval")?;
+    collection.insert(&[&doc])?;
+
+    let mut expression = Fts::new()?;
+    expression.set_query_string("rust AND \"vector database\"")?;
+    let query = SearchQuery::fts("body", &expression, 10)?;
+    let hits = collection.query(&query)?;
+
+    assert_eq!(hits[0].get_pk(), Some("src/index.rs"));
+    Ok(())
+}
+```
+
+## Retrieval capabilities
+
+### Vectors and indexes
+
+- Dense FP16, FP32, FP64, INT4, INT8, INT16, Binary32, and Binary64 payloads.
+- Sparse FP16 and FP32 payloads.
+- Exact L2, inner product, cosine, and MIPS-L2 scoring with `f64`
+  intermediates.
+- Native HNSW and IVF candidate generation with exact full-vector re-ranking.
+- Index-only FP16, symmetric INT8, and symmetric INT4 quantization.
+- Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
+  suffix, and boolean filter composition.
+
+### Full-text search
+
+The FTS pipeline analyzes documents and queries with the same ordered tokenizer
+and filter configuration.
+
+| Component | Supported values |
+| --- | --- |
+| Tokenizer | `standard`, `whitespace`, Unicode `ngram`, optional `jieba` / `jieba_accurate` |
+| Token filter | `lowercase`, `ascii_folding`, `stemmer` |
+| Query syntax | `AND`, `OR`, `NOT`, parentheses, `+` required, `-` prohibited, escaped characters, exact quoted phrases |
+| Default operator | `OR` for compatibility, or explicit `AND` |
+
+Omitting `filters` selects `lowercase`. Passing an explicit empty slice keeps
+the standard, whitespace, and n-gram tokenizer output case-sensitive. Filters
+run in declaration order on both indexed text and query text.
+
+```rust
+use a3s_vec::{IndexParams, Result};
+
+fn workspace_text_index() -> Result<IndexParams> {
+    IndexParams::fts(
+        Some("standard"),
+        Some(&["lowercase", "ascii_folding", "stemmer"]),
+        Some(r#"{"max_token_length":255,"stemmer_lang":"english"}"#),
+    )
+}
+```
+
+The Snowball stemmer supports Arabic, Danish, Dutch, English, Finnish, French,
+German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian,
+Spanish, Swedish, Tamil, and Turkish. ASCII folding uses Unicode decomposition
+plus common Latin compatibility mappings; it is not advertised as byte-for-byte
+equivalent to every zvec folding table.
+
+The n-gram tokenizer defaults to Unicode bigrams. `ngram_min`,
+`ngram_max`, and `token_chars` configure its range and accepted Unicode
+character classes:
+
+```rust
+use a3s_vec::{IndexParams, Result};
+
+fn identifier_index() -> Result<IndexParams> {
+    IndexParams::fts(
+        Some("ngram"),
+        None,
+        Some(
+            r#"{"ngram_min":2,"ngram_max":3,"token_chars":["letter","digit"]}"#,
+        ),
+    )
+}
+```
+
+For selective identifier/path queries, `default_operator=AND` starts from the
+shortest posting. Structured expressions build exact boolean candidate sets;
+phrases verify token adjacency only for candidates. The planner falls back to
+scan execution for broad expressions and keeps indexed refinement when a scalar
+prefilter is available.
+
+Wildcard terms, field-qualified terms, boosts, fuzzy/proximity suffixes, and
+range syntax currently return `NotSupported` rather than changing query
+meaning.
+
+## How execution stays exact
+
+```text
+request
+  → capture one immutable schema/document/index revision
+  → validate route, type, dimension, limits, and syntax
+  → derive scalar and FTS candidate ordinals when selective
+  → run HNSW/IVF or the exact vector path
+  → verify filters and phrases against authoritative documents
+  → exact-score, deterministic top-k, projection, and optional fusion
+```
+
+- Flat vector and scan BM25 execution are always available as reference paths.
+- Every derived index generation is immutable and tagged with its source
+  revision.
+- HNSW/IVF candidates are re-ranked with authoritative vectors.
+- Indexed and scan FTS share `f64` corpus/scoring primitives and produce
+  bit-identical public scores in differential fixtures.
+- Equal scores use ascending primary key as the deterministic tie-break.
+
+## Persistence and recovery
+
+Documents, snapshots, and WAL records are authoritative. The current storage
+format is version 4: checksummed MessagePack snapshots plus a manifest-committed
+WAL boundary. Version-3 JSON snapshots remain readable and upgrade at the next
+writable checkpoint.
+
+ANN, scalar, FTS, and the shared ordinal table are persisted separately as a
+non-authoritative derived cache. Cache format 6 includes parsed tokenizer and
+ordered filter state. A missing, stale, corrupt, structurally invalid, or
+pre-v6 cache is ignored and rebuilt from recovered documents; read-only opens
+never repair it.
+
+The public API supports read-only handles, configurable durability, explicit
+`flush`, targeted `rebuild_index`, whole-registry `optimize`, and
+per-handle cache-hit/query/candidate telemetry.
+
+## Current boundaries
+
+| Area | Status |
+| --- | --- |
+| Flat, HNSW, IVF | Implemented |
+| Scalar inverted index | Implemented |
+| BM25 + structured boolean/phrase FTS | Implemented |
+| FTS wildcard/field/boost/fuzzy/range syntax | Not implemented |
+| DiskANN/Vamana physical index | Contract only; schema attachment fails |
+| PQ and standalone RaBitQ families | Roadmap |
+| Binary vector query execution | Not implemented |
+| Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |
+
+`a3s-vec` follows zvec's Rust vocabulary where it is useful, but it is not a
+binary-compatible clone. `zvec-core` remains a private pure-Rust algorithm
+dependency; callers use only A3S-owned collection, schema, document, query, and
+error contracts.
+
+## Quality gates
+
+Run checks inside this crate:
+
+```sh
+cargo fmt --all -- --check
+cargo test
+cargo test --no-default-features
+cargo test --all-features
+cargo +1.75.0 test --locked
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+```
+
+Reproducible performance fixtures:
+
+```sh
+cargo bench --bench ann_recall
+cargo bench --bench filtered_ann
+cargo bench --bench scalar_filter
+cargo bench --bench fts_index
+cargo bench --bench ngram_fts
+cargo bench --bench structured_fts
+cargo bench --bench reopen_index
+```
+
+The default, no-default-feature, all-feature, strict Clippy, rustdoc, and Rust
+1.75 gates are maintained separately. The optional Jieba dependency chain
+currently requires a newer Cargo because one transitive package uses a Rust
+2024 manifest.
+
+## Platform and ownership
+
+The portable correctness path targets Linux x86_64/aarch64, Windows x86_64,
+and macOS arm64/x86_64, with macOS 12.0 as the Intel deployment target. It does
+not require `io_uring`, a C/C++ runtime, or architecture-specific SIMD.
+
+`a3s-vec` owns retrieval, persistence, and index execution. Workspace
+scanning, embedding model runtimes, Agent sessions, and UI policy belong to
+their callers. The cross-project boundary is documented in the
+[A3S local retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md).
+
 This repository is `A3S-Lab/Vec`; the A3S monorepo consumes it as the
-`crates/vec` git submodule. The monorepo root remains a composition repository
-and is not a Rust workspace.
+`crates/vec` submodule. Licensed under [MIT](LICENSE).

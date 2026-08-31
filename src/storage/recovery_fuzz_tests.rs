@@ -1,7 +1,7 @@
 //! Fixed-seed mutation fuzzing for the persisted recovery surface.
 
 use super::test_support::{doc, schema};
-use super::{wal, StorageHandle, WalOperation};
+use super::{snapshot, wal, StorageHandle, WalOperation};
 use crate::config::{ConfigBuilder, Durability};
 use std::fs;
 use std::path::Path;
@@ -30,7 +30,7 @@ fn persisted_recovery_mutation_corpus_never_returns_a_torn_state() {
 
     let persisted = [
         root.join("manifest.json"),
-        root.join("segments/snapshot-00000000000000000001.json"),
+        root.join(snapshot::binary_relative_path(1)),
         wal::segment_path(&root, 1),
     ];
     for (file_index, path) in persisted.iter().enumerate() {

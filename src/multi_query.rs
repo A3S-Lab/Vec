@@ -2,8 +2,9 @@
 
 use crate::error::{Error, Result};
 use crate::query::{
-    unsupported_query_controls, validate_fts_query_controls, DiskannQueryParams, FlatQueryParams,
-    Fts, FtsQueryParams, HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
+    apply_fts_query_controls, apply_hnsw_query_controls, apply_ivf_query_controls,
+    unsupported_query_controls, DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams,
+    HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,11 +126,11 @@ impl SubQuery {
         self.sparse_vector = Some(indices.into_iter().zip(values.iter().copied()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
-        unsupported_query_controls("HNSW")
+    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
+        apply_hnsw_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF")
+    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
+        apply_ivf_query_controls(&mut self.params, params)
     }
     pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
         unsupported_query_controls("IVF RaBitQ")
@@ -146,7 +147,7 @@ impl SubQuery {
         unsupported_query_controls("DiskANN")
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
-        validate_fts_query_controls(params)
+        apply_fts_query_controls(&mut self.params, params)
     }
     pub fn set_fts(&mut self, fts: &Fts) -> Result<()> {
         if fts.query_string.is_none() && fts.match_string.is_none() {

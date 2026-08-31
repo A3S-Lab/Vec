@@ -86,9 +86,10 @@ pub struct FtsIndexParam {
 /// Serializable index configuration.
 ///
 /// The open `params` map is retained for adapter compatibility, but collection
-/// schemas reject entries that do not have an execution consumer. Constructing
-/// a future index descriptor is therefore harmless; attaching it to a field
-/// returns [`crate::ErrorCode::NotSupported`].
+/// schemas reject entries that do not have an execution consumer. Live Flat,
+/// HNSW, IVF, scalar-inverted, and scan-FTS configurations are validated at the
+/// field boundary; attaching a future descriptor returns
+/// [`crate::ErrorCode::NotSupported`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexParams {
     pub index_type: IndexType,
@@ -215,6 +216,15 @@ impl IndexParams {
         Ok(out)
     }
 
+    /// Creates full-text index parameters.
+    ///
+    /// Omitting `filters` selects the zvec-compatible `lowercase` default;
+    /// passing an explicit empty slice preserves tokenizer case. Supported
+    /// filters are `lowercase`, `ascii_folding`, and `stemmer`.
+    ///
+    /// The `ngram` tokenizer accepts `ngram_min`, `ngram_max`, and
+    /// `token_chars` in `extra_params`. The standard tokenizer accepts
+    /// `max_token_length`, while the stemmer filter accepts `stemmer_lang`.
     pub fn fts(
         tokenizer_name: Option<&str>,
         filters: Option<&[&str]>,
@@ -228,8 +238,10 @@ impl IndexParams {
         }
         let mut out = Self::new(IndexType::Fts, MetricType::Undefined);
         out.params.insert("tokenizer_name".into(), json!(tokenizer));
-        out.params
-            .insert("filters".into(), json!(filters.unwrap_or(&[]).to_vec()));
+        out.params.insert(
+            "filters".into(),
+            json!(filters.map_or_else(|| vec!["lowercase"], <[_]>::to_vec)),
+        );
         if let Some(extra) = extra_params {
             out.params.insert("extra_params".into(), json!(extra));
         }

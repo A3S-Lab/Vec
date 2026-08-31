@@ -291,17 +291,22 @@ fn checkpoints_publish_one_generation_specific_snapshot() {
         .file_name()
         .to_string_lossy()
         .starts_with("snapshot-"));
-    let snapshot: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(snapshots[0].path()).expect("snapshot must be readable"),
-    )
-    .expect("snapshot must be valid JSON");
-    assert_eq!(snapshot["format_version"], 3);
+    assert_eq!(
+        snapshots[0]
+            .path()
+            .extension()
+            .and_then(|value| value.to_str()),
+        Some("bin")
+    );
+    assert!(!std::fs::read(snapshots[0].path())
+        .expect("snapshot must be readable")
+        .is_empty());
 
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(collection_path.join("manifest.json")).expect("manifest must be readable"),
     )
     .expect("manifest must be valid JSON");
-    assert_eq!(manifest["format_version"], 3);
+    assert_eq!(manifest["format_version"], 4);
     assert_eq!(manifest["revision"], 1);
     assert_eq!(manifest["checkpoint_revision"], 1);
     collection.close().expect("collection must close");
