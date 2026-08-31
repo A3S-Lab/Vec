@@ -1,6 +1,6 @@
 use a3s_vec::{
-    Collection, CollectionOptions, CollectionSchema, DataType, Doc, FieldSchema, Fts,
-    HnswQueryParams, IndexParams, MetricType, SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
+    FieldSchema, Fts, HnswQueryParams, IndexParams, IndexType, MetricType, SearchQuery,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,20 @@ fn schema() -> CollectionSchema {
         .expect("HNSW index must be valid");
     CollectionSchema::builder("index-cache-contract")
         .add_field(language)
+        .add_field(embedding)
+        .build()
+        .expect("schema must be valid")
+}
+
+fn vamana_schema() -> CollectionSchema {
+    let mut embedding =
+        FieldSchema::new("embedding", DataType::VectorFp32, false, 2).expect("field must be valid");
+    embedding
+        .set_index_params(
+            &IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("Vamana params must be valid"),
+        )
+        .expect("Vamana index must be valid");
+    CollectionSchema::builder("vamana-cache-contract")
         .add_field(embedding)
         .build()
         .expect("schema must be valid")
@@ -75,6 +89,17 @@ fn exhaustive_query(coordinate: f32, topk: i32, count: usize) -> SearchQuery {
             true,
         ))
         .expect("HNSW controls must be valid");
+    query
+}
+
+fn exhaustive_vamana_query(coordinate: f32, topk: i32, count: usize) -> SearchQuery {
+    let mut query = SearchQuery::new("embedding", &[coordinate, coordinate % 7.0], topk)
+        .expect("query must be valid");
+    query
+        .set_diskann_params(DiskannQueryParams::new(
+            i32::try_from(count).expect("fixture count fits i32"),
+        ))
+        .expect("Vamana controls must be valid");
     query
 }
 
@@ -394,6 +419,48 @@ fn cached_delta_and_tombstones_preserve_incremental_ann_results() {
         .map(|doc| doc.get_pk().expect("result must have an id").to_string())
         .collect();
     assert_eq!(ids, vec!["doc-000", "late"]);
+    assert!(reopened
+        .fetch(&["doc-001"])
+        .expect("fetch must succeed")
+        .is_empty());
+}
+
+#[test]
+fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &vamana_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(128);
+    collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    collection
+        .rebuild_index("embedding")
+        .expect("Vamana index must rebuild");
+
+    let replacement = document("doc-000", 10_000.0, "rust");
+    let late = document("late", 9_999.0, "rust");
+    collection
+        .upsert(&[&replacement, &late])
+        .expect("delta vectors must publish");
+    collection
+        .delete(&["doc-001"])
+        .expect("base vector must be tombstoned");
+    let query = exhaustive_vamana_query(10_000.0, 8, 129);
+    let expected = ranking(&collection, &query);
+    collection.close().expect("collection must close");
+
+    let reopened = open_read_only(&path);
+    let stats = reopened.stats().expect("stats must succeed");
+    assert!(stats.index_cache_hit);
+    assert_eq!(stats.indexes.len(), 1);
+    assert_eq!(stats.indexes[0].index_type, IndexType::Vamana);
+    assert_eq!(ranking(&reopened, &query), expected);
     assert!(reopened
         .fetch(&["doc-001"])
         .expect("fetch must succeed")

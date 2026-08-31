@@ -29,7 +29,12 @@ impl Collection {
             .check_index_configuration(field_name, params)?;
         if !matches!(
             params.index_type,
-            IndexType::Flat | IndexType::Hnsw | IndexType::Ivf | IndexType::Invert | IndexType::Fts
+            IndexType::Flat
+                | IndexType::Hnsw
+                | IndexType::Ivf
+                | IndexType::Vamana
+                | IndexType::Invert
+                | IndexType::Fts
         ) {
             return Err(Error::not_supported(format!(
                 "{:?} physical index creation is not implemented",
@@ -162,7 +167,10 @@ fn should_rewrite_index_cache(schema: &CollectionSchema, field_name: Option<&str
             schema.vectors.iter().any(|field| {
                 field.name == field_name
                     && field.index_params.as_ref().is_some_and(|params| {
-                        matches!(params.index_type, IndexType::Hnsw | IndexType::Ivf)
+                        matches!(
+                            params.index_type,
+                            IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+                        )
                     })
             })
         })

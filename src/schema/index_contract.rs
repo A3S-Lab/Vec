@@ -23,6 +23,7 @@ pub(super) fn validate_index_configuration(
     match params.index_type {
         IndexType::Hnsw => validate_hnsw_configuration(data_type, params),
         IndexType::Ivf => validate_ivf_configuration(data_type, params),
+        IndexType::Vamana => validate_vamana_configuration(data_type, params),
         IndexType::Flat => validate_flat_configuration(data_type, params),
         IndexType::Invert => validate_invert_configuration(data_type, params),
         IndexType::Fts => validate_fts_configuration(params),
@@ -96,6 +97,49 @@ fn validate_ivf_configuration(data_type: DataType, params: &IndexParams) -> Resu
     validate_redundant_quantize_parameter(params)
 }
 
+fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
+    validate_ann_base(data_type, params)?;
+    if params.metric_type != MetricType::L2 {
+        return Err(Error::not_supported(
+            "Vamana currently requires the L2 metric",
+        ));
+    }
+    if params.quantize_type != QuantizeType::Undefined {
+        return Err(Error::not_supported(
+            "Vamana quantization is not implemented",
+        ));
+    }
+    validate_parameter_names(
+        params,
+        &[
+            "max_degree",
+            "search_list_size",
+            "alpha",
+            "max_occlusion",
+            "saturate",
+        ],
+    )?;
+    positive_integer(params, "max_degree")?;
+    positive_integer(params, "search_list_size")?;
+    let alpha = finite_number(params, "alpha")?;
+    if alpha < 1.0 {
+        return Err(Error::invalid_argument(
+            "Vamana alpha must be finite and at least 1.0",
+        ));
+    }
+    if nonnegative_integer(params, "max_occlusion")? != 0 {
+        return Err(Error::not_supported(
+            "Vamana max_occlusion is not implemented",
+        ));
+    }
+    if boolean_parameter(params, "saturate")? {
+        return Err(Error::not_supported(
+            "Vamana graph saturation is not implemented",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_ann_base(data_type: DataType, params: &IndexParams) -> Result<()> {
     if !matches!(
         data_type,
@@ -107,7 +151,7 @@ fn validate_ann_base(data_type: DataType, params: &IndexParams) -> Result<()> {
             | DataType::VectorInt16
     ) {
         return Err(Error::not_supported(
-            "HNSW and IVF require a numeric dense vector field",
+            "ANN indexes require a numeric dense vector field",
         ));
     }
     if params.metric_type == MetricType::Undefined {
@@ -172,6 +216,17 @@ fn boolean_parameter(params: &IndexParams, name: &str) -> Result<bool> {
         .get(name)
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| Error::invalid_argument(format!("index parameter '{name}' must be boolean")))
+}
+
+fn finite_number(params: &IndexParams, name: &str) -> Result<f64> {
+    params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| {
+            Error::invalid_argument(format!("index parameter '{name}' must be a finite number"))
+        })
 }
 
 fn validate_redundant_quantize_parameter(params: &IndexParams) -> Result<()> {

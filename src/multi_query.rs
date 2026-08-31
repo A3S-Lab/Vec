@@ -2,9 +2,9 @@
 
 use crate::error::{Error, Result};
 use crate::query::{
-    apply_fts_query_controls, apply_hnsw_query_controls, apply_ivf_query_controls,
-    unsupported_query_controls, DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams,
-    HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
+    apply_diskann_query_controls, apply_fts_query_controls, apply_hnsw_query_controls,
+    apply_ivf_query_controls, unsupported_query_controls, DiskannQueryParams, FlatQueryParams, Fts,
+    FtsQueryParams, HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
 };
 use serde::{Deserialize, Serialize};
 
@@ -139,12 +139,7 @@ impl SubQuery {
         unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
-        if params.list_size <= 0 {
-            return Err(Error::invalid_argument(
-                "DiskANN list_size must be positive",
-            ));
-        }
-        unsupported_query_controls("DiskANN")
+        apply_diskann_query_controls(&mut self.params, params)
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
         apply_fts_query_controls(&mut self.params, params)

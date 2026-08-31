@@ -97,8 +97,9 @@ fn validate_query_parameters(field: &QueryField<'_>, query: &SearchQuery) -> Res
             "type" => validate_ann_type(field, query)?,
             "ef" | "is_linear" => require_ann_index(field, IndexType::Hnsw, name)?,
             "nprobe" | "scale_factor" => require_ann_index(field, IndexType::Ivf, name)?,
+            "list_size" => require_ann_index(field, IndexType::Vamana, name)?,
             "is_using_refiner" => require_any_ann_index(field, name)?,
-            "list_size" | "operator" => {
+            "operator" => {
                 return Err(Error::not_supported(format!(
                     "query parameter '{name}' has no execution consumer"
                 )))
@@ -112,6 +113,7 @@ fn validate_query_parameters(field: &QueryField<'_>, query: &SearchQuery) -> Res
     }
     validate_positive_integer_parameter(query, "ef")?;
     validate_positive_integer_parameter(query, "nprobe")?;
+    validate_positive_integer_parameter(query, "list_size")?;
     validate_boolean_parameter(query, "is_linear")?;
     validate_boolean_parameter(query, "is_using_refiner")?;
     if let Some(value) = query.params.get("scale_factor") {
@@ -136,6 +138,7 @@ fn validate_ann_type(field: &QueryField<'_>, query: &SearchQuery) -> Result<()> 
     let expected = match kind.to_ascii_lowercase().as_str() {
         "hnsw" => IndexType::Hnsw,
         "ivf" => IndexType::Ivf,
+        "diskann" | "vamana" => IndexType::Vamana,
         unsupported => {
             return Err(Error::not_supported(format!(
                 "query index type '{unsupported}' has no execution consumer"
@@ -162,7 +165,7 @@ fn require_any_ann_index(field: &QueryField<'_>, name: &str) -> Result<()> {
     let actual = field
         .index_params
         .map_or(IndexType::Undefined, |params| params.index_type);
-    if matches!(actual, IndexType::Hnsw | IndexType::Ivf) {
+    if matches!(actual, IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana) {
         Ok(())
     } else {
         Err(Error::not_supported(format!(

@@ -157,18 +157,19 @@ fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
     assert_eq!(ivf.params["type"], json!("ivf"));
     assert_eq!(ivf.params["nprobe"], json!(8));
 
-    for error in [
-        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
-            .expect("query must be valid")
-            .set_ivf_rabitq_params(IvfRabitqQueryParams::new(8, 0.0, false, false))
-            .expect_err("IVF RaBitQ controls must fail explicitly"),
-        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
-            .expect("query must be valid")
-            .set_diskann_params(DiskannQueryParams::new(32))
-            .expect_err("DiskANN controls must fail explicitly"),
-    ] {
-        assert_eq!(error.code, ErrorCode::NotSupported);
-    }
+    let mut vamana =
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
+    vamana
+        .set_diskann_params(DiskannQueryParams::new(32))
+        .expect("Vamana/DiskANN search controls must be accepted");
+    assert_eq!(vamana.params["type"], json!("diskann"));
+    assert_eq!(vamana.params["list_size"], json!(32));
+
+    let error = SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
+        .expect("query must be valid")
+        .set_ivf_rabitq_params(IvfRabitqQueryParams::new(8, 0.0, false, false))
+        .expect_err("IVF RaBitQ controls must fail explicitly");
+    assert_eq!(error.code, ErrorCode::NotSupported);
 
     let mut flat =
         SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
@@ -193,6 +194,11 @@ fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
     sub.set_hnsw_params(HnswQueryParams::new(64, 0.0, false, false))
         .expect("sub-query HNSW controls must be accepted");
     assert_eq!(sub.params["ef"], json!(64));
+    sub.set_diskann_params(DiskannQueryParams::new(24))
+        .expect("sub-query Vamana controls must be accepted");
+    assert_eq!(sub.params["type"], json!("diskann"));
+    assert_eq!(sub.params["list_size"], json!(24));
+    assert!(sub.params.get("ef").is_none());
 
     let mut grouped = GroupBySearchQuery::new("embedding", "title", &[1.0, 0.0, 0.0], 2, 2)
         .expect("group-by query must be valid");
@@ -200,6 +206,11 @@ fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
         .set_ivf_params(IvfQueryParams::new(8, false, 1.0))
         .expect("group-by IVF controls must be accepted");
     assert_eq!(grouped.params["nprobe"], json!(8));
+    grouped
+        .set_diskann_params(DiskannQueryParams::new(24))
+        .expect("group-by Vamana controls must be accepted");
+    assert_eq!(grouped.params["list_size"], json!(24));
+    assert!(grouped.params.get("nprobe").is_none());
 
     let mut invalid =
         SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
@@ -302,6 +313,7 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
     for params in [
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf(MetricType::Cosine, 64, 10, false).expect("descriptor must be valid"),
+        IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid"),
     ] {
         let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
             .expect("vector schema must be valid");
@@ -315,7 +327,6 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
         IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
             .expect("descriptor must be valid"),
         IndexParams::diskann(MetricType::Cosine, 32, 100, 8).expect("descriptor must be valid"),
-        IndexParams::vamana(MetricType::Cosine, 32, 100, 1.2).expect("descriptor must be valid"),
         IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
     ];
     for params in future_vector_indexes {
@@ -390,6 +401,44 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
         .build()
         .expect_err("public or deserialized schema fields must be revalidated");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn vamana_rejects_unimplemented_metrics_and_pruning_controls() {
+    let error = IndexParams::vamana(MetricType::L2, 32, 100, 0.9)
+        .expect_err("Vamana alpha below one must fail");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let error = field
+        .set_index_params(
+            &IndexParams::vamana(MetricType::Cosine, 32, 100, 1.2)
+                .expect("descriptor must be syntactically valid"),
+        )
+        .expect_err("Vamana must not silently approximate cosine distance");
+    assert_eq!(error.code, ErrorCode::NotSupported);
+    assert!(!field.has_index());
+
+    let tuned = IndexParams::vamana(MetricType::L2, 32, 100, 1.2)
+        .expect("descriptor must be valid")
+        .with_parameter("max_occlusion", json!(4));
+    let error = field
+        .set_index_params(&tuned)
+        .expect_err("unimplemented Vamana pruning controls must fail");
+    assert_eq!(error.code, ErrorCode::NotSupported);
+    assert!(!field.has_index());
+
+    let mut quantized =
+        IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid");
+    quantized
+        .set_quantize_type(QuantizeType::Int8)
+        .expect("quantization descriptor must be syntactically valid");
+    let error = field
+        .set_index_params(&quantized)
+        .expect_err("Vamana quantization must fail until it has an execution consumer");
+    assert_eq!(error.code, ErrorCode::NotSupported);
+    assert!(!field.has_index());
 }
 
 #[test]

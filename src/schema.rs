@@ -186,7 +186,7 @@ impl IndexParams {
         search_list_size: i32,
         alpha: f64,
     ) -> Result<Self> {
-        if max_degree <= 0 || search_list_size <= 0 || !alpha.is_finite() || alpha <= 0.0 {
+        if max_degree <= 0 || search_list_size <= 0 || !alpha.is_finite() || alpha < 1.0 {
             return Err(Error::invalid_argument(
                 "Vamana parameters are out of range",
             ));

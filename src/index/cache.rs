@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
-const CACHE_FORMAT_VERSION: u32 = 6;
+const CACHE_FORMAT_VERSION: u32 = 7;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
 const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -165,7 +165,12 @@ fn validate_indexes(
             field
                 .index_params
                 .as_ref()
-                .filter(|params| matches!(params.index_type, IndexType::Hnsw | IndexType::Ivf))
+                .filter(|params| {
+                    matches!(
+                        params.index_type,
+                        IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+                    )
+                })
                 .map(|params| (field, params))
         })
         .collect();
@@ -260,6 +265,21 @@ fn validate_vector_index(
             };
             ivf.validates(&index.base.vectors, dimension, n_list)
         }
+        VectorIndexKind::Vamana(vamana) => {
+            if index.params.index_type != IndexType::Vamana {
+                return false;
+            }
+            let Some(max_degree) = positive_param(index, "max_degree") else {
+                return false;
+            };
+            let Some(search_list_size) = positive_param(index, "search_list_size") else {
+                return false;
+            };
+            let Some(alpha) = finite_param(index, "alpha") else {
+                return false;
+            };
+            vamana.validates(&index.base.vectors, max_degree, search_list_size, alpha)
+        }
     }
 }
 
@@ -282,6 +302,15 @@ fn positive_param(index: &VectorIndex, name: &str) -> Option<usize> {
         .and_then(serde_json::Value::as_u64)
         .filter(|value| *value > 0)
         .and_then(|value| usize::try_from(value).ok())
+}
+
+fn finite_param(index: &VectorIndex, name: &str) -> Option<f64> {
+    index
+        .params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
 }
 
 fn codec() -> impl Options {

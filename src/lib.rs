@@ -7,14 +7,14 @@
 //! Apple Silicon, Linux, and Windows.
 //!
 //! A collection's document snapshot and WAL are authoritative. Flat queries
-//! execute against that snapshot; revision-tagged HNSW and IVF generations
-//! select bounded candidates before exact re-ranking. Native numeric vector
+//! execute against that snapshot; revision-tagged HNSW, IVF, and in-memory L2
+//! Vamana generations select bounded candidates before exact re-ranking. Native numeric vector
 //! encodings are preserved at rest and remain distinct from index-only
 //! FP16/INT8/INT4 scalar quantization. Revisioned scalar and full-text indexes
 //! accelerate structured and lexical retrieval, including Unicode n-grams,
 //! ordered token filters, boolean groups, required/prohibited clauses, and
-//! exact phrases. `DiskANN` and wildcard/fielded/boosted FTS syntax still
-//! return typed unsupported errors.
+//! exact phrases. Sector-aligned `DiskANN` files, compression, and wildcard/
+//! fielded/boosted FTS syntax still return typed unsupported errors.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:

@@ -12,7 +12,8 @@ memory, Darwin arm64, Rust/Cargo 1.98.0.
 ## Query recall and latency
 
 `benches/ann_recall.rs` creates 2,000 vectors with 32 dimensions and runs 48
-top-10 queries. One untimed warmup precedes each mode. `Median round` is the
+top-10 queries for cosine exact/HNSW/IVF and L2 exact/Vamana modes. One untimed
+warmup precedes each mode. `Median round` is the
 median of five timed rounds divided by 48; p50/p95/p99 use nearest-rank
 percentiles over all 240 individual queries. Index construction is excluded.
 
@@ -20,16 +21,31 @@ percentiles over all 240 individual queries. Index construction is excluded.
 cargo bench --bench ann_recall
 ```
 
-| Mode | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Exact | 1.0000 | 370.86 | 360.88 | 435.33 | 462.58 | n/a |
-| HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 1.0000 | 83.16 | 81.29 | 109.54 | 127.25 | 795,592 |
-| IVF (`nlist=64`, 8 iterations, `nprobe=8`, scale factor 8) | 0.9083 | 48.95 | 47.04 | 73.42 | 133.04 | 276,028 |
+| Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Exact | Cosine | 1.0000 | 370.86 | 360.88 | 435.33 | 462.58 | n/a |
+| HNSW (`m=16`, `ef_construction=96`, `ef=64`) | Cosine | 1.0000 | 83.16 | 81.29 | 109.54 | 127.25 | 795,592 |
+| IVF (`nlist=64`, 8 iterations, `nprobe=8`, scale factor 8) | Cosine | 0.9083 | 48.95 | 47.04 | 73.42 | 133.04 | 276,028 |
 
 `estimated_payload_bytes` is a deterministic lower-bound estimate for encoded
 ANN vectors, ordinal slot membership, graph edges, centroids, and postings. It
 excludes allocator/container overhead plus authoritative document storage; it
 is not process RSS or a heap-profiler measurement.
+
+The first in-memory Vamana baseline was recorded on 2026-09-01 on Windows
+x86_64 with an Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. It
+uses the same deterministic vectors, query count, rounds, and percentile
+methodology. Vamana currently validates L2 only, so its reference is a separate
+exact L2 run:
+
+| Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Exact | L2 | 1.0000 | 139.93 | 133.20 | 265.80 | 299.10 | n/a |
+| Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 323.75 | 316.90 | 357.50 | 480.30 | 681,828 |
+
+This is a functional recall/latency baseline, not a speedup claim. At 2,000
+vectors the current graph traversal costs more than the bounded exact L2 scan;
+the DiskANN disk layout and compression work remains open.
 
 Immediately before the exact executor replaced full result materialization and
 sorting with a deterministic bounded top-k heap, the same exact fixture produced
@@ -206,16 +222,16 @@ its row, so its 0.4 percent difference is treated as measurement noise rather
 than a binary-decoding regression.
 
 A cache hit still performs snapshot/WAL recovery, document normalization and
-validation, cache decoding, and structural/content validation. Cache format 6
-contains the shared ordinal table plus HNSW/IVF, scalar, FTS, parsed tokenizer,
-and ordered token-filter generations. It is non-authoritative and is bound to the format,
+validation, cache decoding, and structural/content validation. Cache format 7
+contains the shared ordinal table plus HNSW/IVF/Vamana, scalar, FTS, parsed
+tokenizer, and ordered token-filter generations. It is non-authoritative and is bound to the format,
 schema, revision, and exact manifest snapshot/checkpoint/committed-WAL
 identity. Exact format-2/3 fixtures, older version bytes, and missing, stale,
 corrupt, oversized, or structurally invalid files all fall back to rebuilding
 from documents; a read-only open never writes or repairs them.
 
 The same benchmark then opens the all-index fixture for writes and measures one
-derived-index rebuild per call. HNSW and full rebuilds refresh the cache after
+derived-index rebuild per call. ANN and full rebuilds refresh the cache after
 publication; exact scalar/FTS rebuilds preserve its logically equivalent
 generation and avoid rewriting it:
 

@@ -9,6 +9,7 @@ mod ordinals;
 mod quantization;
 mod rebuild;
 mod scalar;
+mod vamana;
 
 use crate::doc::{DocumentMap, VectorValue};
 use crate::error::{Error, Result};
@@ -27,6 +28,7 @@ use roaring::RoaringTreemap;
 use scalar::{ScalarCandidates, ScalarIndexRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use vamana::VamanaIndex;
 
 const MIN_DELTA_COMPACTION: usize = 64;
 const MAX_DELTA_COMPACTION: usize = 2_048;
@@ -77,6 +79,7 @@ struct AnnSearchContext<'a> {
 enum VectorIndexKind {
     Hnsw(HnswIndex),
     Ivf(IvfIndex),
+    Vamana(VamanaIndex),
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +138,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !matches!(params.index_type, IndexType::Hnsw | IndexType::Ivf) {
+            if !is_in_memory_ann(params.index_type) {
                 continue;
             }
             indexes.insert(
@@ -208,7 +211,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !matches!(params.index_type, IndexType::Hnsw | IndexType::Ivf) {
+            if !is_in_memory_ann(params.index_type) {
                 continue;
             }
 
@@ -334,6 +337,7 @@ impl IndexRegistry {
         let ids = match &index.base.kind {
             VectorIndexKind::Hnsw(hnsw) => index.hnsw_candidates(hnsw, &search),
             VectorIndexKind::Ivf(ivf) => index.ivf_candidates(ivf, &search),
+            VectorIndexKind::Vamana(vamana) => index.vamana_candidates(vamana, &search),
         };
         Ok(ids.map(|ids| CandidateSelection {
             ids: OrdinalSet::new(&self.ordinals, ids),
@@ -500,7 +504,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !matches!(params.index_type, IndexType::Hnsw | IndexType::Ivf) {
+            if !is_in_memory_ann(params.index_type) {
                 continue;
             }
             if let Some(index) = self.indexes.get(&field.name) {
@@ -554,6 +558,7 @@ impl VectorIndex {
         let kind = match &self.base.kind {
             VectorIndexKind::Hnsw(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Ivf(index) => index.estimated_payload_bytes(),
+            VectorIndexKind::Vamana(index) => index.estimated_payload_bytes(),
         };
         u64::try_from(vectors.saturating_add(membership).saturating_add(kind)).unwrap_or(u64::MAX)
     }
@@ -678,6 +683,54 @@ impl VectorIndex {
         candidate_set_is_sufficient(&limited, search).then_some(limited)
     }
 
+    fn vamana_candidates(
+        &self,
+        vamana: &VamanaIndex,
+        search: &AnnSearchContext<'_>,
+    ) -> Option<RoaringTreemap> {
+        let requested_list_size = optional_positive_query_parameter(search.query, "list_size");
+        let limit = vamana.candidate_limit(requested_list_size, search.topk, search.eligible_count);
+        let base = if let Some(allowed) = search.allowed {
+            let base_eligible_count = self.base_eligible_vector_count(allowed);
+            let traversal_limit =
+                proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
+            if traversal_limit >= search.eligible_count {
+                return None;
+            }
+            vamana.filtered_candidates(
+                &self.base.vectors,
+                search.ordinals,
+                search.vector,
+                limit,
+                traversal_limit,
+                search.metric,
+                allowed,
+                &self.tombstones,
+            )
+        } else {
+            let base_list_size = limit
+                .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
+                .min(self.base.vectors.len());
+            vamana.candidates(
+                &self.base.vectors,
+                search.ordinals,
+                search.vector,
+                Some(base_list_size),
+                search.topk,
+                search.metric,
+            )
+        };
+        let merged = self.merge_candidates(
+            base,
+            search.vector,
+            Some(limit),
+            search.metric,
+            search.allowed,
+            search.ordinals,
+        );
+        candidate_set_is_sufficient(&merged, search).then_some(merged)
+    }
+
     fn overlay_len(&self) -> usize {
         let new_vectors = self
             .delta
@@ -798,6 +851,14 @@ fn build_vector_index(
             positive_parameter(params, "n_list")?,
             nonnegative_parameter(params, "n_iters")?,
         )),
+        IndexType::Vamana => VectorIndexKind::Vamana(VamanaIndex::build(
+            &vectors,
+            ordinals,
+            positive_parameter(params, "max_degree")?,
+            positive_parameter(params, "search_list_size")?,
+            finite_parameter(params, "alpha")?,
+            params.metric_type,
+        )),
         _ => {
             return Err(Error::not_supported(format!(
                 "{:?} does not have an in-memory ANN implementation",
@@ -891,6 +952,24 @@ fn nonnegative_parameter(params: &IndexParams, name: &str) -> Result<usize> {
         })?;
     usize::try_from(value)
         .map_err(|_| Error::resource_exhausted(format!("index parameter '{name}' is too large")))
+}
+
+fn finite_parameter(params: &IndexParams, name: &str) -> Result<f64> {
+    params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| {
+            Error::invalid_argument(format!("index parameter '{name}' must be a finite number"))
+        })
+}
+
+fn is_in_memory_ann(index_type: IndexType) -> bool {
+    matches!(
+        index_type,
+        IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+    )
 }
 
 fn query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Option<Vec<f32>>> {

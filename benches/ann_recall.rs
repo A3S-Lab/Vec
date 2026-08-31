@@ -1,8 +1,8 @@
 //! Reproducible ANN recall/latency fixture.
 
 use a3s_vec::{
-    Collection, CollectionSchema, DataType, Doc, FieldSchema, HnswQueryParams, IndexParams,
-    IvfQueryParams, MetricType, SearchQuery,
+    Collection, CollectionSchema, DataType, DiskannQueryParams, Doc, FieldSchema, HnswQueryParams,
+    IndexParams, IvfQueryParams, MetricType, SearchQuery,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -136,6 +136,30 @@ fn estimated_payload_bytes(collection: &Collection) -> u64 {
         .unwrap_or_default()
 }
 
+fn run_vamana_fixture(
+    collection: &Collection,
+    queries: &[Vec<f32>],
+) -> (Measurement, Measurement, u64) {
+    let exact = run_queries(collection, queries, |query| {
+        query
+            .params
+            .insert("metric".into(), serde_json::json!("l2"));
+    });
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::vamana(MetricType::L2, 32, 96, 1.2)
+                .expect("Vamana descriptor must be valid"),
+        )
+        .expect("Vamana index must build");
+    let vamana = run_queries(collection, queries, |query| {
+        query
+            .set_diskann_params(DiskannQueryParams::new(64))
+            .expect("Vamana controls must be valid");
+    });
+    (exact, vamana, estimated_payload_bytes(collection))
+}
+
 fn main() {
     let temporary = tempdir().expect("temporary directory must be available");
     let dimension = u32::try_from(DIMENSIONS).expect("dimension fits u32");
@@ -197,18 +221,20 @@ fn main() {
     });
     let ivf_payload = estimated_payload_bytes(&collection);
 
+    let (exact_l2, vamana, vamana_payload) = run_vamana_fixture(&collection, &queries);
+
     println!(
-        "mode,documents,dimensions,queries,rounds,recall_at_10,median_round_us,p50_us,p95_us,p99_us,estimated_payload_bytes"
+        "mode,metric,documents,dimensions,queries,rounds,recall_at_10,median_round_us,p50_us,p95_us,p99_us,estimated_payload_bytes"
     );
     println!(
-        "exact,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0",
+        "exact,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0",
         micros_per_query(exact.median_round),
         micros(exact.p50),
         micros(exact.p95),
         micros(exact.p99),
     );
     println!(
-        "hnsw_ef64,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{hnsw_payload}",
+        "hnsw_ef64,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{hnsw_payload}",
         recall(&exact.rankings, &hnsw.rankings),
         micros_per_query(hnsw.median_round),
         micros(hnsw.p50),
@@ -216,11 +242,26 @@ fn main() {
         micros(hnsw.p99),
     );
     println!(
-        "ivf_nprobe8,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{ivf_payload}",
+        "ivf_nprobe8,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{ivf_payload}",
         recall(&exact.rankings, &ivf.rankings),
         micros_per_query(ivf.median_round),
         micros(ivf.p50),
         micros(ivf.p95),
         micros(ivf.p99),
+    );
+    println!(
+        "exact,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0",
+        micros_per_query(exact_l2.median_round),
+        micros(exact_l2.p50),
+        micros(exact_l2.p95),
+        micros(exact_l2.p99),
+    );
+    println!(
+        "vamana_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{vamana_payload}",
+        recall(&exact_l2.rankings, &vamana.rankings),
+        micros_per_query(vamana.median_round),
+        micros(vamana.p50),
+        micros(vamana.p95),
+        micros(vamana.p99),
     );
 }

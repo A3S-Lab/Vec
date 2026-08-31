@@ -119,11 +119,11 @@ crates/vec/
     └── vector_codecs.rs       # native codec/metric/storage contracts
 ```
 
-The checked-in `index/` module owns real HNSW/IVF candidate generation, scalar
-posting dictionaries, indexed BM25 term-frequency postings, and their
-revision-aware selection contract. DiskANN is added only when its phase gate
-has fallback, corruption, and persistence evidence; exact wrappers with
-approximate names are not kept as placeholders.
+The checked-in `index/` module owns real HNSW/IVF/Vamana candidate generation,
+scalar posting dictionaries, indexed BM25 term-frequency postings, and their
+revision-aware selection contract. DiskANN disk layouts are added only when
+their phase gate has fallback, corruption, and persistence evidence; exact
+wrappers with approximate names are not kept as placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
@@ -154,7 +154,7 @@ copy-on-write only an O(log N) tree path plus changed documents. Deterministic
 key order is retained, while large unchanged vectors and unrelated tree nodes
 are not duplicated.
 
-Writers are serialized per collection. For HNSW/IVF mutations they share the
+Writers are serialized per collection. For ANN mutations they share the
 immutable graph/posting base, encode changed vectors into a small ordinal-keyed
 delta, and use a Roaring tombstone bitmap to shadow deleted or replaced base
 entries. Candidate selection merges ordinal base and delta sets under the
@@ -164,11 +164,11 @@ capped at 2,048 entries. Compaction is built while
 the previous generation remains readable. Scalar mutations copy only the
 affected paths in persistent value dictionaries and copy-on-write Roaring
 postings. Stable `u64` document ordinals avoid coupling public/internal IDs to
-the bitmap layout. Dense vector generations and HNSW graph layers store those
+the bitmap layout. Dense vector generations and HNSW/Vamana graph layers store those
 ordinals in direct-address `Vec<Option<T>>` slots, avoiding a tree lookup in the
 ANN inner loop while preserving deterministic ordinal iteration. One
 registry-level persistent ordinal generation is shared by scalar postings,
-vector maps/membership, HNSW nodes/edges, IVF centroid postings, candidate
+vector maps/membership, HNSW/Vamana nodes and edges, IVF centroid postings, candidate
 selections, and FTS postings. The registry maps primary keys to ordinals with a
 persistent ordered map and resolves the dense append-only ordinal domain through
 a persistent indexed vector. Generation clones structurally share both lookup
@@ -247,14 +247,17 @@ defaults are captured when a collection is created or opened, so a later
 Index and query configuration follows the same rule. The exact executor owns
 Flat metrics and query `metric`/`radius`; HNSW owns `m`, `ef_construction`, and
 `ef`; IVF owns `n_list`, training iterations, `nprobe`, and candidate scaling;
-both own optional FP16/INT8/INT4 index quantization and exact re-ranking. FTS
+Vamana owns `max_degree`, build/search list sizes, alpha, and deterministic
+two-pass RobustPrune construction. HNSW and IVF own optional FP16/INT8/INT4
+index quantization; all three ANN paths use exact re-ranking. FTS
 owns standard, whitespace, n-gram, and optional Jieba tokenizers, persistent
 term-frequency postings, document lengths, exact `f64` BM25 corpus statistics,
 the OR/AND analyzed-term default operator, ordered lowercase/ASCII-folding/
 Snowball-stemmer filters, and structured boolean/phrase expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-DiskANN/Vamana, RaBitQ/PQ, wildcard/fielded/boosted/fuzzy/range FTS syntax, and
+Sector-aligned DiskANN files, RaBitQ/PQ, wildcard/fielded/boosted/fuzzy/range
+FTS syntax, and
 tokenizer extras without an execution consumer return `NotSupported` before
 mutation. Unknown
 deserialized keys return `InvalidArgument`. Non-zero segment sizing and
@@ -351,9 +354,9 @@ still a prototype; a more compact schema delta format may replace it only with
 equivalent recovery tests.
 
 `indexes/index-cache.bin` is never referenced by the manifest and is never a
-commit point. Cache format 6 stores the shared ordinal table plus HNSW/IVF,
-scalar, FTS, parsed tokenizer, and ordered token-filter generations; the
-structurally different format-2/3/4/5 payloads are ignored and rebuilt rather
+commit point. Cache format 7 stores the shared ordinal table plus HNSW/IVF/
+Vamana, scalar, FTS, parsed tokenizer, and ordered token-filter generations; the
+structurally different format-2/3/4/5/6 payloads are ignored and rebuilt rather
 than reinterpreted. The
 cache has its own magic, format version, payload length, and CRC, with a 512
 MiB payload bound. Reuse
@@ -377,12 +380,13 @@ document transaction into an apparent failure. Public telemetry reports the
 per-handle open result through `index_cache_hit`.
 
 `rebuild_index(field)` clones the current registry, rebuilds only the named
-HNSW, IVF, scalar, or FTS generation against the shared ordinal table, and
+HNSW, IVF, Vamana, scalar, or FTS generation against the shared ordinal table,
+and
 publishes once. Unrelated immutable generations remain shared. `optimize()` is
 the explicit whole-registry rebuild; neither path mutates authoritative
 documents or their revision. A scalar/FTS-only rebuild preserves exact logical
 content and therefore does not rewrite the equivalent cache generation;
-HNSW/IVF rebuilds and `optimize()` refresh it after publication.
+HNSW/IVF/Vamana rebuilds and `optimize()` refresh it after publication.
 
 Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
 committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
@@ -419,7 +423,8 @@ The target and fallback implementations are:
 | Dense/sparse exact search | Flat scan | Always available |
 | HNSW | Hierarchical graph + eligible-result heap + bounded delta/tombstones | Flat re-rank/filter fallback |
 | IVF | Lloyd centroids + ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
-| Vamana/DiskANN | Sector-aligned graph, optional mmap/pread | Delta + flat re-rank |
+| In-memory L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones | Flat re-rank/filter fallback |
+| DiskANN disk layout | Sector-aligned graph, optional mmap/pread | Future delta + flat re-rank |
 | PQ | Per-subspace codebooks and ADC | Full-vector re-rank |
 | RaBitQ | Binary/scalar codes and refinement | Full-vector re-rank |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
@@ -432,23 +437,25 @@ against a different committed snapshot or WAL boundary even when a revision
 number is repeated. Any mismatch makes open ignore the cache rather than
 return unverifiable results.
 
-At the current baseline, Flat executes the exact oracle directly. HNSW and IVF
-select candidates only when the immutable registry entry matches the captured
-collection revision and metric; otherwise planning falls back to Flat. Each
+At the current baseline, Flat executes the exact oracle directly. HNSW, IVF,
+and in-memory L2 Vamana select candidates only when the immutable registry
+entry matches the captured collection revision and metric; otherwise planning
+falls back to Flat. Each
 revision shares a complete base with older readers and owns a bounded overlay;
 base tombstones are filtered with a bitmap, delta vectors are scored without
 materializing a decoded vector, and merged candidates remain ordinals while
-retaining the HNSW/IVF limit. An
-exhaustive `ef` or `nprobe` returns every live indexed identifier across both
-layers, and exact re-ranking then matches Flat ordering and scores. Descriptors
-for later index families remain serializable for adapters but cannot attach to
-a schema. Scalar generations use the same source-revision check. Equality,
+retaining the configured ANN candidate limit. An exhaustive `ef`, `nprobe`, or
+`list_size` returns every live indexed identifier across both layers, and exact
+re-ranking then matches Flat ordering and scores. Descriptors for DiskANN disk
+layouts and compressed index families remain serializable for adapters but
+cannot attach to a schema. Scalar generations use the same source-revision
+check. Equality,
 range, `IN`, null, wildcard, prefix, and suffix leaves produce exact bitmaps;
 boolean planning may retain a conservative bitmap superset and the executor
 always checks the full filter AST. `NOT` complements only an exact subtree, so
 a partial index can reduce work but cannot remove an eligible document.
 The registry pairs each scalar bitmap with its immutable ordinal generation.
-Vector base/delta map keys, HNSW graph nodes and edges, IVF postings,
+Vector base/delta map keys, HNSW/Vamana graph nodes and edges, IVF postings,
 tombstones, and candidate selections use the same domain, making eligibility
 and candidate composition bitmap operations rather than primary-key scans.
 
@@ -462,15 +469,24 @@ ordinal order. The same kernel builds graph connections and serves queries,
 replacing repeated whole-vector sorts and front removals without changing the
 deterministic candidate contract.
 
+Vamana starts at the vector nearest the dataset centroid. It initializes a
+seeded R-regular directed graph and performs two deterministic build passes,
+first with alpha 1 and then with the configured alpha. Each pass uses greedy
+search, RobustPrune, backward-edge insertion, and re-pruning to enforce the
+degree bound. The currently validated execution contract is L2-only; other
+metrics fail before schema mutation instead of receiving an unproven transform.
+
 Filtered vector planning resolves the scalar generation before invoking ANN.
 Small eligible sets are scored directly. A conservative bitmap is first
 refined with the authoritative filter AST; this prevents false-positive
 members from consuming a bounded ANN result heap. For larger exact sets, HNSW
 uses all graph nodes for navigation but only eligible nodes for its result heap,
-with an inverse-selectivity traversal budget. IVF intersects eligible ordinals
+with an inverse-selectivity traversal budget. Vamana uses the same navigation-
+bridge rule and a proportionally expanded list budget. IVF intersects eligible
+ordinals
 with ranked centroid postings and extends the requested probe window until
-top-k is available. Delta vectors are filtered
-before quantized scoring in both paths. If HNSW navigation is estimated to cost
+top-k is available. Delta vectors are filtered before scoring in every path. If
+graph navigation is estimated to cost
 at least an exact eligible scan, or a bounded ANN search still underfills,
 planning selects the exact eligible set instead of returning a short page.
 
@@ -508,8 +524,8 @@ Request
   → parse each filter and FTS expression once
   → derive a revision-matched scalar bitmap prefilter when safe
   → refine a conservative bitmap before bounded vector candidate selection
-  → select matching HNSW/IVF/FTS generations or their exact scan fallbacks
-  → exact-score a selective set, or push a larger eligible set into HNSW/IVF
+  → select matching HNSW/IVF/Vamana/FTS generations or exact scan fallbacks
+  → exact-score a selective set, or push a larger eligible set into HNSW/IVF/Vamana
   → traverse indexed term postings or execute scan BM25 with identical stats
   → retain exact dense/sparse/FTS results in a deterministic bounded top-k heap
   → fuse exact branch results when requested

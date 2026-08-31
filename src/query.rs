@@ -433,12 +433,7 @@ impl SearchQuery {
         unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
-        if params.list_size <= 0 {
-            return Err(Error::invalid_argument(
-                "DiskANN list_size must be positive",
-            ));
-        }
-        unsupported_query_controls("DiskANN")
+        apply_diskann_query_controls(&mut self.params, params)
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
         apply_fts_query_controls(&mut self.params, params)
@@ -626,12 +621,7 @@ impl GroupBySearchQuery {
         unsupported_query_controls("Flat refinement")
     }
     pub fn set_diskann_params(&mut self, params: DiskannQueryParams) -> Result<()> {
-        if params.list_size <= 0 {
-            return Err(Error::invalid_argument(
-                "DiskANN list_size must be positive",
-            ));
-        }
-        unsupported_query_controls("DiskANN")
+        apply_diskann_query_controls(&mut self.params, params)
     }
 }
 
@@ -684,6 +674,21 @@ pub(crate) fn apply_ivf_query_controls(
     Ok(())
 }
 
+pub(crate) fn apply_diskann_query_controls(
+    target: &mut Map<String, Value>,
+    params: DiskannQueryParams,
+) -> Result<()> {
+    if params.list_size <= 0 {
+        return Err(Error::invalid_argument(
+            "DiskANN list_size must be positive",
+        ));
+    }
+    clear_ann_query_controls(target);
+    target.insert("type".into(), json!("diskann"));
+    target.insert("list_size".into(), json!(params.list_size));
+    Ok(())
+}
+
 fn clear_ann_query_controls(target: &mut Map<String, Value>) {
     for name in [
         "type",
@@ -692,6 +697,7 @@ fn clear_ann_query_controls(target: &mut Map<String, Value>) {
         "is_linear",
         "is_using_refiner",
         "scale_factor",
+        "list_size",
     ] {
         target.remove(name);
     }

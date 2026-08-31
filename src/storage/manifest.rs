@@ -226,6 +226,7 @@ pub(super) fn sync_directory(path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
 pub(super) fn sync_directory(_path: &Path) -> Result<()> {
     // Rust's Windows `File::sync_all` calls `FlushFileBuffers`, which requires
     // a handle with GENERIC_WRITE access. Directories cannot be opened that
