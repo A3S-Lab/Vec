@@ -5,9 +5,11 @@ mod vector_codec;
 
 use crate::error::{Error, Result};
 use crate::types::DataType;
+use im::OrdMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use vector_codec::validate_vector;
 
@@ -150,6 +152,11 @@ pub struct Doc {
     vectors: BTreeMap<String, VectorValue>,
 }
 
+/// Collection snapshots use a persistent ordered tree and share immutable
+/// documents across generations. A write copy-on-writes only the tree path and
+/// document it changes; public APIs and persistence still use owned `Doc`s.
+pub(crate) type DocumentMap = OrdMap<String, Arc<Doc>>;
+
 impl Default for Doc {
     fn default() -> Self {
         Self::new().unwrap_or_else(|_| Self {
@@ -163,6 +170,22 @@ impl Default for Doc {
 }
 
 impl Doc {
+    pub(crate) fn from_persisted_parts(
+        pk: Option<String>,
+        score: f32,
+        internal_id: Option<u64>,
+        fields: BTreeMap<String, FieldValue>,
+        vectors: BTreeMap<String, VectorValue>,
+    ) -> Self {
+        Self {
+            pk,
+            score,
+            internal_id,
+            fields,
+            vectors,
+        }
+    }
+
     pub fn new() -> Result<Self> {
         Ok(Self {
             pk: None,

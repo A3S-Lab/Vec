@@ -183,7 +183,7 @@ fn scan_bm25_preserves_a_subunit_average_document_length() {
 }
 
 #[test]
-fn unimplemented_advanced_fts_syntax_fails_explicitly() {
+fn structured_fts_executes_supported_syntax_and_rejects_the_remaining_forms() {
     let temporary = tempdir().expect("temporary directory must be available");
     let collection = Collection::create(
         temporary
@@ -212,22 +212,25 @@ fn unimplemented_advanced_fts_syntax_fails_explicitly() {
         .expect("a whitespace-separated query string must execute");
     assert_eq!(simple_result[0].get_pk(), Some("doc"));
 
-    for expression in [
-        "rust AND vector",
-        "\"rust vector\"",
-        "rust*",
-        "+rust",
-        "rust && vector",
-        "rust^2",
-        "[alpha TO omega]",
-    ] {
+    for expression in ["rust AND vector", "\"rust vector\"", "+rust"] {
+        let mut fts = Fts::new().expect("FTS payload must be created");
+        fts.set_query_string(expression)
+            .expect("syntactic query string must be accepted");
+        let query = SearchQuery::fts("body", &fts, 10).expect("FTS query must be valid");
+        let result = collection
+            .query(&query)
+            .expect("supported structured syntax must execute");
+        assert_eq!(result[0].get_pk(), Some("doc"), "{expression}");
+    }
+
+    for expression in ["rust*", "rust && vector", "rust^2", "[alpha TO omega]"] {
         let mut fts = Fts::new().expect("FTS payload must be created");
         fts.set_query_string(expression)
             .expect("syntactic query string must be accepted");
         let query = SearchQuery::fts("body", &fts, 10).expect("FTS query must be valid");
         let error = collection
             .query(&query)
-            .expect_err("unimplemented advanced syntax must fail");
+            .expect_err("unsupported advanced syntax must fail");
         assert_eq!(error.code, ErrorCode::NotSupported, "{expression}");
     }
 }

@@ -1,9 +1,9 @@
 //! Schema-derived query validation shared by every execution path.
 
 use crate::error::{Error, Result};
-use crate::query::SearchQuery;
+use crate::query::{fts_default_operator, SearchQuery};
 use crate::schema::{CollectionSchema, IndexParams};
-use crate::types::{DataType, MetricType};
+use crate::types::{DataType, IndexType, MetricType};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +30,7 @@ pub(super) fn validate_query_contract<'a>(
             "query must select exactly one FTS, dense, sparse, or source-id route",
         ));
     }
-    validate_query_parameters(query)?;
+    validate_query_parameters(&field, query)?;
 
     if query.fts.is_some() {
         if field.data_type != DataType::String {
@@ -79,39 +79,122 @@ pub(super) fn validate_query_contract<'a>(
     Ok(field)
 }
 
-fn validate_query_parameters(query: &SearchQuery) -> Result<()> {
-    const FUTURE_PARAMETERS: &[&str] = &[
-        "type",
-        "ef",
-        "nprobe",
-        "is_linear",
-        "is_using_refiner",
-        "scale_factor",
-        "list_size",
-        "operator",
-    ];
-    if let Some(name) = query
-        .params
-        .keys()
-        .find(|name| FUTURE_PARAMETERS.contains(&name.as_str()))
-    {
-        return Err(Error::not_supported(format!(
-            "query parameter '{name}' has no execution consumer"
-        )));
+fn validate_query_parameters(field: &QueryField<'_>, query: &SearchQuery) -> Result<()> {
+    if query.fts.is_some() {
+        for name in query.params.keys() {
+            if name != "default_operator" {
+                return Err(Error::invalid_argument(format!(
+                    "query parameter '{name}' is not valid for FTS"
+                )));
+            }
+        }
+        fts_default_operator(query)?;
+        return Ok(());
     }
     for name in query.params.keys() {
-        if name != "metric" && name != "radius" {
-            return Err(Error::invalid_argument(format!(
-                "unknown query parameter '{name}'"
-            )));
+        match name.as_str() {
+            "metric" | "radius" => {}
+            "type" => validate_ann_type(field, query)?,
+            "ef" | "is_linear" => require_ann_index(field, IndexType::Hnsw, name)?,
+            "nprobe" | "scale_factor" => require_ann_index(field, IndexType::Ivf, name)?,
+            "is_using_refiner" => require_any_ann_index(field, name)?,
+            "list_size" | "operator" => {
+                return Err(Error::not_supported(format!(
+                    "query parameter '{name}' has no execution consumer"
+                )))
+            }
+            _ => {
+                return Err(Error::invalid_argument(format!(
+                    "unknown query parameter '{name}'"
+                )))
+            }
         }
-        if query.fts.is_some() {
-            return Err(Error::invalid_argument(format!(
-                "query parameter '{name}' is not valid for FTS"
-            )));
+    }
+    validate_positive_integer_parameter(query, "ef")?;
+    validate_positive_integer_parameter(query, "nprobe")?;
+    validate_boolean_parameter(query, "is_linear")?;
+    validate_boolean_parameter(query, "is_using_refiner")?;
+    if let Some(value) = query.params.get("scale_factor") {
+        let value = value
+            .as_f64()
+            .ok_or_else(|| Error::invalid_argument("IVF scale_factor must be numeric"))?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err(Error::invalid_argument(
+                "IVF scale_factor must be finite and positive",
+            ));
         }
     }
     Ok(())
+}
+
+fn validate_ann_type(field: &QueryField<'_>, query: &SearchQuery) -> Result<()> {
+    let kind = query
+        .params
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::invalid_argument("query parameter 'type' must be a string"))?;
+    let expected = match kind.to_ascii_lowercase().as_str() {
+        "hnsw" => IndexType::Hnsw,
+        "ivf" => IndexType::Ivf,
+        unsupported => {
+            return Err(Error::not_supported(format!(
+                "query index type '{unsupported}' has no execution consumer"
+            )))
+        }
+    };
+    require_ann_index(field, expected, "type")
+}
+
+fn require_ann_index(field: &QueryField<'_>, expected: IndexType, name: &str) -> Result<()> {
+    let actual = field
+        .index_params
+        .map_or(IndexType::Undefined, |params| params.index_type);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::not_supported(format!(
+            "query parameter '{name}' requires a {expected:?} index"
+        )))
+    }
+}
+
+fn require_any_ann_index(field: &QueryField<'_>, name: &str) -> Result<()> {
+    let actual = field
+        .index_params
+        .map_or(IndexType::Undefined, |params| params.index_type);
+    if matches!(actual, IndexType::Hnsw | IndexType::Ivf) {
+        Ok(())
+    } else {
+        Err(Error::not_supported(format!(
+            "query parameter '{name}' requires an ANN index"
+        )))
+    }
+}
+
+fn validate_positive_integer_parameter(query: &SearchQuery, name: &str) -> Result<()> {
+    let Some(value) = query.params.get(name) else {
+        return Ok(());
+    };
+    if value.as_u64().is_some_and(|value| value > 0) {
+        Ok(())
+    } else {
+        Err(Error::invalid_argument(format!(
+            "query parameter '{name}' must be a positive integer"
+        )))
+    }
+}
+
+fn validate_boolean_parameter(query: &SearchQuery, name: &str) -> Result<()> {
+    let Some(value) = query.params.get(name) else {
+        return Ok(());
+    };
+    if value.is_boolean() {
+        Ok(())
+    } else {
+        Err(Error::invalid_argument(format!(
+            "query parameter '{name}' must be boolean"
+        )))
+    }
 }
 
 pub(super) fn query_metric(field: &QueryField<'_>, query: &SearchQuery) -> Result<MetricType> {
@@ -126,27 +209,6 @@ pub(super) fn query_metric(field: &QueryField<'_>, query: &SearchQuery) -> Resul
             .map(|params| params.metric_type)
             .filter(|metric| *metric != MetricType::Undefined)
             .unwrap_or(MetricType::Cosine)),
-    }
-}
-
-pub(super) fn validate_tokenizer(tokenizer: &str) -> Result<()> {
-    match tokenizer {
-        "standard" | "whitespace" => Ok(()),
-        "jieba" | "jieba_accurate" => {
-            #[cfg(feature = "jieba")]
-            {
-                Ok(())
-            }
-            #[cfg(not(feature = "jieba"))]
-            {
-                Err(Error::not_supported(
-                    "jieba tokenizer requires the optional 'jieba' feature",
-                ))
-            }
-        }
-        _ => Err(Error::invalid_argument(format!(
-            "unknown FTS tokenizer '{tokenizer}'"
-        ))),
     }
 }
 

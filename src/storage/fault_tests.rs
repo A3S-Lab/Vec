@@ -1,6 +1,6 @@
 use super::fault::FaultPoint;
 use super::test_support::{doc, schema};
-use super::{wal, StorageHandle, WalOperation};
+use super::{snapshot, wal, StorageHandle, WalOperation};
 use crate::config::{ConfigBuilder, Durability};
 use crate::error::ErrorCode;
 use tempfile::tempdir;
@@ -160,7 +160,7 @@ fn checkpoint_recovers_at_every_snapshot_manifest_and_prune_boundary() {
         ) {
             assert!(!old_wal.exists(), "point={point:?}");
         }
-        let old_snapshot = root.join("segments/snapshot-00000000000000000001.json");
+        let old_snapshot = root.join(snapshot::binary_relative_path(1));
         if point == FaultPoint::SnapshotPruneBeforeRemove {
             assert!(old_snapshot.exists(), "point={point:?}");
         } else if matches!(

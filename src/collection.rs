@@ -1,25 +1,27 @@
 //! Thread-safe collection handle and transaction coordinator.
 
+mod checkpoint;
 mod configuration;
+mod index_api;
 mod query_api;
 mod query_contract;
 mod query_engine;
 mod validation;
 
 use crate::config::{ConfigBuilder, Durability};
-use crate::doc::Doc;
+use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, ErrorCode, Result};
-use crate::schema::{
-    AddColumnOption, AlterColumnOption, CollectionSchema, FieldSchema, IndexParams,
-};
+use crate::index::IndexRegistry;
+use crate::schema::{AddColumnOption, AlterColumnOption, CollectionSchema, FieldSchema};
 pub use crate::stats::IndexStat;
 use crate::stats::{StatsRegistry, StatsSnapshot};
 use crate::storage::{StorageHandle, WalOperation};
 use crate::types::IndexType;
+use checkpoint::{commit_prepared_schema_change, maybe_checkpoint, persist_index_cache};
 use configuration::options_config;
 use query_engine::{matches_filter, parse_filter_expression};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -95,6 +97,8 @@ pub struct CollectionStats {
     pub doc_count: u64,
     pub indexes: Vec<IndexStat>,
     pub revision: u64,
+    #[serde(default)]
+    pub index_cache_hit: bool,
     pub read_only: bool,
     pub wal_active_seq: u64,
     pub wal_checkpoint_seq: u64,
@@ -106,11 +110,22 @@ pub struct CollectionStats {
 struct CollectionState {
     path: PathBuf,
     schema: CollectionSchema,
-    docs: BTreeMap<String, Doc>,
+    docs: Arc<DocumentMap>,
     revision: u64,
     options: CollectionOptions,
     config: ConfigBuilder,
     stats: Arc<StatsRegistry>,
+    indexes: Arc<IndexRegistry>,
+    index_cache_hit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CollectionSnapshot {
+    schema: CollectionSchema,
+    docs: Arc<DocumentMap>,
+    revision: u64,
+    stats: Arc<StatsRegistry>,
+    indexes: Arc<IndexRegistry>,
 }
 
 #[derive(Debug)]
@@ -137,14 +152,17 @@ impl Collection {
         let config = options_config(&options);
         let root = Path::new(path);
         let storage = StorageHandle::create(root, schema, options.read_only)?;
+        let indexes = IndexRegistry::build(schema, &DocumentMap::new(), 0)?;
         let state = CollectionState {
             path: root.to_path_buf(),
             schema: schema.clone(),
-            docs: BTreeMap::new(),
+            docs: Arc::new(DocumentMap::new()),
             revision: 0,
             options,
             config,
             stats: Arc::new(StatsRegistry::default()),
+            indexes: Arc::new(indexes),
+            index_cache_hit: false,
         };
         Ok(Self {
             inner: Arc::new(CollectionInner {
@@ -172,7 +190,7 @@ impl Collection {
             return Err(Error::internal("persisted collection has an empty name"));
         }
         let revision = storage.manifest.revision;
-        let mut recovered_docs = BTreeMap::new();
+        let mut recovered_docs = DocumentMap::new();
         for doc in docs {
             let doc = normalize_doc(&schema, &doc).map_err(|error| {
                 Error::internal(format!(
@@ -187,21 +205,47 @@ impl Collection {
                 .get_pk()
                 .ok_or_else(|| Error::internal("persisted document has no primary key"))?
                 .to_string();
-            if recovered_docs.insert(id.clone(), doc).is_some() {
+            if recovered_docs.insert(id.clone(), Arc::new(doc)).is_some() {
                 return Err(Error::internal(format!(
                     "persisted collection contains duplicate primary key '{id}'"
                 )));
             }
         }
         let docs = recovered_docs;
+        let cached_indexes = storage.read_index_cache().ok().flatten().and_then(|bytes| {
+            IndexRegistry::restore_cache(
+                &bytes,
+                &schema,
+                &docs,
+                revision,
+                &storage.index_cache_identity(),
+            )
+        });
+        let index_cache_hit = cached_indexes.is_some();
+        let indexes = cached_indexes.map_or_else(
+            || {
+                IndexRegistry::build(&schema, &docs, revision).map_err(|error| {
+                    Error::internal(format!(
+                        "rebuild persisted indexes at revision {revision}: {}",
+                        error.message
+                    ))
+                })
+            },
+            Ok,
+        )?;
+        if !index_cache_hit && !options.read_only {
+            persist_index_cache(&storage, &schema, &indexes, revision, false);
+        }
         let state = CollectionState {
             path: PathBuf::from(path),
             schema: schema.clone(),
-            docs,
+            docs: Arc::new(docs),
             revision,
             options,
             config,
             stats: Arc::new(StatsRegistry::default()),
+            indexes: Arc::new(indexes),
+            index_cache_hit,
         };
         Ok(Self {
             inner: Arc::new(CollectionInner {
@@ -232,7 +276,7 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let (schema, docs) = {
+        let (schema, docs, indexes, revision) = {
             let state = self
                 .inner
                 .state
@@ -240,7 +284,13 @@ impl Collection {
                 .map_err(|_| Error::internal("collection state lock poisoned"))?;
             (
                 state.schema.clone(),
-                state.docs.values().cloned().collect::<Vec<_>>(),
+                state
+                    .docs
+                    .values()
+                    .map(|doc| doc.as_ref().clone())
+                    .collect::<Vec<_>>(),
+                Arc::clone(&state.indexes),
+                state.revision,
             )
         };
         let mut storage = self
@@ -248,8 +298,8 @@ impl Collection {
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        let revision = storage.manifest.revision;
         storage.checkpoint(&schema, &docs, revision, true)?;
+        persist_index_cache(&storage, &schema, &indexes, revision, true);
         Ok(())
     }
 
@@ -301,29 +351,41 @@ impl Collection {
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        let indexes = state
-            .schema
-            .vectors
-            .iter()
-            .filter(|field| {
-                field
-                    .index_params
-                    .as_ref()
-                    .is_some_and(|params| params.index_type == IndexType::Flat)
-            })
-            .map(|field| IndexStat {
-                name: field.name.clone(),
-                index_type: IndexType::Flat,
-                completeness: 1.0,
-                source_revision: state.revision,
-                document_count: state.docs.len() as u64,
-                state: "ready".into(),
-            })
-            .collect();
+        let mut indexes = state.indexes.stats(&state.schema);
+        indexes.extend(
+            state
+                .schema
+                .vectors
+                .iter()
+                .filter(|field| {
+                    field
+                        .index_params
+                        .as_ref()
+                        .is_some_and(|params| params.index_type == IndexType::Flat)
+                })
+                .map(|field| IndexStat {
+                    name: field.name.clone(),
+                    index_type: IndexType::Flat,
+                    completeness: 1.0,
+                    source_revision: state.revision,
+                    document_count: u64::try_from(
+                        state
+                            .docs
+                            .values()
+                            .filter(|doc| doc.vector(&field.name).is_some())
+                            .count(),
+                    )
+                    .unwrap_or(u64::MAX),
+                    estimated_payload_bytes: None,
+                    state: "ready".into(),
+                }),
+        );
+        indexes.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(CollectionStats {
             doc_count: state.docs.len() as u64,
             indexes,
             revision: state.revision,
+            index_cache_hit: state.index_cache_hit,
             read_only: state.options.read_only,
             wal_active_seq: storage.manifest.wal_active_seq,
             wal_checkpoint_seq: storage.manifest.wal_checkpoint_seq,
@@ -346,13 +408,18 @@ impl Collection {
             doc_count: basic.doc_count,
             query_count: registry.query_count.load(AtomicOrdering::Relaxed),
             fts_query_count: registry.fts_query_count.load(AtomicOrdering::Relaxed),
+            fts_index_query_count: registry.fts_index_query_count.load(AtomicOrdering::Relaxed),
             ann_query_count: registry.ann_query_count.load(AtomicOrdering::Relaxed),
             exact_query_count: registry.exact_query_count.load(AtomicOrdering::Relaxed),
             filtered_query_count: registry.filtered_query_count.load(AtomicOrdering::Relaxed),
+            scalar_index_query_count: registry
+                .scalar_index_query_count
+                .load(AtomicOrdering::Relaxed),
             radius_query_count: registry.radius_query_count.load(AtomicOrdering::Relaxed),
             candidates_scanned: registry.candidates_scanned.load(AtomicOrdering::Relaxed),
             indexed_field_count: basic.indexes.len(),
             indexes: basic.indexes,
+            index_cache_hit: basic.index_cache_hit,
             read_only: basic.read_only,
             wal_active_seq: basic.wal_active_seq,
             wal_checkpoint_seq: basic.wal_checkpoint_seq,
@@ -393,12 +460,13 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let current = self
             .inner
             .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
+            .read()
+            .map_err(|_| Error::internal("collection state lock poisoned"))?
+            .clone();
+        ensure_writable(&current.options)?;
         let mut results = Vec::with_capacity(pks.len());
         let mut ids = Vec::new();
         let mut seen = HashSet::new();
@@ -413,7 +481,7 @@ impl Collection {
                     ErrorCode::AlreadyExists,
                     "duplicate primary key in delete batch",
                 ));
-            } else if state.docs.contains_key(*pk) {
+            } else if current.docs.contains_key(*pk) {
                 ids.push((*pk).to_string());
                 results.push(write_success());
             } else {
@@ -424,19 +492,34 @@ impl Collection {
             }
         }
         if !ids.is_empty() {
-            let config = state.config.clone();
-            let revision = next_revision(state.revision)?;
-            let mut next_docs = state.docs.clone();
+            let config = current.config.clone();
+            let revision = next_revision(current.revision)?;
+            let mut next_docs = current.docs.as_ref().clone();
             for id in &ids {
                 next_docs.remove(id);
             }
+            let changed_ids = ids.iter().cloned().collect::<BTreeSet<_>>();
+            let next_indexes = current.indexes.apply_document_changes(
+                &current.schema,
+                current.docs.as_ref(),
+                &next_docs,
+                revision,
+                &changed_ids,
+            )?;
+            let mut state = self
+                .inner
+                .state
+                .write()
+                .map_err(|_| Error::internal("collection state lock poisoned"))?;
+            ensure_same_generation(&state, &current)?;
             let mut storage = self
                 .inner
                 .storage
                 .lock()
                 .map_err(|_| Error::internal("storage lock poisoned"))?;
             storage.append(revision, WalOperation::Delete { ids: ids.clone() }, &config)?;
-            state.docs = next_docs;
+            state.docs = Arc::new(next_docs);
+            state.indexes = Arc::new(next_indexes);
             state.revision = revision;
             maybe_checkpoint(&mut storage, &state, &config)?;
         }
@@ -450,37 +533,63 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
+        let current = self
+            .inner
+            .state
+            .read()
+            .map_err(|_| Error::internal("collection state lock poisoned"))?
+            .clone();
+        ensure_writable(&current.options)?;
+        let parsed_filter = parse_filter_expression(filter)?;
+        let indexed = current
+            .indexes
+            .scalar_candidates(current.revision, &parsed_filter);
+        let ids: Vec<String> = if let Some(indexed) = indexed {
+            indexed
+                .ids()
+                .filter_map(|id| current.docs.get(id))
+                .filter(|doc| matches_filter(doc, Some(&parsed_filter)))
+                .filter_map(|doc| doc.get_pk().map(str::to_string))
+                .collect()
+        } else {
+            current
+                .docs
+                .values()
+                .filter(|doc| matches_filter(doc, Some(&parsed_filter)))
+                .filter_map(|doc| doc.get_pk().map(str::to_string))
+                .collect()
+        };
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let config = current.config.clone();
+        let revision = next_revision(current.revision)?;
+        let mut next_docs = current.docs.as_ref().clone();
+        for id in &ids {
+            next_docs.remove(id);
+        }
+        let changed_ids = ids.iter().cloned().collect::<BTreeSet<_>>();
+        let next_indexes = current.indexes.apply_document_changes(
+            &current.schema,
+            current.docs.as_ref(),
+            &next_docs,
+            revision,
+            &changed_ids,
+        )?;
         let mut state = self
             .inner
             .state
             .write()
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
-        let ids: Vec<String> = state
-            .docs
-            .values()
-            .filter(|doc| matches_filter(doc, Some(filter)))
-            .filter_map(|doc| doc.get_pk().map(str::to_string))
-            .collect();
-        if ids.is_empty() {
-            // Parse even when no documents match, so malformed filters are not
-            // silently accepted.
-            parse_filter_expression(filter)?;
-            return Ok(());
-        }
-        let config = state.config.clone();
-        let revision = next_revision(state.revision)?;
-        let mut next_docs = state.docs.clone();
-        for id in &ids {
-            next_docs.remove(id);
-        }
+        ensure_same_generation(&state, &current)?;
         let mut storage = self
             .inner
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
         storage.append(revision, WalOperation::Delete { ids: ids.clone() }, &config)?;
-        state.docs = next_docs;
+        state.docs = Arc::new(next_docs);
+        state.indexes = Arc::new(next_indexes);
         state.revision = revision;
         maybe_checkpoint(&mut storage, &state, &config)?;
         Ok(())
@@ -493,14 +602,15 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let current = self
             .inner
             .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
+            .read()
+            .map_err(|_| Error::internal("collection state lock poisoned"))?
+            .clone();
+        ensure_writable(&current.options)?;
 
-        let (accepted, outcomes) = prepare_mutation_batch(&state, docs, mutation);
+        let (accepted, outcomes) = prepare_mutation_batch(&current, docs, mutation);
 
         if accepted.is_empty() {
             return Ok(write_result(outcomes));
@@ -516,31 +626,49 @@ impl Collection {
                 docs: accepted.clone(),
             },
         };
-        let config = state.config.clone();
-        let revision = next_revision(state.revision)?;
-        let mut next_docs = state.docs.clone();
+        let config = current.config.clone();
+        let revision = next_revision(current.revision)?;
+        let mut next_docs = current.docs.as_ref().clone();
         for doc in &accepted {
             let Some(pk) = doc.get_pk().map(str::to_string) else {
                 continue;
             };
             match mutation {
                 Mutation::Insert | Mutation::Upsert => {
-                    next_docs.insert(pk, doc.clone());
+                    next_docs.insert(pk, Arc::new(doc.clone()));
                 }
                 Mutation::Update => {
                     if let Some(existing) = next_docs.get_mut(&pk) {
-                        merge_patch(existing, doc)?;
+                        merge_patch(Arc::make_mut(existing), doc)?;
                     }
                 }
             }
         }
+        let changed_ids = accepted
+            .iter()
+            .filter_map(|doc| doc.get_pk().map(str::to_string))
+            .collect::<BTreeSet<_>>();
+        let next_indexes = current.indexes.apply_document_changes(
+            &current.schema,
+            current.docs.as_ref(),
+            &next_docs,
+            revision,
+            &changed_ids,
+        )?;
+        let mut state = self
+            .inner
+            .state
+            .write()
+            .map_err(|_| Error::internal("collection state lock poisoned"))?;
+        ensure_same_generation(&state, &current)?;
         let mut storage = self
             .inner
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
         storage.append(revision, operation, &config)?;
-        state.docs = next_docs;
+        state.docs = Arc::new(next_docs);
+        state.indexes = Arc::new(next_indexes);
         state.revision = revision;
         maybe_checkpoint(&mut storage, &state, &config)?;
         Ok(write_result(outcomes))
@@ -549,79 +677,6 @@ impl Collection {
     // ---------------------------------------------------------------------
     // Index and schema management
     // ---------------------------------------------------------------------
-
-    pub fn create_index(&self, field_name: &str, params: &IndexParams) -> Result<()> {
-        self.ensure_open()?;
-        let _writer = self
-            .inner
-            .writer
-            .lock()
-            .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
-            .inner
-            .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
-        state.schema.check_index_configuration(field_name, params)?;
-        if params.index_type != IndexType::Flat {
-            return Err(Error::not_supported(format!(
-                "{:?} physical index creation is not implemented",
-                params.index_type
-            )));
-        }
-        let mut next = state.clone();
-        next.schema.add_index(field_name, params)?;
-        let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
-    }
-
-    pub fn drop_index(&self, field_name: &str) -> Result<()> {
-        self.ensure_open()?;
-        let _writer = self
-            .inner
-            .writer
-            .lock()
-            .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
-            .inner
-            .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
-        let mut next = state.clone();
-        next.schema.drop_index(field_name)?;
-        let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
-    }
-
-    pub fn optimize(&self) -> Result<()> {
-        self.ensure_open()?;
-        let _writer = self
-            .inner
-            .writer
-            .lock()
-            .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let state = self
-            .inner
-            .state
-            .read()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_writable(&state.options)?;
-        Err(Error::not_supported(
-            "physical index optimization is not implemented",
-        ))
-    }
 
     pub fn add_column(&self, field_schema: &FieldSchema, default_expr: Option<&str>) -> Result<()> {
         self.add_column_with_options(field_schema, default_expr, AddColumnOption::default())
@@ -656,9 +711,9 @@ impl Collection {
             .map(|expression| parse_default_expression(expression, field_schema.data_type))
             .transpose()?;
         if let Some(value) = default {
-            for doc in next.docs.values_mut() {
-                doc.set_field_value(&field_schema.name, value.clone())?;
-            }
+            next.docs = Arc::new(transform_documents(&next.docs, |doc| {
+                doc.set_field_value(&field_schema.name, value.clone())
+            })?);
         }
         for doc in next.docs.values() {
             validate_doc(&next.schema, doc, true)?;
@@ -687,9 +742,9 @@ impl Collection {
         ensure_writable(&state.options)?;
         let mut next = state.clone();
         next.schema.drop_field(name)?;
-        for doc in next.docs.values_mut() {
-            doc.remove_field(name)?;
-        }
+        next.docs = Arc::new(transform_documents(&next.docs, |doc| {
+            doc.remove_field(name)
+        })?);
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -741,7 +796,7 @@ impl Collection {
         } else {
             return Err(Error::not_found(format!("field '{old_name}' not found")));
         }
-        for doc in next.docs.values_mut() {
+        next.docs = Arc::new(transform_documents(&next.docs, |doc| {
             if let Some(value) = doc.field(old_name).cloned() {
                 doc.remove_field(old_name)?;
                 doc.set_field_value(new_name, value)?;
@@ -749,7 +804,8 @@ impl Collection {
                 doc.remove_field(old_name)?;
                 doc.set_vector_value(new_name, value)?;
             }
-        }
+            Ok(())
+        })?);
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -804,18 +860,19 @@ impl Collection {
         commit_schema_change(&mut storage, &mut state, next, &config)
     }
 
-    fn snapshot_state(&self) -> Result<(CollectionSchema, Vec<Doc>, u64, Arc<StatsRegistry>)> {
+    fn snapshot_state(&self) -> Result<CollectionSnapshot> {
         let state = self
             .inner
             .state
             .read()
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        Ok((
-            state.schema.clone(),
-            state.docs.values().cloned().collect(),
-            state.revision,
-            Arc::clone(&state.stats),
-        ))
+        Ok(CollectionSnapshot {
+            schema: state.schema.clone(),
+            docs: state.docs.clone(),
+            revision: state.revision,
+            stats: Arc::clone(&state.stats),
+            indexes: state.indexes.clone(),
+        })
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -840,6 +897,29 @@ fn ensure_writable(options: &CollectionOptions) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+fn ensure_same_generation(current: &CollectionState, expected: &CollectionState) -> Result<()> {
+    if current.revision == expected.revision && current.schema == expected.schema {
+        Ok(())
+    } else {
+        Err(Error::failed_precondition(
+            "collection generation changed during index construction",
+        ))
+    }
+}
+
+fn transform_documents(
+    docs: &DocumentMap,
+    mut transform: impl FnMut(&mut Doc) -> Result<()>,
+) -> Result<DocumentMap> {
+    let mut transformed = DocumentMap::new();
+    for (id, doc) in docs {
+        let mut next = doc.as_ref().clone();
+        transform(&mut next)?;
+        transformed.insert(id.clone(), Arc::new(next));
+    }
+    Ok(transformed)
 }
 
 fn write_success() -> DocWriteResult {
@@ -870,42 +950,18 @@ fn write_result(results: Vec<DocWriteResult>) -> WriteResult {
 fn commit_schema_change(
     storage: &mut StorageHandle,
     state: &mut CollectionState,
-    mut next: CollectionState,
+    next: CollectionState,
     config: &ConfigBuilder,
 ) -> Result<()> {
-    let revision = next_revision(state.revision)?;
-    next.revision = revision;
-    let schema = next.schema.clone();
-    let docs: Vec<Doc> = next.docs.values().cloned().collect();
-    storage.append(
-        revision,
-        WalOperation::Schema {
-            schema: schema.clone(),
-            docs: docs.clone(),
-        },
-        config,
-    )?;
-
-    // The WAL + manifest pair is the commit point. Publish the same state in
-    // memory before checkpoint maintenance so a checkpoint error cannot leave
-    // this process behind the already committed revision.
-    *state = next;
-    let sync = !matches!(config.durability, Durability::Manual);
-    storage.checkpoint(&schema, &docs, revision, sync)
+    let next = prepare_schema_change(next)?;
+    commit_prepared_schema_change(storage, state, next, config)
 }
 
-fn maybe_checkpoint(
-    storage: &mut StorageHandle,
-    state: &CollectionState,
-    config: &ConfigBuilder,
-) -> Result<()> {
-    let should =
-        matches!(config.durability, Durability::Interval) && storage.should_checkpoint(config);
-    if should {
-        let docs: Vec<Doc> = state.docs.values().cloned().collect();
-        storage.checkpoint(&state.schema, &docs, state.revision, true)?;
-    }
-    Ok(())
+fn prepare_schema_change(mut next: CollectionState) -> Result<CollectionState> {
+    let revision = next_revision(next.revision)?;
+    next.revision = revision;
+    next.indexes = Arc::new(IndexRegistry::build(&next.schema, &next.docs, revision)?);
+    Ok(next)
 }
 
 fn next_revision(current: u64) -> Result<u64> {
@@ -913,3 +969,6 @@ fn next_revision(current: u64) -> Result<u64> {
         .checked_add(1)
         .ok_or_else(|| Error::resource_exhausted("collection revision overflow"))
 }
+
+#[cfg(test)]
+mod tests;

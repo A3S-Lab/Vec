@@ -817,6 +817,7 @@ fn jieba_schema() -> CollectionSchema {
         .expect("Jieba collection schema must be valid")
 }
 
+#[cfg(feature = "jieba")]
 fn jieba_query() -> SearchQuery {
     let mut fts = Fts::new().expect("FTS payload must be created");
     fts.set_match_string("北京大学")
@@ -829,16 +830,12 @@ fn jieba_query() -> SearchQuery {
 fn disabled_jieba_feature_fails_instead_of_changing_tokenizer_semantics() {
     let temporary = tempdir().expect("temporary directory must be available");
     let path = temporary.path().join("collection");
-    let collection = Collection::create(
+    let error = Collection::create(
         path.to_str().expect("temporary path must be UTF-8"),
         &jieba_schema(),
         None,
     )
-    .expect("collection must be created");
-
-    let error = collection
-        .query(&jieba_query())
-        .expect_err("disabled Jieba support must be explicit");
+    .expect_err("disabled Jieba index construction must fail explicitly");
     assert_eq!(error.code, ErrorCode::NotSupported);
 }
 

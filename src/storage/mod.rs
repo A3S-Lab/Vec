@@ -1,6 +1,7 @@
 //! Persistence primitives used by the collection handle.
 
 mod fault;
+mod index_cache;
 mod lock;
 pub mod manifest;
 pub mod snapshot;
@@ -190,6 +191,7 @@ impl StorageHandle {
             &self.faults,
         )?;
         let mut next_manifest = self.manifest.clone();
+        next_manifest.format_version = manifest::FORMAT_VERSION;
         next_manifest.collection_name.clone_from(&schema.name);
         next_manifest.schema_digest = schema.digest();
         next_manifest.generation = generation;
@@ -230,6 +232,38 @@ impl StorageHandle {
             || config
                 .wal_max_bytes
                 .is_some_and(|v| self.manifest.wal_bytes_since_checkpoint >= v)
+    }
+
+    pub(crate) fn read_index_cache(&self) -> Result<Option<Vec<u8>>> {
+        index_cache::read(&self.root)
+    }
+
+    pub(crate) fn write_index_cache(&self, bytes: &[u8], sync: bool) -> Result<()> {
+        if !self.lock.is_exclusive() {
+            return Err(Error::permission_denied(
+                "cannot write an index cache through a read-only handle",
+            ));
+        }
+        index_cache::write(&self.root, bytes, sync)
+    }
+
+    pub(crate) fn index_cache_identity(&self) -> String {
+        let manifest = &self.manifest;
+        format!(
+            "v2:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            manifest.format_version,
+            manifest.collection_name.len(),
+            manifest.collection_name,
+            manifest.schema_digest,
+            manifest.generation,
+            manifest.revision,
+            manifest.checkpoint_revision,
+            manifest.wal_active_seq,
+            manifest.wal_checkpoint_seq,
+            manifest.wal_ops_since_checkpoint,
+            manifest.wal_bytes_since_checkpoint,
+            manifest.docs_checksum,
+        )
     }
 
     #[cfg(test)]

@@ -7,10 +7,14 @@
 //! Apple Silicon, Linux, and Windows.
 //!
 //! A collection's document snapshot and WAL are authoritative. Flat queries
-//! execute against that snapshot. ANN, scalar-index, and indexed-FTS controls
-//! return typed unsupported errors until real derived implementations exist.
-//! Native numeric vector encodings are preserved at rest and scored by the
-//! exact oracle; they are distinct from future scale-bearing ANN quantizers.
+//! execute against that snapshot; revision-tagged HNSW and IVF generations
+//! select bounded candidates before exact re-ranking. Native numeric vector
+//! encodings are preserved at rest and remain distinct from index-only
+//! FP16/INT8/INT4 scalar quantization. Revisioned scalar and full-text indexes
+//! accelerate structured and lexical retrieval, including Unicode n-grams,
+//! ordered token filters, boolean groups, required/prohibited clauses, and
+//! exact phrases. `DiskANN` and wildcard/fielded/boosted FTS syntax still
+//! return typed unsupported errors.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
@@ -24,12 +28,14 @@ mod config;
 mod doc;
 mod embedding;
 mod error;
+mod index;
 mod iterator;
 mod multi_query;
 mod query;
 mod schema;
 mod stats;
 mod storage;
+mod text;
 mod types;
 
 pub use collection::{

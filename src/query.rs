@@ -150,9 +150,39 @@ impl DiskannQueryParams {
     }
 }
 
+/// Full-text query controls.
+///
+/// Omitting `default_operator` preserves OR semantics. `AND` intersects all
+/// analyzed terms before BM25 scoring, which is useful for selective n-gram
+/// substring queries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FtsQueryParams {
     pub default_operator: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FtsDefaultOperator {
+    Or,
+    And,
+}
+
+impl FtsDefaultOperator {
+    fn parse(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "or" => Ok(Self::Or),
+            "and" => Ok(Self::And),
+            _ => Err(Error::invalid_argument(
+                "FTS default operator must be AND or OR",
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Or => "or",
+            Self::And => "and",
+        }
+    }
 }
 impl FtsQueryParams {
     pub fn new(default_operator: Option<&str>) -> Result<Self> {
@@ -165,13 +195,7 @@ impl FtsQueryParams {
         Ok(out)
     }
     pub fn set_default_operator(&mut self, op: &str) -> Result<()> {
-        let normalized = op.to_ascii_lowercase();
-        if normalized != "and" && normalized != "or" {
-            return Err(Error::invalid_argument(
-                "FTS default operator must be AND or OR",
-            ));
-        }
-        self.default_operator = Some(normalized);
+        self.default_operator = Some(FtsDefaultOperator::parse(op)?.as_str().to_string());
         Ok(())
     }
     pub fn default_operator(&self) -> Option<String> {
@@ -396,11 +420,11 @@ impl SearchQuery {
         self.output_fields = Some(fields.iter().map(|s| (*s).to_string()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
-        unsupported_query_controls("HNSW")
+    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
+        apply_hnsw_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF")
+    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
+        apply_ivf_query_controls(&mut self.params, params)
     }
     pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
         unsupported_query_controls("IVF RaBitQ")
@@ -417,7 +441,7 @@ impl SearchQuery {
         unsupported_query_controls("DiskANN")
     }
     pub fn set_fts_params(&mut self, params: FtsQueryParams) -> Result<()> {
-        validate_fts_query_controls(params)
+        apply_fts_query_controls(&mut self.params, params)
     }
     pub fn set_fts(&mut self, fts: &Fts) -> Result<()> {
         if fts.query_string.is_none() && fts.match_string.is_none() {
@@ -589,11 +613,11 @@ impl GroupBySearchQuery {
         self.output_fields = Some(fields.iter().map(|s| (*s).to_string()).collect());
         Ok(())
     }
-    pub fn set_hnsw_params(&mut self, _params: HnswQueryParams) -> Result<()> {
-        unsupported_query_controls("HNSW")
+    pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
+        apply_hnsw_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_params(&mut self, _params: IvfQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF")
+    pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
+        apply_ivf_query_controls(&mut self.params, params)
     }
     pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
         unsupported_query_controls("IVF RaBitQ")
@@ -617,13 +641,87 @@ pub(crate) fn unsupported_query_controls(name: &str) -> Result<()> {
     )))
 }
 
-pub(crate) fn validate_fts_query_controls(params: FtsQueryParams) -> Result<()> {
-    let FtsQueryParams { default_operator } = params;
-    if default_operator.is_some() {
-        unsupported_query_controls("FTS operator")
-    } else {
-        Ok(())
+pub(crate) fn apply_hnsw_query_controls(
+    target: &mut Map<String, Value>,
+    params: HnswQueryParams,
+) -> Result<()> {
+    if params.ef <= 0 {
+        return Err(Error::invalid_argument("HNSW ef must be positive"));
     }
+    if !params.radius.is_finite() {
+        return Err(Error::invalid_argument("HNSW radius must be finite"));
+    }
+    clear_ann_query_controls(target);
+    target.insert("type".into(), json!("hnsw"));
+    target.insert("ef".into(), json!(params.ef));
+    target.insert("is_linear".into(), json!(params.is_linear));
+    target.insert("is_using_refiner".into(), json!(params.is_using_refiner));
+    if params.radius == 0.0 {
+        target.remove("radius");
+    } else {
+        target.insert("radius".into(), json!(params.radius));
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_ivf_query_controls(
+    target: &mut Map<String, Value>,
+    params: IvfQueryParams,
+) -> Result<()> {
+    if params.nprobe <= 0 {
+        return Err(Error::invalid_argument("IVF nprobe must be positive"));
+    }
+    if !params.scale_factor.is_finite() || params.scale_factor <= 0.0 {
+        return Err(Error::invalid_argument(
+            "IVF scale factor must be finite and positive",
+        ));
+    }
+    clear_ann_query_controls(target);
+    target.insert("type".into(), json!("ivf"));
+    target.insert("nprobe".into(), json!(params.nprobe));
+    target.insert("is_using_refiner".into(), json!(params.is_using_refiner));
+    target.insert("scale_factor".into(), json!(params.scale_factor));
+    Ok(())
+}
+
+fn clear_ann_query_controls(target: &mut Map<String, Value>) {
+    for name in [
+        "type",
+        "ef",
+        "nprobe",
+        "is_linear",
+        "is_using_refiner",
+        "scale_factor",
+    ] {
+        target.remove(name);
+    }
+}
+
+pub(crate) fn apply_fts_query_controls(
+    target: &mut Map<String, Value>,
+    params: FtsQueryParams,
+) -> Result<()> {
+    if let Some(value) = params.default_operator {
+        let operator = FtsDefaultOperator::parse(&value)?;
+        target.insert("default_operator".into(), json!(operator.as_str()));
+    } else {
+        target.remove("default_operator");
+    }
+    Ok(())
+}
+
+pub(crate) fn fts_default_operator(query: &SearchQuery) -> Result<FtsDefaultOperator> {
+    query.params.get("default_operator").map_or_else(
+        || Ok(FtsDefaultOperator::Or),
+        |value| {
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    Error::invalid_argument("FTS default_operator parameter must be a string")
+                })
+                .and_then(FtsDefaultOperator::parse)
+        },
+    )
 }
 
 fn validate_name(name: &str) -> Result<()> {

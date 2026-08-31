@@ -1,18 +1,31 @@
 //! Exact query execution used as the collection correctness oracle.
 
-use super::query_contract::{query_metric, validate_query_contract, validate_tokenizer};
-use crate::doc::{Doc, FieldValue, VectorValue};
+use super::query_contract::{query_metric, validate_query_contract};
+use crate::doc::{Doc, DocumentMap, VectorValue};
 use crate::error::{Error, Result};
-use crate::query::SearchQuery;
+use crate::index::{CandidateSelection, OrdinalScores};
+use crate::query::{FtsDefaultOperator, SearchQuery};
 use crate::schema::{CollectionSchema, IndexParams};
+use crate::text::{bm25_term_score, parse_fts_query, text_value, FtsEvalContext, Tokenizer};
 use crate::types::MetricType;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BinaryHeap};
+use zvec_core::filter::FilterExpr;
 
 struct ScoredDoc {
     exact_score: f64,
     doc: Doc,
+}
+
+struct ScoredCandidate<'a> {
+    exact_score: f64,
+    doc: &'a Doc,
+}
+
+struct TopKCollector<'a> {
+    limit: usize,
+    candidates: BinaryHeap<ScoredCandidate<'a>>,
 }
 
 impl ScoredDoc {
@@ -21,6 +34,81 @@ impl ScoredDoc {
             return Err(Error::resource_exhausted("query score is not finite"));
         }
         Ok(Self { exact_score, doc })
+    }
+}
+
+impl ScoredCandidate<'_> {
+    fn new(exact_score: f64, doc: &Doc) -> Result<ScoredCandidate<'_>> {
+        if !exact_score.is_finite() {
+            return Err(Error::resource_exhausted("query score is not finite"));
+        }
+        Ok(ScoredCandidate { exact_score, doc })
+    }
+
+    fn id(&self) -> &str {
+        self.doc.get_pk().unwrap_or_default()
+    }
+}
+
+impl PartialEq for ScoredCandidate<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ScoredCandidate<'_> {}
+
+impl PartialOrd for ScoredCandidate<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredCandidate<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // BinaryHeap keeps the greatest element at the root, so reverse the
+        // score ordering and keep the lexicographically greatest tied ID as
+        // the worst retained candidate.
+        other
+            .exact_score
+            .total_cmp(&self.exact_score)
+            .then_with(|| self.id().cmp(other.id()))
+    }
+}
+
+impl<'a> TopKCollector<'a> {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            candidates: BinaryHeap::new(),
+        }
+    }
+
+    fn push(&mut self, exact_score: f64, doc: &'a Doc) -> Result<()> {
+        let candidate = ScoredCandidate::new(exact_score, doc)?;
+        if self.limit == 0 {
+            return Ok(());
+        }
+        if self.candidates.len() < self.limit {
+            self.candidates.push(candidate);
+            return Ok(());
+        }
+        if self
+            .candidates
+            .peek()
+            .is_some_and(|worst| candidate.cmp(worst) == Ordering::Less)
+        {
+            self.candidates.pop();
+            self.candidates.push(candidate);
+        }
+        Ok(())
+    }
+
+    fn into_scored_docs(self) -> Result<Vec<ScoredDoc>> {
+        self.candidates
+            .into_iter()
+            .map(|candidate| ScoredDoc::new(candidate.exact_score, candidate.doc.clone()))
+            .collect()
     }
 }
 
@@ -118,34 +206,40 @@ pub(super) fn parse_filter_expression(expression: &str) -> Result<zvec_core::fil
         .map_err(|error| Error::invalid_argument(error.to_string()))
 }
 
-pub(super) fn matches_filter(doc: &Doc, expression: Option<&str>) -> bool {
-    let Some(expression) = expression else {
-        return true;
-    };
-    let Ok(parsed) = parse_filter_expression(expression) else {
-        return false;
-    };
-    parsed.matches(&doc.to_core())
+pub(super) fn parse_optional_filter(expression: Option<&str>) -> Result<Option<FilterExpr>> {
+    expression.map(parse_filter_expression).transpose()
 }
 
-pub(super) fn execute_query(
+pub(super) fn matches_filter(doc: &Doc, filter: Option<&FilterExpr>) -> bool {
+    filter.map_or(true, |filter| filter.matches(&doc.to_core()))
+}
+
+pub(super) fn execute_query_with_candidates(
     schema: &CollectionSchema,
-    docs: &[Doc],
+    docs: &DocumentMap,
     query: &SearchQuery,
+    candidate_ids: Option<&CandidateSelection>,
+    fts_scores: Option<&OrdinalScores>,
+    filter: Option<&FilterExpr>,
 ) -> Result<Vec<Doc>> {
     let field = validate_query_contract(schema, query)?;
-    if let Some(filter) = query.filter.as_deref() {
-        parse_filter_expression(filter)?;
-    }
     let metric = query_metric(&field, query)?;
-    let mut scored = if query.fts.is_some() {
-        execute_fts(docs, query, field.index_params)?
-    } else {
-        execute_vector(docs, query, metric)?
-    };
-    sort_scored_docs(&mut scored);
     let topk = usize::try_from(query.topk)
         .map_err(|_| Error::invalid_argument("query topk must be positive"))?;
+    let mut scored = if query.fts.is_some() {
+        execute_fts(
+            docs,
+            query,
+            field.index_params,
+            candidate_ids,
+            fts_scores,
+            filter,
+            topk,
+        )?
+    } else {
+        execute_vector(docs, query, metric, candidate_ids, filter, topk)?
+    };
+    sort_scored_docs(&mut scored);
     scored.truncate(topk);
     let output_fields = query.output_fields.as_deref();
     scored
@@ -157,12 +251,18 @@ pub(super) fn execute_query(
         .collect()
 }
 
-fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Result<Vec<ScoredDoc>> {
+fn execute_vector(
+    docs: &DocumentMap,
+    query: &SearchQuery,
+    metric: MetricType,
+    candidate_ids: Option<&CandidateSelection>,
+    filter: Option<&FilterExpr>,
+    topk: usize,
+) -> Result<Vec<ScoredDoc>> {
     let dense_query = if let Some(vector) = &query.vector {
         Some(vector.iter().map(|value| f64::from(*value)).collect())
     } else if let Some(id) = &query.id {
-        docs.iter()
-            .find(|doc| doc.get_pk() == Some(id.as_str()))
+        docs.get(id)
             .and_then(|doc| doc.vector(&query.field_name))
             .and_then(VectorValue::to_dense_f64)
     } else {
@@ -180,40 +280,77 @@ fn execute_vector(docs: &[Doc], query: &SearchQuery, metric: MetricType) -> Resu
         ));
     }
     let radius = query.params.get("radius").and_then(Value::as_f64);
-    let mut result = Vec::new();
-    for doc in docs {
-        if !matches_filter(doc, query.filter.as_deref()) {
-            continue;
-        }
-        let Some(vector) = doc.vector(&query.field_name) else {
-            continue;
-        };
-        let score = if let Some(ref dense) = dense_query {
-            let Some(score) = dense_score(dense, vector, metric) else {
-                continue;
-            };
-            score
-        } else {
-            let Some(stored) = vector.to_sparse_f64() else {
-                continue;
-            };
-            sparse_query
-                .as_ref()
-                .map_or(0.0, |candidate| sparse_score(candidate, &stored, metric))
-        };
-        if let Some(radius) = radius {
-            let passes = if metric == MetricType::L2 {
-                score >= -radius * radius
-            } else {
-                score >= radius
-            };
-            if !passes {
-                continue;
+    let mut result = TopKCollector::new(topk);
+    if let Some(candidate_ids) = candidate_ids {
+        for id in candidate_ids.ids() {
+            if let Some(doc) = docs.get(id) {
+                score_vector_document(
+                    &mut result,
+                    doc,
+                    query,
+                    metric,
+                    dense_query.as_deref(),
+                    sparse_query.as_ref(),
+                    radius,
+                    filter,
+                )?;
             }
         }
-        result.push(ScoredDoc::new(score, doc.clone())?);
+    } else {
+        for doc in docs.values() {
+            score_vector_document(
+                &mut result,
+                doc,
+                query,
+                metric,
+                dense_query.as_deref(),
+                sparse_query.as_ref(),
+                radius,
+                filter,
+            )?;
+        }
     }
-    Ok(result)
+    result.into_scored_docs()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_vector_document<'a>(
+    result: &mut TopKCollector<'a>,
+    doc: &'a Doc,
+    query: &SearchQuery,
+    metric: MetricType,
+    dense_query: Option<&[f64]>,
+    sparse_query: Option<&BTreeMap<u32, f64>>,
+    radius: Option<f64>,
+    filter: Option<&FilterExpr>,
+) -> Result<()> {
+    if !matches_filter(doc, filter) {
+        return Ok(());
+    }
+    let Some(vector) = doc.vector(&query.field_name) else {
+        return Ok(());
+    };
+    let score = if let Some(dense) = dense_query {
+        let Some(score) = dense_score(dense, vector, metric) else {
+            return Ok(());
+        };
+        score
+    } else {
+        let Some(stored) = vector.to_sparse_f64() else {
+            return Ok(());
+        };
+        sparse_query.map_or(0.0, |candidate| sparse_score(candidate, &stored, metric))
+    };
+    if radius.is_some_and(|radius| {
+        if metric == MetricType::L2 {
+            score < -radius * radius
+        } else {
+            score < radius
+        }
+    }) {
+        return Ok(());
+    }
+    result.push(score, doc)
 }
 
 fn sparse_score(
@@ -263,43 +400,32 @@ fn sparse_score(
 }
 
 fn execute_fts(
-    docs: &[Doc],
+    docs: &DocumentMap,
     query: &SearchQuery,
     index_params: Option<&IndexParams>,
+    candidate_ids: Option<&CandidateSelection>,
+    indexed_scores: Option<&OrdinalScores>,
+    filter: Option<&FilterExpr>,
+    topk: usize,
 ) -> Result<Vec<ScoredDoc>> {
-    let fts = query
-        .fts
-        .as_ref()
-        .ok_or_else(|| Error::invalid_argument("FTS payload is missing"))?;
-    let (expression, advanced) = match (fts.match_string.as_deref(), fts.query_string.as_deref()) {
-        (Some(expression), None) => (expression, false),
-        (None, Some(expression)) => (expression, true),
-        (Some(_), Some(_)) => {
-            return Err(Error::invalid_argument(
-                "FTS query must select exactly one expression form",
-            ))
+    if let Some(indexed_scores) = indexed_scores {
+        let mut result = TopKCollector::new(topk);
+        for (id, score) in indexed_scores.entries() {
+            let Some(doc) = docs.get(id) else {
+                continue;
+            };
+            if matches_filter(doc, filter) {
+                result.push(score, doc)?;
+            }
         }
-        (None, None) => ("", false),
-    };
-    if expression.trim().is_empty() {
-        return Err(Error::invalid_argument("FTS query is empty"));
+        return result.into_scored_docs();
     }
-    if advanced {
-        validate_simple_fts_syntax(expression)?;
-    }
-    let tokenizer = index_params
-        .and_then(|params| params.params.get("tokenizer_name"))
-        .and_then(Value::as_str)
-        .unwrap_or("standard");
-    validate_tokenizer(tokenizer)?;
-    let terms = tokenize(expression, tokenizer);
-    if terms.is_empty() {
-        return Err(Error::invalid_argument("FTS query has no searchable terms"));
-    }
+    let tokenizer = Tokenizer::from_index_params(index_params)?;
+    let parsed = parse_fts_query(query, &tokenizer)?;
     let corpus: Vec<(&Doc, Vec<String>)> = docs
-        .iter()
+        .values()
         .filter_map(|doc| {
-            text_value(doc, &query.field_name).map(|text| (doc, tokenize(text, tokenizer)))
+            text_value(doc, &query.field_name).map(|text| (doc.as_ref(), tokenizer.tokenize(text)))
         })
         .collect();
     if corpus.is_empty() {
@@ -311,53 +437,87 @@ fn execute_fts(
         .map(|(_, tokens)| count_to_f64(tokens.len()))
         .sum::<f64>()
         / document_count;
-    let document_frequency = document_frequencies(&corpus, &terms);
-    let mut result = Vec::new();
+    let document_frequency = document_frequencies(&corpus, parsed.all_terms());
+    let mut result = TopKCollector::new(topk);
     for (doc, tokens) in corpus {
-        if !matches_filter(doc, query.filter.as_deref()) {
+        if candidate_ids.is_some_and(|ids| doc.get_pk().map_or(true, |id| !ids.contains(id))) {
             continue;
         }
-        let score = bm25(
-            &tokens,
-            &terms,
-            &document_frequency,
-            document_count,
-            average_length,
-        );
+        if !matches_filter(doc, filter) {
+            continue;
+        }
+        let score = if let Some((terms, operator)) = parsed.simple() {
+            if operator == FtsDefaultOperator::And
+                && terms.iter().any(|term| !tokens.contains(term))
+            {
+                continue;
+            }
+            bm25(
+                &tokens,
+                terms,
+                &document_frequency,
+                document_count,
+                average_length,
+            )
+        } else {
+            let mut context = ScanFtsEvalContext {
+                tokens: &tokens,
+                document_frequency: &document_frequency,
+                document_count,
+                average_length,
+            };
+            let Some(score) = parsed.score(&mut context) else {
+                continue;
+            };
+            score
+        };
         if score <= 0.0 {
             continue;
         }
-        result.push(ScoredDoc::new(score, doc.clone())?);
+        result.push(score, doc)?;
     }
-    Ok(result)
+    result.into_scored_docs()
 }
 
-fn text_value<'a>(doc: &'a Doc, field: &str) -> Option<&'a str> {
-    match doc.field(field) {
-        Some(FieldValue::String(value) | FieldValue::Json(Value::String(value))) => {
-            Some(value.as_str())
+struct ScanFtsEvalContext<'a> {
+    tokens: &'a [String],
+    document_frequency: &'a BTreeMap<String, usize>,
+    document_count: f64,
+    average_length: f64,
+}
+
+impl FtsEvalContext for ScanFtsEvalContext<'_> {
+    fn contains_term(&mut self, term: &str) -> bool {
+        self.tokens.iter().any(|token| token == term)
+    }
+
+    fn contains_phrase(&mut self, terms: &[String]) -> bool {
+        !terms.is_empty()
+            && terms.len() <= self.tokens.len()
+            && self
+                .tokens
+                .windows(terms.len())
+                .any(|window| window == terms)
+    }
+
+    fn term_score(&mut self, term: &str) -> f64 {
+        let frequency = count_to_f64(self.tokens.iter().filter(|token| *token == term).count());
+        if frequency == 0.0 {
+            return 0.0;
         }
-        _ => None,
+        let document_frequency = self
+            .document_frequency
+            .get(term)
+            .copied()
+            .map_or(0.0, count_to_f64);
+        bm25_term_score(
+            frequency,
+            document_frequency,
+            self.document_count,
+            count_to_f64(self.tokens.len()),
+            self.average_length,
+        )
     }
-}
-
-fn tokenize(text: &str, tokenizer: &str) -> Vec<String> {
-    zvec_core::engine::fts::tokenize_with(text, tokenizer)
-}
-
-fn validate_simple_fts_syntax(expression: &str) -> Result<()> {
-    let has_operator = expression
-        .split_whitespace()
-        .any(|term| matches!(term.to_ascii_uppercase().as_str(), "AND" | "OR" | "NOT"));
-    let has_query_syntax = expression.chars().any(|character| {
-        !(character.is_alphanumeric() || character.is_whitespace() || character == '_')
-    });
-    if has_operator || has_query_syntax {
-        return Err(Error::not_supported(
-            "FTS query_string supports only whitespace-separated terms",
-        ));
-    }
-    Ok(())
 }
 
 fn document_frequencies(
@@ -388,13 +548,6 @@ fn bm25(
     }
     let mut score = 0.0;
     let document_length = count_to_f64(document_tokens.len());
-    let normalized_length = if average_length == 0.0 {
-        0.0
-    } else {
-        document_length / average_length
-    };
-    let k1 = 1.2;
-    let b = 0.75;
     for term in query_terms {
         let frequency = count_to_f64(
             document_tokens
@@ -407,10 +560,13 @@ fn bm25(
         }
         let document_frequency =
             count_to_f64(document_frequencies.get(term).copied().unwrap_or_default());
-        let idf =
-            ((document_count - document_frequency + 0.5) / (document_frequency + 0.5) + 1.0).ln();
-        let denominator = frequency + k1 * (1.0 - b + b * normalized_length);
-        score += idf * (frequency * (k1 + 1.0) / denominator.max(1e-12));
+        score += bm25_term_score(
+            frequency,
+            document_frequency,
+            document_count,
+            document_length,
+            average_length,
+        );
     }
     score.max(0.0)
 }
@@ -453,4 +609,37 @@ pub(super) fn normalize_scores(docs: &mut [Doc], method: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sort_scored_docs, TopKCollector};
+    use crate::doc::Doc;
+
+    #[test]
+    fn bounded_topk_keeps_exact_scores_and_primary_key_ties() {
+        let docs: Vec<Doc> = ["z-low", "b-tie", "a-tie", "best", "c-tie"]
+            .into_iter()
+            .map(|id| Doc::with_pk(id).expect("document must be valid"))
+            .collect();
+        let mut collector = TopKCollector::new(3);
+        for (doc, score) in docs.iter().zip([1.0, 2.0, 2.0, 3.0, 2.0]) {
+            collector
+                .push(score, doc)
+                .expect("finite score must be accepted");
+        }
+        assert!(collector.push(f64::NAN, &docs[0]).is_err());
+
+        let mut ranked = collector
+            .into_scored_docs()
+            .expect("retained scores must be valid");
+        sort_scored_docs(&mut ranked);
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|scored| scored.doc.get_pk().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["best", "a-tie", "b-tie"]
+        );
+    }
 }
