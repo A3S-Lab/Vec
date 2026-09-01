@@ -352,6 +352,43 @@ The public API supports read-only handles, configurable durability and sidecar
 I/O, explicit `flush`, targeted `rebuild_index`, whole-registry `optimize`, and
 per-handle cache-hit/query/candidate plus DiskANN backend/sector-read telemetry.
 
+## Resource limits and accounting
+
+Resource policy is a typed, collection-local option captured when a handle is
+created or opened:
+
+```rust,no_run
+use a3s_vec::{CollectionOptions, CollectionResourceLimits, Result};
+
+fn bounded_options() -> Result<CollectionOptions> {
+    let limits = CollectionResourceLimits::new()
+        .try_with_max_documents(100_000)?
+        .try_with_max_accounted_bytes(512 * 1024 * 1024)?
+        .try_with_max_query_candidates(50_000)?
+        .try_with_max_write_batch_documents(1_000)?;
+    let mut options = CollectionOptions::new()?;
+    options.set_resource_limits(limits)?;
+    Ok(options)
+}
+```
+
+`max_documents` and `max_accounted_bytes` are checked before a new collection
+generation is published or appended to the WAL. Accounted bytes are the
+deterministic bincode size of the authoritative document map plus the derived
+index payload estimates reported by index statistics. They do not claim to
+measure allocator overhead, temporary construction peaks, mapped files, or
+process RSS. A deletion that would grow a tombstone overlay first compacts the
+derived generation so deletion remains a practical way to recover capacity.
+
+`max_query_candidates` bounds the planned exact/refinement candidates for one
+query; multi-query branches share one cumulative budget. It does not represent
+a wall-clock deadline or include every planner/index lookup. The write-batch
+limit applies to insert, update, upsert, explicit delete inputs, and the matched
+set of a filtered delete. A rejected generation is atomic and does not advance
+the revision. `stats` and `stats_snapshot` expose the active policy, document
+and index accounting, total accounted bytes, and a metadata-only rejection
+counter; rejected query text and documents are never recorded.
+
 ## Health and background maintenance
 
 `Collection::health` reports an explicit `healthy`, `degraded`, `unhealthy`,
@@ -402,6 +439,7 @@ that ownership claim.
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
 | Dense/sparse source-ID query | Implemented; missing sources return `NotFound` and missing sparse payloads return `FailedPrecondition` |
 | Collection health and background maintenance | Implemented with explicit ownership, bounded schedules, revision-aware skips, worker diagnostics, and joined shutdown |
+| Collection resource admission | Implemented for retained documents/logical bytes, cumulative query candidates, write batches, and metadata-only rejection telemetry |
 | DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |

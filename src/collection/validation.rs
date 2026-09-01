@@ -1,6 +1,7 @@
 //! Write-boundary document normalization and validation.
 
-use super::{write_error, write_success, CollectionState, DocWriteResult, Mutation};
+use super::mutation::{write_error, write_success, DocWriteResult, Mutation};
+use super::CollectionState;
 use crate::doc::{Doc, FieldValue};
 use crate::error::{Error, ErrorCode, Result};
 use crate::schema::CollectionSchema;

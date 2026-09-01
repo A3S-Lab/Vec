@@ -69,9 +69,12 @@ crates/vec/
 │   │   ├── configuration.rs   # process defaults + collection overrides
 │   │   ├── async_api.rs       # optional Tokio blocking-pool query entry points
 │   │   ├── index_api.rs       # create/drop/rebuild/optimize publication
+│   │   ├── maintenance.rs     # explicitly owned background maintenance
+│   │   ├── mutation.rs        # serialized DML generation publication
 │   │   ├── query_api.rs       # query/fetch/iterator collection API
 │   │   ├── query_contract.rs  # schema-derived route/type/dimension checks
 │   │   ├── query_engine.rs    # exact vector/filter/FTS oracle
+│   │   ├── resource.rs        # typed limits and logical accounting
 │   │   ├── tests.rs           # generation-sharing unit contracts
 │   │   └── validation.rs      # write normalization and validation
 │   ├── index/
@@ -137,6 +140,7 @@ crates/vec/
     ├── index_cache.rs         # hit/stale/corrupt/read-only cache lifecycle
     ├── mmap_diskann.rs        # backend parity, isolation, reopen fallback
     ├── ngram_fts.rs           # Unicode n-gram config, mutation, cache reopen
+    ├── resource_limits.rs     # admission, atomicity, accounting, telemetry
     ├── scalar_indexes.rs      # bitmap semantics, lifecycle, hybrid planning
     └── vector_codecs.rs       # native codec/metric/storage contracts
 ```
@@ -158,9 +162,11 @@ tokenization, or document conversion, but its modules and types are not
 re-exported as part of the A3S contract.
 
 The module inventory above is extended by `collection/maintenance.rs`, which
-owns the explicit scheduler lifecycle, and `tests/maintenance_health.rs`,
-which covers its public ownership, concurrency, readiness, and shutdown
-contracts.
+owns the explicit scheduler lifecycle; `collection/mutation.rs`, which owns
+serialized DML publication; and `collection/resource.rs`, which owns typed
+admission and deterministic accounting. `tests/maintenance_health.rs` and
+`tests/resource_limits.rs` cover their public ownership, atomicity, readiness,
+and rejection contracts.
 
 ## 3. Runtime ownership and concurrency
 
@@ -290,14 +296,29 @@ panicking.
 
 Runtime configuration follows an executable-contract rule. `ConfigBuilder`
 owns the process durability and `IoBackend` defaults plus WAL operation/byte
-checkpoint thresholds. `CollectionOptions` owns read-only mode and optional
-durability/I/O overrides; absence means inheritance, not a second hard-coded
-default. `IoBackend::Positioned` is the default. `IoBackend::Mmap` selects the
-implemented validated anonymous-map snapshot; it is not a flag for direct
-file-backed mapping. Memory, threading, logging, buffer, and segment controls
-remain absent until they select real bounded implementations. Resolved process
-defaults are captured when a collection is created or opened, so a later
-`initialize` call cannot change an active handle's policy.
+checkpoint thresholds. `CollectionOptions` owns read-only mode, typed resource
+limits, and optional durability/I/O overrides; absence means inheritance, not a
+second hard-coded default. `IoBackend::Positioned` is the default.
+`IoBackend::Mmap` selects the implemented validated anonymous-map snapshot; it
+is not a flag for direct file-backed mapping. Threading, logging, buffer, and
+segment controls remain absent until they select real bounded implementations.
+Resolved process defaults and collection resource policy are captured when a
+collection is created or opened, so a later `initialize` call cannot change an
+active handle's policy.
+
+Resource admission has one engine-owned source of truth. Each candidate
+document/index generation is measured before WAL append or publication, and
+its admitted `ResourceUsage` is cached beside that immutable generation so
+statistics remain O(1) with respect to document count. The logical byte total
+combines deterministic authoritative-document serialization with derived-index
+payload estimates; it intentionally excludes allocator overhead, transient
+build memory, mapped-file residency, and process RSS. If incremental deletion
+tombstones would exceed the byte budget, the engine rebuilds a compact derived
+generation before deciding admission. Query snapshots capture the same policy:
+single queries check their planned exact/refinement set, while multi-query
+branches accumulate one shared candidate count before any branch executes.
+Write-batch and state-limit rejection happens before durable or in-memory
+publication and increments only a metadata counter.
 
 Index and query configuration follows the same rule. The exact executor owns
 Flat metrics and query `metric`/`radius`; HNSW owns `m`, `ef_construction`, and

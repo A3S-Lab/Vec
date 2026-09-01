@@ -2,7 +2,7 @@
 
 use super::{
     commit_prepared_schema_change, ensure_same_generation, ensure_writable, persist_index_cache,
-    prepare_schema_change, Collection,
+    prepare_schema_change, Collection, CollectionResourceLimits,
 };
 use crate::error::{Error, Result};
 use crate::index::IndexRegistry;
@@ -122,6 +122,8 @@ impl Collection {
                 state.docs.clone(),
                 state.revision,
                 state.indexes.clone(),
+                state.options.resource_limits,
+                state.stats.clone(),
             )
         };
 
@@ -134,6 +136,8 @@ impl Collection {
         } else {
             IndexRegistry::build(&snapshot.0, &snapshot.1, snapshot.2)?
         };
+        let resource_usage =
+            enforce_rebuild_resources(snapshot.4, &snapshot.0, &snapshot.1, &indexes, &snapshot.5)?;
         let refresh_cache = should_rewrite_index_cache(&snapshot.0, field_name);
         let mut state = self
             .inner
@@ -147,6 +151,7 @@ impl Collection {
         }
         let indexes = std::sync::Arc::new(indexes);
         state.indexes = std::sync::Arc::clone(&indexes);
+        state.resource_usage = resource_usage;
         let schema = state.schema.clone();
         let revision = state.revision;
         drop(state);
@@ -159,6 +164,22 @@ impl Collection {
             persist_index_cache(&storage, &schema, &indexes, revision, true);
         }
         Ok(())
+    }
+}
+
+fn enforce_rebuild_resources(
+    limits: CollectionResourceLimits,
+    schema: &CollectionSchema,
+    docs: &crate::doc::DocumentMap,
+    indexes: &IndexRegistry,
+    stats: &crate::stats::StatsRegistry,
+) -> Result<super::resource::ResourceUsage> {
+    match limits.enforce_state(schema, docs, indexes) {
+        Ok(usage) => Ok(usage),
+        Err(error) => {
+            stats.record_resource_limit_rejection();
+            Err(error)
+        }
     }
 }
 

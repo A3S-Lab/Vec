@@ -98,7 +98,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 213 passing unit/integration tests plus four doctests;
+all-feature baseline has 233 passing unit/integration tests plus four doctests;
 default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -713,6 +713,24 @@ execution are implemented.
 - Add benchmarks, fuzz targets, memory/CPU limits, and observability hooks.
 - Add Linux/macOS arm64/macOS x86_64/Windows CI, including macOS 12 Intel.
 - Publish README, migration notes, API docs, and a versioned release artifact.
+
+**Progress through 2026-09-01**
+
+- Completed in the engine: typed per-handle limits for retained document count,
+  deterministic authoritative-plus-derived accounted bytes, cumulative query
+  refinement candidates, and write-batch size. Admission precedes WAL/state
+  publication, filtered deletes share the write budget, multi-query branches
+  share one candidate budget, and statistics expose only aggregate accounting,
+  active limits, and rejection counts.
+- Completed in the engine: ANN/filtered/DiskANN benchmarks, deterministic
+  recovery fuzzing plus a libFuzzer/AddressSanitizer smoke target, collection
+  health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
+  x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
+  deployment target.
+- Remaining: the explicit A3S Code/Memory adapter and migration, an actual
+  macOS 12 Intel runtime result from an external runner, final migration/API
+  review, and a versioned release artifact. Logical collection accounting is
+  not advertised as a process-RSS or hard CPU-time limit.
 
 **Release gate**
 

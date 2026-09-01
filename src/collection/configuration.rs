@@ -1,7 +1,77 @@
-//! Resolution of process defaults and per-collection durability overrides.
+//! Per-collection options and resolution of process defaults.
 
-use super::CollectionOptions;
-use crate::config::{current_config, ConfigBuilder};
+use super::CollectionResourceLimits;
+use crate::config::{current_config, ConfigBuilder, Durability, IoBackend};
+use crate::error::Result;
+
+/// Supported options for creating or opening a collection.
+///
+/// Storage layout, buffer, and segment knobs remain outside the public
+/// contract:
+///
+/// ```compile_fail
+/// use a3s_vec::CollectionOptions;
+///
+/// let mut options = CollectionOptions::new().unwrap();
+/// options.set_max_buffer_size(1024).unwrap();
+/// options.set_segment_num(2).unwrap();
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CollectionOptions {
+    pub(super) read_only: bool,
+    pub(super) durability: Option<Durability>,
+    pub(super) io_backend: Option<IoBackend>,
+    pub(super) resource_limits: CollectionResourceLimits,
+}
+
+impl CollectionOptions {
+    pub fn new() -> Result<Self> {
+        Ok(Self::default())
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool) -> Result<()> {
+        self.read_only = read_only;
+        Ok(())
+    }
+
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn set_durability(&mut self, value: Durability) -> Result<()> {
+        self.durability = Some(value);
+        Ok(())
+    }
+
+    pub fn durability(&self) -> Option<Durability> {
+        self.durability
+    }
+
+    /// Overrides the process-wide derived-sidecar I/O backend for this handle.
+    ///
+    /// When absent, the backend configured through [`crate::ConfigBuilder`] is
+    /// captured when the collection is created or opened.
+    pub fn set_io_backend(&mut self, value: IoBackend) -> Result<()> {
+        self.io_backend = Some(value);
+        Ok(())
+    }
+
+    /// Returns this handle's explicit I/O backend override, if any.
+    pub fn io_backend(&self) -> Option<IoBackend> {
+        self.io_backend
+    }
+
+    /// Applies a typed collection-local resource policy.
+    pub fn set_resource_limits(&mut self, value: CollectionResourceLimits) -> Result<()> {
+        self.resource_limits = value;
+        Ok(())
+    }
+
+    /// Returns the resource policy that this handle will capture.
+    pub fn resource_limits(&self) -> CollectionResourceLimits {
+        self.resource_limits
+    }
+}
 
 pub(super) fn options_config(options: &CollectionOptions) -> ConfigBuilder {
     resolve_options_config(options, current_config())

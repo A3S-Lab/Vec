@@ -4,7 +4,8 @@ use super::query_engine::{
     count_to_f64, execute_query_with_candidates, normalize_scores, parse_optional_filter,
     score_to_f32, sort_docs,
 };
-use super::Collection;
+use super::{Collection, CollectionSnapshot};
+use crate::config::IoBackend;
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::iterator::DocIterator;
@@ -14,6 +15,16 @@ use crate::stats::{IndexUsage, QueryKind, QueryObservation};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+#[derive(Debug, Default)]
+struct MultiQueryTelemetry {
+    used_ann: bool,
+    diskann_io_backend: Option<IoBackend>,
+    diskann_sector_reads: u64,
+    used_scalar: bool,
+    used_fts_index: bool,
+    candidates: u64,
+}
 
 impl Collection {
     pub fn query(&self, query: &SearchQuery) -> Result<Vec<Doc>> {
@@ -26,6 +37,8 @@ impl Collection {
             query,
             filter.as_ref(),
         )?;
+        let candidates = plan.candidate_count(snapshot.docs.len());
+        enforce_query_candidates(&snapshot, candidates)?;
         let result = execute_query_with_candidates(
             &snapshot.schema,
             &snapshot.docs,
@@ -51,7 +64,7 @@ impl Collection {
                 .is_some_and(|value| !value.trim().is_empty()),
             index_usage: IndexUsage::new(plan.used_scalar, plan.used_fts_index),
             radius: query.params.get("radius").is_some(),
-            candidates: plan.candidate_count(snapshot.docs.len()),
+            candidates,
         });
         Ok(result)
     }
@@ -64,95 +77,22 @@ impl Collection {
             ));
         }
         let snapshot = self.snapshot_state()?;
-        let mut branches: Vec<Vec<Doc>> = Vec::with_capacity(query.queries.len());
-        let mut used_ann = false;
-        let mut diskann_io_backend = None;
-        let mut diskann_sector_reads = 0_u64;
-        let mut used_scalar = false;
-        let mut used_fts_index = false;
-        let mut candidates = 0_u64;
-        for sub in &query.queries {
-            let mut branch = sub.to_search_query()?;
-            if let Some(filter) = query.effective_filter() {
-                branch.set_filter(filter)?;
-            }
-            branch.include_vector = query.include_vector_value;
-            branch.output_fields.clone_from(&query.output_fields);
-            let filter = parse_optional_filter(branch.filter.as_deref())?;
-            let plan = snapshot.indexes.plan_candidates(
-                &snapshot.docs,
-                snapshot.revision,
-                &branch,
-                filter.as_ref(),
-            )?;
-            used_ann |= plan.used_ann;
-            diskann_io_backend = diskann_io_backend.or(plan.diskann_io_backend);
-            diskann_sector_reads = diskann_sector_reads.saturating_add(plan.diskann_sector_reads);
-            used_scalar |= plan.used_scalar;
-            used_fts_index |= plan.used_fts_index;
-            candidates = candidates.saturating_add(plan.candidate_count(snapshot.docs.len()));
-            branches.push(execute_query_with_candidates(
-                &snapshot.schema,
-                &snapshot.docs,
-                &branch,
-                plan.selection.as_ref(),
-                plan.fts_scores.as_ref(),
-                filter.as_ref(),
-            )?);
-        }
-        let normalization = query.normalization.as_deref().unwrap_or("none");
-        for branch in &mut branches {
-            normalize_scores(branch, normalization)?;
-        }
-        let mut fused: BTreeMap<String, (f64, Doc)> = BTreeMap::new();
-        for (branch_index, branch) in branches.into_iter().enumerate() {
-            let weight = match &query.rerank {
-                RerankMethod::Weighted { weights } => {
-                    weights.get(branch_index).copied().unwrap_or(1.0)
-                }
-                RerankMethod::ReciprocalRank { .. } => 1.0,
-            };
-            for (rank, doc) in branch.into_iter().enumerate() {
-                let Some(id) = doc.get_pk().map(str::to_string) else {
-                    continue;
-                };
-                let score = match query.rerank {
-                    RerankMethod::ReciprocalRank { rank_constant } => {
-                        weight / (rank_constant + count_to_f64(rank) + 1.0)
-                    }
-                    RerankMethod::Weighted { .. } => weight * f64::from(doc.get_score()),
-                };
-                fused
-                    .entry(id)
-                    .and_modify(|entry| entry.0 += score)
-                    .or_insert((score, doc));
-            }
-        }
-        let mut output: Vec<Doc> = fused
-            .into_values()
-            .map(|(score, mut doc)| {
-                doc.set_score(score_to_f32(score)?)?;
-                Ok(doc)
-            })
-            .collect::<Result<_>>()?;
-        sort_docs(&mut output);
-        let topk = usize::try_from(query.topk_value)
-            .map_err(|_| Error::invalid_argument("multi-query topk must be non-negative"))?;
-        output.truncate(topk);
+        let (branches, telemetry) = execute_multi_query_branches(&snapshot, query)?;
+        let output = fuse_multi_query_branches(query, branches)?;
         let has_fts = query.queries.iter().any(|branch| branch.fts.is_some());
         snapshot.stats.record_query(QueryObservation {
-            kind: match (used_ann, has_fts) {
+            kind: match (telemetry.used_ann, has_fts) {
                 (true, true) => QueryKind::AnnFts,
                 (true, false) => QueryKind::Ann,
                 (false, true) => QueryKind::Fts,
                 (false, false) => QueryKind::Exact,
             },
-            diskann_io_backend,
-            diskann_sector_reads,
+            diskann_io_backend: telemetry.diskann_io_backend,
+            diskann_sector_reads: telemetry.diskann_sector_reads,
             filtered: query.filter.is_some(),
-            index_usage: IndexUsage::new(used_scalar, used_fts_index),
+            index_usage: IndexUsage::new(telemetry.used_scalar, telemetry.used_fts_index),
             radius: false,
-            candidates,
+            candidates: telemetry.candidates,
         });
         Ok(output)
     }
@@ -266,5 +206,106 @@ impl Collection {
             .map(|doc| doc.project(fields.as_deref(), include_vector))
             .collect();
         Ok(DocIterator::new(docs, state.revision))
+    }
+}
+
+fn execute_multi_query_branches(
+    snapshot: &CollectionSnapshot,
+    query: &MultiQuery,
+) -> Result<(Vec<Vec<Doc>>, MultiQueryTelemetry)> {
+    let mut planned_branches = Vec::with_capacity(query.queries.len());
+    let mut telemetry = MultiQueryTelemetry::default();
+    for sub in &query.queries {
+        let mut branch = sub.to_search_query()?;
+        if let Some(filter) = query.effective_filter() {
+            branch.set_filter(filter)?;
+        }
+        branch.include_vector = query.include_vector_value;
+        branch.output_fields.clone_from(&query.output_fields);
+        let filter = parse_optional_filter(branch.filter.as_deref())?;
+        let plan = snapshot.indexes.plan_candidates(
+            &snapshot.docs,
+            snapshot.revision,
+            &branch,
+            filter.as_ref(),
+        )?;
+        telemetry.used_ann |= plan.used_ann;
+        telemetry.diskann_io_backend = telemetry.diskann_io_backend.or(plan.diskann_io_backend);
+        telemetry.diskann_sector_reads = telemetry
+            .diskann_sector_reads
+            .saturating_add(plan.diskann_sector_reads);
+        telemetry.used_scalar |= plan.used_scalar;
+        telemetry.used_fts_index |= plan.used_fts_index;
+        telemetry.candidates = telemetry
+            .candidates
+            .saturating_add(plan.candidate_count(snapshot.docs.len()));
+        enforce_query_candidates(snapshot, telemetry.candidates)?;
+        planned_branches.push((branch, filter, plan));
+    }
+
+    let mut branches = Vec::with_capacity(planned_branches.len());
+    for (branch, filter, plan) in planned_branches {
+        branches.push(execute_query_with_candidates(
+            &snapshot.schema,
+            &snapshot.docs,
+            &branch,
+            plan.selection.as_ref(),
+            plan.fts_scores.as_ref(),
+            filter.as_ref(),
+        )?);
+    }
+    Ok((branches, telemetry))
+}
+
+fn fuse_multi_query_branches(query: &MultiQuery, mut branches: Vec<Vec<Doc>>) -> Result<Vec<Doc>> {
+    let normalization = query.normalization.as_deref().unwrap_or("none");
+    for branch in &mut branches {
+        normalize_scores(branch, normalization)?;
+    }
+    let mut fused: BTreeMap<String, (f64, Doc)> = BTreeMap::new();
+    for (branch_index, branch) in branches.into_iter().enumerate() {
+        let weight = match &query.rerank {
+            RerankMethod::Weighted { weights } => weights.get(branch_index).copied().unwrap_or(1.0),
+            RerankMethod::ReciprocalRank { .. } => 1.0,
+        };
+        for (rank, doc) in branch.into_iter().enumerate() {
+            let Some(id) = doc.get_pk().map(str::to_string) else {
+                continue;
+            };
+            let score = match query.rerank {
+                RerankMethod::ReciprocalRank { rank_constant } => {
+                    weight / (rank_constant + count_to_f64(rank) + 1.0)
+                }
+                RerankMethod::Weighted { .. } => weight * f64::from(doc.get_score()),
+            };
+            fused
+                .entry(id)
+                .and_modify(|entry| entry.0 += score)
+                .or_insert((score, doc));
+        }
+    }
+    let mut output: Vec<Doc> = fused
+        .into_values()
+        .map(|(score, mut doc)| {
+            doc.set_score(score_to_f32(score)?)?;
+            Ok(doc)
+        })
+        .collect::<Result<_>>()?;
+    sort_docs(&mut output);
+    let topk = usize::try_from(query.topk_value)
+        .map_err(|_| Error::invalid_argument("multi-query topk must be non-negative"))?;
+    output.truncate(topk);
+    Ok(output)
+}
+
+fn enforce_query_candidates(snapshot: &CollectionSnapshot, candidates: u64) -> Result<()> {
+    if let Err(error) = snapshot
+        .resource_limits
+        .enforce_query_candidates(candidates)
+    {
+        snapshot.stats.record_resource_limit_rejection();
+        Err(error)
+    } else {
+        Ok(())
     }
 }

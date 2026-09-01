@@ -51,7 +51,8 @@ mod types;
 pub use collection::{
     Collection, CollectionHealth, CollectionHealthStatus, CollectionMaintenanceHealth,
     CollectionMaintenanceOptions, CollectionMaintenancePhase, CollectionMaintenanceRuntime,
-    CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,
+    CollectionOptions, CollectionResourceLimits, CollectionStats, DocWriteResult, IndexStat,
+    WriteResult,
 };
 pub use config::{
     check_version, default_config, initialize, is_initialized, shutdown, version, version_major,
@@ -79,9 +80,9 @@ pub use types::{DataType, DocOperator, IndexType, MetricType, QuantizeType};
 pub mod prelude {
     pub use crate::{
         initialize, is_initialized, version, Collection, CollectionMaintenanceOptions,
-        CollectionOptions, CollectionSchema, ConfigBuilder, DataType, Doc, DocIterator, Error,
-        ErrorCode, FieldSchema, IndexParams, IoBackend, MetricType, MultiQuery, QuantizeType,
-        Result, SearchQuery, VectorSchema, WriteResult,
+        CollectionOptions, CollectionResourceLimits, CollectionSchema, ConfigBuilder, DataType,
+        Doc, DocIterator, Error, ErrorCode, FieldSchema, IndexParams, IoBackend, MetricType,
+        MultiQuery, QuantizeType, Result, SearchQuery, VectorSchema, WriteResult,
     };
 }
 

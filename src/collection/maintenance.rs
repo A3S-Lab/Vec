@@ -307,6 +307,17 @@ impl Collection {
             &current.docs,
             current.revision,
         )?);
+        let resource_usage = match current.options.resource_limits.enforce_state(
+            &current.schema,
+            &current.docs,
+            &indexes,
+        ) {
+            Ok(usage) => usage,
+            Err(error) => {
+                current.stats.record_resource_limit_rejection();
+                return Err(error);
+            }
+        };
         let mut state = self
             .inner
             .state
@@ -314,6 +325,7 @@ impl Collection {
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
         ensure_same_generation(&state, &current)?;
         state.indexes = Arc::clone(&indexes);
+        state.resource_usage = resource_usage;
         drop(state);
 
         let docs = current

@@ -1,5 +1,6 @@
 //! Collection telemetry and health snapshots.
 
+use crate::collection::CollectionResourceLimits;
 use crate::config::IoBackend;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +59,21 @@ pub struct StatsSnapshot {
     pub wal_checkpoint_seq: u64,
     pub wal_ops_since_checkpoint: u64,
     pub wal_bytes_since_checkpoint: u64,
+    /// Deterministic serialized size of the authoritative document map.
+    #[serde(default)]
+    pub accounted_document_bytes: u64,
+    /// Sum of deterministic derived-index payload estimates.
+    #[serde(default)]
+    pub estimated_index_bytes: u64,
+    /// Authoritative document accounting plus derived-index estimates.
+    #[serde(default)]
+    pub accounted_bytes: u64,
+    /// Collection-local limits captured when this handle was opened.
+    #[serde(default)]
+    pub resource_limits: CollectionResourceLimits,
+    /// Operations rejected by this handle's resource policy.
+    #[serde(default)]
+    pub resource_limit_rejections: u64,
 }
 
 /// Readiness assessment for one collection handle.
@@ -203,6 +219,7 @@ pub(crate) struct StatsRegistry {
     pub scalar_index_query_count: AtomicU64,
     pub radius_query_count: AtomicU64,
     pub candidates_scanned: AtomicU64,
+    pub resource_limit_rejections: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,6 +302,11 @@ impl StatsRegistry {
         }
         self.candidates_scanned
             .fetch_add(observation.candidates, Ordering::Relaxed);
+    }
+
+    pub fn record_resource_limit_rejection(&self) {
+        self.resource_limit_rejections
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
