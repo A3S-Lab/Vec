@@ -2,8 +2,8 @@
 
 use a3s_vec::{
     Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
-    FieldSchema, HnswQueryParams, IndexParams, IvfQueryParams, IvfRabitqQueryParams, MetricType,
-    SearchQuery,
+    FieldSchema, HnswQueryParams, IndexParams, IoBackend, IvfQueryParams, IvfRabitqQueryParams,
+    MetricType, SearchQuery,
 };
 use std::fs;
 use std::hint::black_box;
@@ -50,14 +50,18 @@ struct BenchmarkReport {
     exact_l2: Measurement,
     vamana: Measurement,
     vamana_positioned: Measurement,
+    vamana_mmap: Measurement,
     vamana_payload: u64,
     vamana_sidecar: u64,
     vamana_sectors_per_query: f64,
+    vamana_mmap_sectors_per_query: f64,
     pq: Measurement,
     pq_positioned: Measurement,
+    pq_mmap: Measurement,
     pq_payload: u64,
     pq_sidecar: u64,
     pq_sectors_per_query: f64,
+    pq_mmap_sectors_per_query: f64,
 }
 
 fn vector_for(index: usize) -> Vec<f32> {
@@ -292,11 +296,18 @@ fn run_cosine_fixture(collection: &Collection, queries: &[Vec<f32>]) -> CosineBe
     }
 }
 
-fn run_positioned_fixture(path: &Path, queries: &[Vec<f32>]) -> (Measurement, f64) {
+fn run_sidecar_fixture(
+    path: &Path,
+    queries: &[Vec<f32>],
+    io_backend: IoBackend,
+) -> (Measurement, f64) {
     let mut read_only = CollectionOptions::new().expect("options must be valid");
     read_only
         .set_read_only(true)
         .expect("read-only option must be valid");
+    read_only
+        .set_io_backend(io_backend)
+        .expect("I/O backend option must be valid");
     let collection = Collection::open(
         path.to_str().expect("benchmark path must be UTF-8"),
         Some(&read_only),
@@ -307,7 +318,14 @@ fn run_positioned_fixture(path: &Path, queries: &[Vec<f32>]) -> (Measurement, f6
             .stats()
             .expect("statistics must be available")
             .index_cache_hit,
-        "positioned traversal requires a validated graph cache hit"
+        "sidecar traversal requires a validated graph cache hit"
+    );
+    assert_eq!(
+        collection
+            .stats()
+            .expect("statistics must be available")
+            .io_backend,
+        io_backend
     );
     let before = collection
         .stats_snapshot()
@@ -324,6 +342,15 @@ fn run_positioned_fixture(path: &Path, queries: &[Vec<f32>]) -> (Measurement, f6
     let expected_queries = u64::try_from(ROUNDS.saturating_mul(QUERIES).saturating_add(1))
         .expect("benchmark query count fits u64");
     assert_eq!(query_count, expected_queries);
+    let mmap_query_count = after.diskann_mmap_query_count - before.diskann_mmap_query_count;
+    assert_eq!(
+        mmap_query_count,
+        if io_backend == IoBackend::Mmap {
+            expected_queries
+        } else {
+            0
+        }
+    );
     let sector_count = after.diskann_sector_read_count - before.diskann_sector_read_count;
     (
         measurement,
@@ -341,6 +368,11 @@ fn print_report(report: &BenchmarkReport) {
     println!(
         "mode,metric,documents,dimensions,queries,rounds,recall_at_10,median_round_us,p50_us,p95_us,p99_us,estimated_payload_bytes,sidecar_bytes,sectors_per_query"
     );
+    print_cosine_report(report);
+    print_l2_report(report);
+}
+
+fn print_cosine_report(report: &BenchmarkReport) {
     println!(
         "exact,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0,0,0.00",
         micros_per_query(report.exact.median_round),
@@ -384,6 +416,9 @@ fn print_report(report: &BenchmarkReport) {
         micros(report.ivf_rabitq.p99),
         report.ivf_rabitq_payload,
     );
+}
+
+fn print_l2_report(report: &BenchmarkReport) {
     println!(
         "exact,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0,0,0.00",
         micros_per_query(report.exact_l2.median_round),
@@ -415,6 +450,17 @@ fn print_report(report: &BenchmarkReport) {
         report.vamana_sectors_per_query,
     );
     println!(
+        "vamana_mmap_snapshot_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{:.2}",
+        recall(&report.exact_l2.rankings, &report.vamana_mmap.rankings),
+        micros_per_query(report.vamana_mmap.median_round),
+        micros(report.vamana_mmap.p50),
+        micros(report.vamana_mmap.p95),
+        micros(report.vamana_mmap.p99),
+        report.vamana_payload,
+        report.vamana_sidecar,
+        report.vamana_mmap_sectors_per_query,
+    );
+    println!(
         "diskann_pq8_memory_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0,0.00",
         recall(&report.exact_l2.rankings, &report.pq.rankings),
         micros_per_query(report.pq.median_round),
@@ -433,6 +479,17 @@ fn print_report(report: &BenchmarkReport) {
         report.pq_payload,
         report.pq_sidecar,
         report.pq_sectors_per_query,
+    );
+    println!(
+        "diskann_pq8_mmap_snapshot_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},{},{:.2}",
+        recall(&report.exact_l2.rankings, &report.pq_mmap.rankings),
+        micros_per_query(report.pq_mmap.median_round),
+        micros(report.pq_mmap.p50),
+        micros(report.pq_mmap.p95),
+        micros(report.pq_mmap.p99),
+        report.pq_payload,
+        report.pq_sidecar,
+        report.pq_mmap_sectors_per_query,
     );
 }
 
@@ -473,7 +530,10 @@ fn main() {
     let (exact_l2, vamana, vamana_payload) = run_vamana_fixture(&collection, &queries);
     collection.close().expect("collection must close");
     let (vamana_positioned, vamana_sectors_per_query) =
-        run_positioned_fixture(&collection_path, &queries);
+        run_sidecar_fixture(&collection_path, &queries, IoBackend::Positioned);
+    let (vamana_mmap, vamana_mmap_sectors_per_query) =
+        run_sidecar_fixture(&collection_path, &queries, IoBackend::Mmap);
+    assert_eq!(vamana_mmap.rankings, vamana_positioned.rankings);
     let vamana_sidecar = sidecar_bytes(&collection_path);
 
     let collection = Collection::open(
@@ -485,7 +545,11 @@ fn main() {
     .expect("collection must reopen writable");
     let (pq, pq_payload) = run_pq_fixture(&collection, &queries);
     collection.close().expect("collection must close");
-    let (pq_positioned, pq_sectors_per_query) = run_positioned_fixture(&collection_path, &queries);
+    let (pq_positioned, pq_sectors_per_query) =
+        run_sidecar_fixture(&collection_path, &queries, IoBackend::Positioned);
+    let (pq_mmap, pq_mmap_sectors_per_query) =
+        run_sidecar_fixture(&collection_path, &queries, IoBackend::Mmap);
+    assert_eq!(pq_mmap.rankings, pq_positioned.rankings);
     let pq_sidecar = sidecar_bytes(&collection_path);
     print_report(&BenchmarkReport {
         exact: cosine.exact,
@@ -500,13 +564,17 @@ fn main() {
         exact_l2,
         vamana,
         vamana_positioned,
+        vamana_mmap,
         vamana_payload,
         vamana_sidecar,
         vamana_sectors_per_query,
+        vamana_mmap_sectors_per_query,
         pq,
         pq_positioned,
+        pq_mmap,
         pq_payload,
         pq_sidecar,
         pq_sectors_per_query,
+        pq_mmap_sectors_per_query,
     });
 }

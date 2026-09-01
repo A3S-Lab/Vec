@@ -41,8 +41,9 @@ and array type, and numeric scalar/array conversion is checked at both extrema
 and beyond each representable boundary. Future index/query/schema tuning now
 fails explicitly unless it has an execution consumer; Flat and unindexed scan
 FTS telemetry do not claim approximate or physical-index execution. HNSW, IVF,
-HNSW/IVF RaBitQ, L2 Vamana, L2 DiskANN/PQ with in-memory or positioned sidecar
-traversal, and FTS are live derived indexes with dedicated telemetry.
+HNSW/IVF RaBitQ, L2 Vamana, L2 DiskANN/PQ with in-memory, positioned, or
+immutable mmap-snapshot traversal, and FTS are live derived indexes with
+dedicated telemetry.
 Document generations
 share unchanged `Arc<Doc>` values through a persistent ordered tree, so ordinary
 writes copy only an O(log N) tree path. Indexed mutations share an immutable ANN
@@ -94,8 +95,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 208 passing unit/integration tests plus four
-compile-fail doctests; default and
+all-feature baseline has 211 passing unit/integration tests plus four doctests;
+default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
@@ -115,11 +116,11 @@ exercise recovery. The actual macOS 12 Intel runtime smoke remains external
 runner work. HNSW/IVF/RaBitQ/Vamana/DiskANN schema and query controls execute against
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
 immutable generations. Native sector-aligned Vamana/DiskANN files, bounded
-positioned query traversal, PQ/ADC compression, and portable multi-bit RaBitQ
-are live. The optional `async` feature moves query, multi-query, and group-by
-snapshot/planner/positioned-I/O work to Tokio's blocking pool with identical
-results, fallbacks, and telemetry. Native async file reads and sound
-file-backed mmap remain future work.
+positioned or immutable mmap-snapshot query traversal, PQ/ADC compression, and
+portable multi-bit RaBitQ are live. The optional `async` feature moves query,
+multi-query, and group-by snapshot/planner/sidecar-I/O work to Tokio's blocking
+pool with identical results, fallbacks, and telemetry. Native async file reads
+and direct file-backed mmap remain future work.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -167,7 +168,8 @@ file-backed mmap remain future work.
 - Completed: the `zvec-core` implementation dependency is no longer re-exported
   through the A3S public surface; a compile-fail doctest guards the boundary.
 - Partially completed: removed inert memory/thread/logging/I/O/mmap/buffer/
-  segment controls, fixed process-versus-collection durability precedence, and
+  segment controls, then restored only the typed I/O choice after both bounded
+  backends existed; fixed process-versus-collection durability precedence, and
   added execution tests for WAL operation/byte checkpoint thresholds.
 - Completed: unsupported physical index descriptors, query tuning parameters,
   segment sizing, and non-zero schema-evolution concurrency fail with typed
@@ -587,8 +589,9 @@ execution are implemented.
   `0..=dimension`. Positive values split dimensions into balanced contiguous
   chunks, train up to 256 deterministic centroids per chunk with eight Lloyd
   iterations, encode one byte per chunk, and build one query-local ADC table.
-  In-memory and positioned traversals use identical codes/tables; full vectors
-  remain authoritative for exact final ranking and for delta documents until a
+  In-memory, positioned, and mmap-snapshot traversals use identical
+  codes/tables; full vectors remain authoritative for exact final ranking and
+  for delta documents until a
   rebuild retrains the generation. Cache and sidecar validation cover
   codebooks, codes, graph membership, deterministic training, filtered and
   unfiltered parity, lifecycle, corruption, and query-time fallback.
@@ -609,12 +612,23 @@ execution are implemented.
   cache corruption fallback, and cache-format-10 reopen are covered.
 - Completed: the `async` feature exposes `query_async`, `multi_query_async`,
   and `group_by_async`. Each method requires an active Tokio runtime and moves
-  the complete synchronous snapshot, planner, positioned sidecar traversal,
+  the complete synchronous snapshot, planner, selected sidecar traversal,
   corruption fallback, exact refinement, and telemetry path to its blocking
   pool. A cache-reopened PQ DiskANN integration fixture proves bit-identical
   single, fused, and grouped results and then truncates the sidecar to prove
   identical in-memory fallback; unit coverage proves work leaves the runtime
   thread and missing-runtime use returns `FailedPrecondition`.
+- Completed: public `IoBackend` selection resolves from the process default or
+  a per-collection override, with portable positioned reads remaining the
+  default. `IoBackend::Mmap` copies the fully validated sidecar into a read-only
+  anonymous map and serves the existing bounded random-access reader from that
+  immutable snapshot without retaining dependence on the source file. Exact
+  ID/score-bit parity covers in-memory, positioned, and mapped PQ traversal;
+  query telemetry distinguishes the mmap subset. A live mapped handle survives
+  later sidecar truncation, while a subsequent reopen rejects the truncated
+  artifact and rebuilds safely in memory. The design retains `unsafe_code =
+  "deny"`; its explicit cost is an open-time full copy and sidecar-sized
+  retained mapping.
 - Completed: the repeated 2,000-vector cosine benchmark now includes HNSW and
   IVF RaBitQ7. On the latter 2026-09-01 Windows run, HNSW RaBitQ retained
   recall@10 1.0000 at a 122.96 microsecond median versus 123.56 for HNSW; IVF
@@ -624,16 +638,18 @@ execution are implemented.
   vectors in addition to compact codes. These rows are regression evidence,
   not a compression or speedup claim.
 - Completed: the fixed 2,000-vector benchmark includes exact L2, in-memory
-  Vamana, DiskANN PQ8, and both cache-reopened positioned paths at
-  `list_size=64`. On the 2026-09-01 Windows fixture all five produced
-  recall@10 1.0000. PQ reduced sidecar size from 823,296 to 622,592 bytes and
-  positioned reads from 138.04 to 108.16 sectors/query. Its in-memory and
-  positioned medians were 262.71 and 1,048.10 microseconds versus 309.48 and
-  1,313.91 for Vamana. Exact L2 remained faster at 143.88 microseconds, so no
-  exact-scan speedup is claimed.
-- Remaining: native async file reads or a sound immutable-file mmap backend,
-  plus the Linux/macOS Intel runtime portability gate. Non-L2 Vamana/DiskANN
-  remains
+  Vamana/DiskANN PQ8, and cache-reopened positioned and mmap-snapshot paths at
+  `list_size=64`. On the post-change 2026-09-01 Windows fixture all seven modes
+  produced recall@10 1.0000. PQ reduced sidecar size from 823,296 to 622,592
+  bytes and staged extents from 138.04 to 108.16 sectors/query. Vamana medians
+  were 311.75, 1,283.52, and 846.68 microseconds for memory, positioned, and
+  mmap; PQ8 medians were 269.32, 1,036.52, and 702.38 microseconds. The mmap
+  snapshot reduced measured query median by 34.0% and 32.2% versus the matching
+  positioned rows, excluding its full-copy open cost. Exact L2 remained faster
+  at 128.28 microseconds, so no exact-scan speedup is claimed.
+- Remaining: native async file reads or a sound direct file-backed mmap
+  backend, plus the Linux/macOS Intel runtime portability gate. Non-L2
+  Vamana/DiskANN remains
   explicit `NotSupported` until a correct metric transform is implemented.
 
 ## Phase 7 — Advanced collection API
@@ -681,8 +697,9 @@ execution are implemented.
 1. Land the contract/types and reference flat engine.
 2. Land WAL/snapshot recovery before ANN optimization.
 3. Add HNSW/IVF and FTS/scalar indexes behind the same planner contracts.
-4. Extend the completed DiskANN/PQ/RaBitQ path beyond scheduler-safe Tokio
-   query offload with native async reads or mmap only after equivalent
+4. Extend the completed DiskANN/PQ/RaBitQ path beyond scheduler-safe Tokio and
+   immutable mmap-snapshot query offload with native async reads or direct
+   file-backed mmap only after equivalent
    exact-reference, recall, and corruption tests are green.
 5. Finish API compatibility, Intel validation, and A3S integration as release
    work rather than mixing them into the storage core.

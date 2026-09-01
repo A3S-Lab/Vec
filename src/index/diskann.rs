@@ -10,6 +10,7 @@ mod reader;
 use super::product_quantization::{ProductCodebook, ProductQuantizer};
 use super::vamana::VamanaIndex;
 use super::{IndexRegistry, VectorIndex, VectorIndexKind};
+use crate::config::IoBackend;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
 use crate::storage::PositionedFile;
@@ -266,6 +267,7 @@ pub(super) fn validates(
 
 pub(super) fn attach(
     file: Option<PositionedFile>,
+    io_backend: IoBackend,
     registry: &mut IndexRegistry,
     schema: &CollectionSchema,
     source_revision: u64,
@@ -292,6 +294,9 @@ pub(super) fn attach(
     ) {
         return false;
     }
+    let Ok(reader_source) = file.into_random_access(io_backend, &bytes) else {
+        return false;
+    };
     let readers: Vec<ReaderSpec> = prepared
         .fields
         .iter()
@@ -311,7 +316,7 @@ pub(super) fn attach(
     drop(prepared);
     for spec in readers {
         let Ok(reader) = FieldReader::new(
-            file.clone(),
+            reader_source.clone(),
             spec.dimension,
             spec.max_degree,
             spec.entry_ordinal,

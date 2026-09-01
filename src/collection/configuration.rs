@@ -14,6 +14,9 @@ fn resolve_options_config(
     if let Some(durability) = options.durability {
         process_config.durability = durability;
     }
+    if let Some(io_backend) = options.io_backend {
+        process_config.io_backend = io_backend;
+    }
     process_config
 }
 
@@ -45,5 +48,23 @@ mod tests {
         assert_eq!(resolved.durability, Durability::Manual);
         assert_eq!(resolved.wal_max_ops, Some(3));
         assert_eq!(resolved.wal_max_bytes, Some(1024));
+    }
+
+    #[test]
+    fn collection_io_backend_overrides_the_process_default() {
+        let process = ConfigBuilder::default().io_backend(crate::IoBackend::Mmap);
+        assert_eq!(
+            resolve_options_config(&CollectionOptions::default(), process.clone()).io_backend,
+            crate::IoBackend::Mmap
+        );
+
+        let mut options = CollectionOptions::default();
+        options
+            .set_io_backend(crate::IoBackend::Positioned)
+            .expect("backend override must be valid");
+        assert_eq!(
+            resolve_options_config(&options, process).io_backend,
+            crate::IoBackend::Positioned
+        );
     }
 }

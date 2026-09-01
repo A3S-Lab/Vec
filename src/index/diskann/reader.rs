@@ -1,18 +1,19 @@
 //! On-demand Vamana traversal over sector-aligned node records.
 
 use super::SECTOR_BYTES;
+use crate::config::IoBackend;
 use crate::error::{Error, Result};
 use crate::index::ordinals::OrdinalTable;
 use crate::index::product_quantization::{AdcTable, ProductCodebook};
 use crate::index::quantization::score_dense;
-use crate::storage::PositionedFile;
+use crate::storage::RandomAccessReader;
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Debug)]
 pub(in crate::index) struct FieldReader {
-    file: PositionedFile,
+    file: RandomAccessReader,
     dimension: usize,
     max_degree: usize,
     entry_ordinal: Option<u64>,
@@ -48,6 +49,7 @@ struct GraphSearch {
 pub(in crate::index) struct ReadResult {
     pub(in crate::index) candidates: RoaringTreemap,
     pub(in crate::index) sector_reads: u64,
+    pub(in crate::index) io_backend: IoBackend,
 }
 
 struct ReadSession<'a> {
@@ -60,7 +62,7 @@ struct ReadSession<'a> {
 impl FieldReader {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::index) fn new(
-        file: PositionedFile,
+        file: RandomAccessReader,
         dimension: usize,
         max_degree: usize,
         entry_ordinal: Option<u64>,
@@ -126,6 +128,7 @@ impl FieldReader {
             return Ok(ReadResult {
                 candidates: RoaringTreemap::new(),
                 sector_reads: 0,
+                io_backend: self.file.io_backend(),
             });
         };
         let table = self
@@ -146,6 +149,7 @@ impl FieldReader {
         Ok(ReadResult {
             candidates: search.candidates.into_iter().collect(),
             sector_reads: session.sector_reads,
+            io_backend: self.file.io_backend(),
         })
     }
 
@@ -164,6 +168,7 @@ impl FieldReader {
             return Ok(ReadResult {
                 candidates: RoaringTreemap::new(),
                 sector_reads: 0,
+                io_backend: self.file.io_backend(),
             });
         };
         let table = self
@@ -200,6 +205,7 @@ impl FieldReader {
                 .map(|candidate| candidate.ordinal)
                 .collect(),
             sector_reads: session.sector_reads,
+            io_backend: self.file.io_backend(),
         })
     }
 

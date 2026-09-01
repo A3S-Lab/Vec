@@ -10,6 +10,7 @@ use super::{
     optional_positive_query_parameter, proportional_candidate_limit, AnnOrdinals, AnnSearchContext,
     VectorIndex,
 };
+use crate::config::IoBackend;
 use roaring::RoaringTreemap;
 
 impl VectorIndex {
@@ -194,7 +195,7 @@ impl VectorIndex {
     ) -> Option<AnnOrdinals> {
         let requested_list_size = optional_positive_query_parameter(search.query, "list_size");
         let limit = vamana.candidate_limit(requested_list_size, search.topk, search.eligible_count);
-        let (base, diskann_sector_reads) = match search.allowed {
+        let (base, diskann_sector_reads, diskann_io_backend) = match search.allowed {
             Some(allowed) => self.vamana_filtered_base(vamana, search, allowed, limit)?,
             None => self.vamana_unfiltered_base(vamana, search, limit),
         };
@@ -209,6 +210,7 @@ impl VectorIndex {
         candidate_set_is_sufficient(&merged, search).then_some(AnnOrdinals {
             ids: merged,
             diskann_sector_reads,
+            diskann_io_backend,
         })
     }
 
@@ -223,7 +225,7 @@ impl VectorIndex {
             search.topk,
             search.eligible_count,
         );
-        let (base, diskann_sector_reads) = match search.allowed {
+        let (base, diskann_sector_reads, diskann_io_backend) = match search.allowed {
             Some(allowed) => self.diskann_filtered_base(diskann, search, allowed, limit)?,
             None => self.diskann_unfiltered_base(diskann, search, limit)?,
         };
@@ -238,6 +240,7 @@ impl VectorIndex {
         candidate_set_is_sufficient(&merged, search).then_some(AnnOrdinals {
             ids: merged,
             diskann_sector_reads,
+            diskann_io_backend,
         })
     }
 
@@ -247,7 +250,7 @@ impl VectorIndex {
         search: &AnnSearchContext<'_>,
         allowed: &RoaringTreemap,
         limit: usize,
-    ) -> Option<(RoaringTreemap, u64)> {
+    ) -> Option<(RoaringTreemap, u64, Option<IoBackend>)> {
         let base_eligible_count = self.base_eligible_vector_count(allowed);
         let traversal_limit =
             proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
@@ -264,7 +267,11 @@ impl VectorIndex {
                 &self.tombstones,
                 search.ordinals,
             ) {
-                return Some((result.candidates, result.sector_reads));
+                return Some((
+                    result.candidates,
+                    result.sector_reads,
+                    Some(result.io_backend),
+                ));
             }
         }
         diskann
@@ -279,7 +286,7 @@ impl VectorIndex {
                 &self.tombstones,
             )
             .ok()
-            .map(|candidates| (candidates, 0))
+            .map(|candidates| (candidates, 0, None))
     }
 
     fn diskann_unfiltered_base(
@@ -287,7 +294,7 @@ impl VectorIndex {
         diskann: &DiskannIndex,
         search: &AnnSearchContext<'_>,
         limit: usize,
-    ) -> Option<(RoaringTreemap, u64)> {
+    ) -> Option<(RoaringTreemap, u64, Option<IoBackend>)> {
         let base_list_size = limit
             .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
             .min(self.base.vectors.len());
@@ -299,7 +306,11 @@ impl VectorIndex {
                     search.metric,
                     search.ordinals,
                 ) {
-                    return Some((result.candidates, result.sector_reads));
+                    return Some((
+                        result.candidates,
+                        result.sector_reads,
+                        Some(result.io_backend),
+                    ));
                 }
             }
         }
@@ -313,7 +324,7 @@ impl VectorIndex {
                 search.metric,
             )
             .ok()
-            .map(|candidates| (candidates, 0))
+            .map(|candidates| (candidates, 0, None))
     }
 
     fn vamana_filtered_base(
@@ -322,7 +333,7 @@ impl VectorIndex {
         search: &AnnSearchContext<'_>,
         allowed: &RoaringTreemap,
         limit: usize,
-    ) -> Option<(RoaringTreemap, u64)> {
+    ) -> Option<(RoaringTreemap, u64, Option<IoBackend>)> {
         let base_eligible_count = self.base_eligible_vector_count(allowed);
         let traversal_limit =
             proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
@@ -339,7 +350,11 @@ impl VectorIndex {
                 &self.tombstones,
                 search.ordinals,
             ) {
-                return Some((result.candidates, result.sector_reads));
+                return Some((
+                    result.candidates,
+                    result.sector_reads,
+                    Some(result.io_backend),
+                ));
             }
         }
         Some((
@@ -354,6 +369,7 @@ impl VectorIndex {
                 &self.tombstones,
             ),
             0,
+            None,
         ))
     }
 
@@ -362,7 +378,7 @@ impl VectorIndex {
         vamana: &VamanaIndex,
         search: &AnnSearchContext<'_>,
         limit: usize,
-    ) -> (RoaringTreemap, u64) {
+    ) -> (RoaringTreemap, u64, Option<IoBackend>) {
         let base_list_size = limit
             .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
             .min(self.base.vectors.len());
@@ -374,7 +390,11 @@ impl VectorIndex {
                     search.metric,
                     search.ordinals,
                 ) {
-                    return (result.candidates, result.sector_reads);
+                    return (
+                        result.candidates,
+                        result.sector_reads,
+                        Some(result.io_backend),
+                    );
                 }
             }
         }
@@ -388,6 +408,7 @@ impl VectorIndex {
                 search.metric,
             ),
             0,
+            None,
         )
     }
 }

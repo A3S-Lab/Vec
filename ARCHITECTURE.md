@@ -32,9 +32,10 @@ The engine is built around six invariants:
 5. **Approximation never breaks correctness.** Every approximate index has an
    exact flat-scan fallback and an exact re-ranking stage. Invalid or stale
    index state fails closed to the fallback path.
-6. **The portable path is the default.** The baseline uses stable Rust and
-   portable scalar code. Runtime AVX2/AVX-512, ARM NEON, mmap, and platform
-   asynchronous I/O are optional accelerators, never required for correctness.
+6. **The portable path is the default.** The baseline uses stable Rust,
+   portable scalar code, and positioned file reads. Runtime AVX2/AVX-512, ARM
+   NEON, immutable mmap snapshots, and platform asynchronous I/O are optional
+   accelerators, never required for correctness.
 
 ## 2. Module layout
 
@@ -80,7 +81,7 @@ crates/vec/
 │   │   ├── diskann.rs         # native sector-aligned Vamana/DiskANN codec
 │   │   ├── diskann/
 │   │   │   ├── codec.rs       # bounded little-endian format primitives
-│   │   │   ├── reader.rs      # positioned full-vector/PQ-code traversal
+│   │   │   ├── reader.rs      # typed positioned/mmap full-vector/PQ traversal
 │   │   │   └── tests.rs       # packing, PQ, corruption, large-record fixtures
 │   │   ├── diskann_index.rs   # Vamana graph plus optional PQ/ADC generation
 │   │   ├── fts.rs             # term-frequency postings + BM25 statistics
@@ -115,7 +116,7 @@ crates/vec/
 │       ├── snapshot/
 │       │   └── codec.rs       # compact document/value wire representation
 │       ├── lock.rs            # single-writer/multi-reader lock
-│       ├── derived_file.rs     # bounded atomic + positioned artifact I/O
+│       ├── derived_file.rs     # bounded positioned + immutable mmap artifact I/O
 │       ├── diskann_file.rs     # Vamana/DiskANN sector-sidecar storage
 │       ├── index_cache.rs      # bounded atomic derived-cache storage
 │       └── tests.rs           # storage-boundary fault simulations
@@ -134,6 +135,7 @@ crates/vec/
     ├── fts_advanced_query_syntax.rs # wildcard/fuzzy/range/proximity differential
     ├── fts_query_syntax.rs    # boolean/phrase index-versus-scan differential
     ├── index_cache.rs         # hit/stale/corrupt/read-only cache lifecycle
+    ├── mmap_diskann.rs        # backend parity, isolation, reopen fallback
     ├── ngram_fts.rs           # Unicode n-gram config, mutation, cache reopen
     ├── scalar_indexes.rs      # bitmap semantics, lifecycle, hybrid planning
     └── vector_codecs.rs       # native codec/metric/storage contracts
@@ -142,8 +144,9 @@ crates/vec/
 The checked-in `index/` module owns real HNSW/IVF/RaBitQ/Vamana/DiskANN candidate generation,
 scalar posting dictionaries, indexed BM25 term-frequency postings, and their
 revision-aware selection contract. It also owns the native sector-aligned
-Vamana/DiskANN codec and positioned query reader plus its fallback, corruption, and
-persistence evidence. Exact wrappers with approximate names are not kept as
+Vamana/DiskANN codec and typed positioned/mmap-snapshot query reader plus its
+fallback, corruption, and persistence evidence. Exact wrappers with
+approximate names are not kept as
 placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
@@ -263,13 +266,15 @@ without an active Tokio runtime returns `FailedPrecondition` instead of
 panicking.
 
 Runtime configuration follows an executable-contract rule. `ConfigBuilder`
-owns only the process durability default and WAL operation/byte checkpoint
-thresholds. `CollectionOptions` owns read-only mode plus an optional durability
-override; absence means inheritance, not a second hard-coded default. Memory,
-threading, logging, I/O backend, mmap, buffer, and segment controls are not
-public until they select a real bounded implementation. The resolved process
+owns the process durability and `IoBackend` defaults plus WAL operation/byte
+checkpoint thresholds. `CollectionOptions` owns read-only mode and optional
+durability/I/O overrides; absence means inheritance, not a second hard-coded
+default. `IoBackend::Positioned` is the default. `IoBackend::Mmap` selects the
+implemented validated anonymous-map snapshot; it is not a flag for direct
+file-backed mapping. Memory, threading, logging, buffer, and segment controls
+remain absent until they select real bounded implementations. Resolved process
 defaults are captured when a collection is created or opened, so a later
-`initialize` call cannot change an active collection's acknowledgement policy.
+`initialize` call cannot change an active handle's policy.
 
 Index and query configuration follows the same rule. The exact executor owns
 Flat metrics and query `metric`/`radius`; HNSW owns `m`, `ef_construction`, and
@@ -431,22 +436,33 @@ document transaction into an apparent failure. Public telemetry reports the
 per-handle open result through `index_cache_hit`.
 
 After full sidecar validation, each restored Vamana or DiskANN field receives a
-shared immutable positioned reader. Packed records load one 4 KiB sector;
-oversized records load their whole-sector stride. A query caches loaded extents
-and decoded nodes only for that request, so repeated graph edges do not repeat
-I/O. PQ queries build one asymmetric-distance table from the query and stored
-codebook, then score every loaded node by summing its chunk entries.
-Unix uses `FileExt::read_at`, Windows uses `seek_read`, and the portable fallback
-uses a cloned handle plus seek. Incremental delta/tombstone generations retain
-the base reader through `Arc`; a rebuilt base deliberately has no reader until
-its newly persisted sidecar is validated on reopen. A query-time short read or
-invalid record falls back to the equivalent in-memory full-vector or ADC graph.
-`diskann_query_count` and
-`diskann_sector_read_count` report only successful positioned traversals.
-The optional Tokio query methods move this entire positioned traversal and
-authoritative refinement path to the runtime's blocking pool; they do not fork
-planner, scoring, fallback, or telemetry semantics. Native async file reads and
-a sound immutable-file mmap strategy remain separate optimizations.
+shared typed random-access reader. The default positioned backend uses
+`FileExt::read_at` on Unix, `seek_read` on Windows, and a cloned-handle seek
+fallback elsewhere. The mmap backend safely allocates an anonymous map, copies
+the validated bytes, makes the map read-only, and releases its dependency on
+the source file. It therefore preserves query-time immutability even if that
+file is later replaced or truncated. The tradeoff is a full open-time copy,
+temporary peak memory for both buffers, and one sidecar-sized mapping retained
+by the handle; direct file-backed mapping is deliberately not implied.
+
+With either backend, packed records stage one 4 KiB sector and oversized
+records stage their whole-sector stride. A query caches loaded extents and
+decoded nodes only for that request, so repeated graph edges do not repeat
+backend reads. PQ queries build one asymmetric-distance table from the query
+and stored codebook, then score every loaded node by summing its chunk entries.
+Incremental delta/tombstone generations retain the base reader through `Arc`;
+a rebuilt base deliberately has no reader until its newly persisted sidecar is
+validated on reopen. A query-time short read or invalid record falls back to
+the equivalent in-memory full-vector or ADC graph.
+`diskann_query_count` reports every successful sidecar traversal,
+`diskann_mmap_query_count` reports its mmap subset, and
+`diskann_sector_read_count` reports request-local sectors staged by either
+backend. `io_backend` exposes the handle's resolved selection even when a cache
+miss leaves the rebuilt generation in memory. The optional Tokio query methods
+move this entire selected-backend traversal and authoritative refinement path
+to the runtime's blocking pool; they do not fork planner, scoring, fallback, or
+telemetry semantics. Native async file reads and direct file-backed mmap remain
+separate optimizations.
 
 `rebuild_index(field)` clones the current registry, rebuilds only the named
 HNSW, IVF, HNSW/IVF RaBitQ, Vamana, DiskANN, scalar, or FTS generation against the shared ordinal table,
@@ -494,7 +510,7 @@ The target and fallback implementations are:
 | IVF | Lloyd centroids + ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
 | L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
 | L2 DiskANN/PQ | Vamana graph + deterministic per-chunk codebooks/codes + ADC + bounded overlays | In-memory ADC + flat re-rank |
-| DiskANN query reader | Request-local positioned full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
+| DiskANN query reader | Request-local positioned or immutable mmap-snapshot full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
 | HNSW/IVF RaBitQ | Fixed-seed signed Hadamard rotation + compact 1-to-9-bit residual codes + unbiased traversal/refinement estimator | Full-vector re-rank/filter fallback |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
 | FTS | Contiguous term/posting/length bases + persistent deltas; Unicode tokenizers/filters, advanced structured AST, BM25 | Exact token scan fallback with shared expansion/proximity semantics |
@@ -516,10 +532,11 @@ materializing a decoded vector, and merged candidates remain ordinals while
 retaining the configured ANN candidate limit. An exhaustive `ef`, `nprobe`, or
 `list_size` returns every live indexed identifier across both layers, and exact
 re-ranking then matches Flat ordering and scores. A freshly built Vamana base
-traverses in memory; a cache-restored base uses the native sidecar's positioned
-reader for bounded traversal and fails closed to that same memory graph.
+traverses in memory; a cache-restored base uses the native sidecar's configured
+positioned or immutable mmap-snapshot reader for bounded traversal and fails
+closed to that same memory graph.
 DiskANN follows the same lifecycle, but a positive `pq_chunk_num` uses ADC for
-both in-memory and positioned traversal. RaBitQ uses compact codes only for
+in-memory and either sidecar traversal. RaBitQ uses compact codes only for
 candidate traversal/refinement and retains the same authoritative exact-score
 handoff. Scalar generations use
 the same source-revision
@@ -665,12 +682,14 @@ force downstream callers to migrate unrelated types.
 ## 8. Platform policy
 
 The release matrix includes Linux x86_64/aarch64, Windows x86_64, and macOS
-arm64/x86_64 with a macOS deployment target of 12.0. Derived artifacts use
-cursor-independent positioned reads (`FileExt::read_at` on Unix and
-`FileExt::seek_read` on Windows) with a stable-Rust fallback elsewhere. Intel
+arm64/x86_64 with a macOS deployment target of 12.0. The default derived-file
+backend uses cursor-independent positioned reads (`FileExt::read_at` on Unix
+and `FileExt::seek_read` on Windows) with a stable-Rust fallback elsewhere.
+The optional backend uses safe anonymous-map allocation and read-only
+transition after validation, without mapping a mutable external file. Intel
 Monterey uses the portable scalar/AVX2 path and POSIX file locks; Linux-only
-`io_uring` is never a required dependency. CI must compile with
-default features and with all optional index/FTS features enabled.
+`io_uring` is never a required dependency. CI must compile with default
+features and with all optional index/FTS features enabled.
 
 The default Cargo feature set is empty and its normal/build dependency graph
 does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit

@@ -19,7 +19,7 @@ use manifest::Manifest;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) use derived_file::PositionedFile;
+pub(crate) use derived_file::{PositionedFile, RandomAccessReader};
 pub use wal::WalOperation;
 
 /// Open storage state. The lock is held for the lifetime of the collection.

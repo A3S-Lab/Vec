@@ -4,11 +4,26 @@ use super::{
 };
 use crate::doc::{Doc, DocumentMap};
 use crate::index::{IndexRegistry, VectorIndexKind};
-use crate::storage::StorageHandle;
-use crate::{CollectionSchema, DataType, FieldSchema, IndexParams, MetricType};
+use crate::storage::{PositionedFile, StorageHandle};
+use crate::{CollectionSchema, DataType, FieldSchema, IndexParams, IoBackend, MetricType};
 use roaring::RoaringTreemap;
 use std::sync::Arc;
 use tempfile::tempdir;
+
+fn attach_positioned(
+    file: PositionedFile,
+    registry: &mut IndexRegistry,
+    schema: &CollectionSchema,
+) -> bool {
+    attach(
+        Some(file),
+        IoBackend::Positioned,
+        registry,
+        schema,
+        7,
+        "source",
+    )
+}
 
 fn fixture(dimension: u32, count: u16) -> (CollectionSchema, DocumentMap, IndexRegistry) {
     let mut embedding = FieldSchema::new("embedding", DataType::VectorFp32, false, dimension)
@@ -171,7 +186,7 @@ fn positioned_reader_matches_the_memory_graph_for_packed_and_oversized_records()
             .expect("sidecar must open")
             .expect("sidecar must exist");
         let mut attached = registry.clone();
-        assert!(attach(Some(file), &mut attached, &schema, 7, "source"));
+        assert!(attach_positioned(file, &mut attached, &schema));
 
         let index = attached
             .indexes
@@ -267,7 +282,7 @@ fn pq_records_are_compact_validated_and_match_in_memory_adc() {
         .expect("sidecar must open")
         .expect("sidecar must exist");
     let mut attached = registry.clone();
-    assert!(attach(Some(file), &mut attached, &schema, 7, "source"));
+    assert!(attach_positioned(file, &mut attached, &schema));
     let index = attached
         .indexes
         .get("embedding")

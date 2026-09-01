@@ -17,10 +17,11 @@
 //! ordered token filters, boolean groups, required/prohibited clauses, and
 //! wildcard/fuzzy/range terms, boosts, and ordered phrase proximity. HNSW and
 //! IVF also provide multi-bit `RaBitQ` families with exact re-ranking. `DiskANN`
-//! uses deterministic PQ training, ADC graph traversal, and on-demand
-//! positioned reads. With the `async` feature, query, multi-query, and group-by
-//! entry points run that same work on Tokio's blocking pool. A native async file
-//! backend and sound file-backed mmap remain explicit future work.
+//! uses deterministic PQ training, ADC graph traversal, and a typed choice of
+//! positioned reads or a validated immutable anonymous mmap snapshot. With the
+//! `async` feature, query, multi-query, and group-by entry points run that same
+//! work on Tokio's blocking pool. Native async file reads and direct file-backed
+//! mmap remain explicit future optimizations.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
@@ -49,7 +50,7 @@ pub use collection::{
 };
 pub use config::{
     check_version, default_config, initialize, is_initialized, shutdown, version, version_major,
-    version_minor, version_patch, ConfigBuilder, Durability,
+    version_minor, version_patch, ConfigBuilder, Durability, IoBackend,
 };
 pub use doc::{Doc, FieldValue, VectorValue};
 pub use embedding::{DenseEmbedding, EmbeddingInput, QueryExecutor, SparseEmbedding};
@@ -74,7 +75,8 @@ pub mod prelude {
     pub use crate::{
         initialize, is_initialized, version, Collection, CollectionOptions, CollectionSchema,
         ConfigBuilder, DataType, Doc, DocIterator, Error, ErrorCode, FieldSchema, IndexParams,
-        MetricType, MultiQuery, QuantizeType, Result, SearchQuery, VectorSchema, WriteResult,
+        IoBackend, MetricType, MultiQuery, QuantizeType, Result, SearchQuery, VectorSchema,
+        WriteResult,
     };
 }
 

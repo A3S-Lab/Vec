@@ -1,5 +1,6 @@
 //! Collection telemetry and health snapshots.
 
+use crate::config::IoBackend;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,7 +31,12 @@ pub struct StatsSnapshot {
     /// from the native sector sidecar instead of the in-memory graph.
     #[serde(default)]
     pub diskann_query_count: u64,
-    /// Native sidecar sectors loaded by successful positioned graph queries.
+    /// Successful Vamana/`DiskANN` sidecar queries served from an immutable
+    /// mmap snapshot instead of positioned file reads.
+    #[serde(default)]
+    pub diskann_mmap_query_count: u64,
+    /// Native sidecar sectors staged in request-local caches by successful
+    /// positioned or mmap-snapshot graph queries.
     #[serde(default)]
     pub diskann_sector_read_count: u64,
     pub exact_query_count: u64,
@@ -44,6 +50,9 @@ pub struct StatsSnapshot {
     /// on-disk derived-index cache during `Collection::open`.
     #[serde(default)]
     pub index_cache_hit: bool,
+    /// Resolved sidecar backend for this collection handle.
+    #[serde(default)]
+    pub io_backend: crate::config::IoBackend,
     pub read_only: bool,
     pub wal_active_seq: u64,
     pub wal_checkpoint_seq: u64,
@@ -58,6 +67,7 @@ pub(crate) struct StatsRegistry {
     pub fts_index_query_count: AtomicU64,
     pub ann_query_count: AtomicU64,
     pub diskann_query_count: AtomicU64,
+    pub diskann_mmap_query_count: AtomicU64,
     pub diskann_sector_read_count: AtomicU64,
     pub exact_query_count: AtomicU64,
     pub filtered_query_count: AtomicU64,
@@ -69,7 +79,7 @@ pub(crate) struct StatsRegistry {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct QueryObservation {
     pub kind: QueryKind,
-    pub diskann: bool,
+    pub diskann_io_backend: Option<IoBackend>,
     pub diskann_sector_reads: u64,
     pub filtered: bool,
     pub index_usage: IndexUsage,
@@ -124,8 +134,12 @@ impl StatsRegistry {
         if matches!(observation.kind, QueryKind::Ann | QueryKind::AnnFts) {
             self.ann_query_count.fetch_add(1, Ordering::Relaxed);
         }
-        if observation.diskann {
+        if let Some(io_backend) = observation.diskann_io_backend {
             self.diskann_query_count.fetch_add(1, Ordering::Relaxed);
+            if io_backend == IoBackend::Mmap {
+                self.diskann_mmap_query_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             self.diskann_sector_read_count
                 .fetch_add(observation.diskann_sector_reads, Ordering::Relaxed);
         }

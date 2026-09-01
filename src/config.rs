@@ -16,14 +16,28 @@ pub enum Durability {
     Manual,
 }
 
-/// Supported process-wide durability configuration.
+/// Query-time backend for validated derived index sidecars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IoBackend {
+    /// Read bounded extents directly from the sidecar with portable positioned
+    /// file operations.
+    #[default]
+    Positioned,
+    /// Copy the validated sidecar into an immutable anonymous memory map at
+    /// open time, then serve bounded query extents from that snapshot.
+    Mmap,
+}
+
+/// Supported process-wide durability and sidecar-I/O configuration.
 ///
-/// Resource, logging, and I/O-backend controls are intentionally absent until
+/// Resource and logging controls are intentionally absent until
 /// they have an implemented execution path:
 ///
 /// ```compile_fail
-/// use a3s_vec::ConfigBuilder;
+/// use a3s_vec::{ConfigBuilder, LogLevel, LogType};
 ///
+/// let _ = (LogLevel::Info, LogType::Console);
 /// let _ = ConfigBuilder::new()
 ///     .memory_limit(1024)
 ///     .num_threads(2)
@@ -31,16 +45,21 @@ pub enum Durability {
 ///     .fts_brute_force_by_keys_ratio(0.5);
 /// ```
 ///
-/// ```compile_fail
-/// use a3s_vec::{ConfigBuilder, IoBackend, LogLevel, LogType};
+/// The default [`IoBackend::Positioned`] reader can be replaced by the bounded
+/// immutable mmap snapshot backend:
 ///
-/// let _ = (ConfigBuilder::new().io_backend(IoBackend::Mmap), LogLevel::Info, LogType::Console);
+/// ```
+/// use a3s_vec::{ConfigBuilder, IoBackend};
+///
+/// let _ = ConfigBuilder::new().io_backend(IoBackend::Mmap).build();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigBuilder {
     pub(crate) durability: Durability,
     pub(crate) wal_max_ops: Option<u64>,
     pub(crate) wal_max_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) io_backend: IoBackend,
 }
 
 impl ConfigBuilder {
@@ -49,6 +68,7 @@ impl ConfigBuilder {
             durability: Durability::Always,
             wal_max_ops: None,
             wal_max_bytes: None,
+            io_backend: IoBackend::Positioned,
         }
     }
 
@@ -64,6 +84,12 @@ impl ConfigBuilder {
 
     pub fn wal_max_bytes(mut self, limit: u64) -> Self {
         self.wal_max_bytes = (limit > 0).then_some(limit);
+        self
+    }
+
+    /// Selects the process default for validated derived-sidecar query reads.
+    pub fn io_backend(mut self, backend: IoBackend) -> Self {
+        self.io_backend = backend;
         self
     }
 
@@ -171,6 +197,7 @@ mod tests {
     fn defaults_are_portable() {
         let cfg = ConfigBuilder::default();
         assert_eq!(cfg.durability, Durability::Always);
+        assert_eq!(cfg.io_backend, IoBackend::Positioned);
     }
 
     #[test]

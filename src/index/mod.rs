@@ -18,6 +18,7 @@ mod scalar;
 mod vamana;
 mod vector_query;
 
+use crate::config::IoBackend;
 use crate::doc::DocumentMap;
 use crate::error::{Error, Result};
 use crate::query::SearchQuery;
@@ -108,6 +109,7 @@ pub(crate) struct CandidatePlan {
     pub fts_scores: Option<OrdinalScores>,
     pub used_ann: bool,
     pub diskann_sector_reads: u64,
+    pub diskann_io_backend: Option<IoBackend>,
     pub used_scalar: bool,
     pub used_fts_index: bool,
 }
@@ -115,11 +117,13 @@ pub(crate) struct CandidatePlan {
 struct AnnOrdinals {
     ids: RoaringTreemap,
     diskann_sector_reads: u64,
+    diskann_io_backend: Option<IoBackend>,
 }
 
 struct AnnCandidates {
     selection: CandidateSelection,
     diskann_sector_reads: u64,
+    diskann_io_backend: Option<IoBackend>,
 }
 
 impl CandidatePlan {
@@ -192,6 +196,7 @@ impl IndexRegistry {
     pub(crate) fn restore_cache(
         bytes: &[u8],
         diskann_file: Option<crate::storage::PositionedFile>,
+        io_backend: IoBackend,
         schema: &CollectionSchema,
         docs: &DocumentMap,
         source_revision: u64,
@@ -200,6 +205,7 @@ impl IndexRegistry {
         cache::restore(
             bytes,
             diskann_file,
+            io_backend,
             schema,
             docs,
             source_revision,
@@ -390,6 +396,7 @@ impl IndexRegistry {
                     ids: OrdinalSet::new(&self.ordinals, RoaringTreemap::new()),
                 },
                 diskann_sector_reads: 0,
+                diskann_io_backend: None,
             }));
         }
         let search = AnnSearchContext {
@@ -407,6 +414,7 @@ impl IndexRegistry {
                     index.hnsw_candidates(hnsw, &search).map(|ids| AnnOrdinals {
                         ids,
                         diskann_sector_reads: 0,
+                        diskann_io_backend: None,
                     })
                 }
                 VectorIndexKind::HnswRabitq(hnsw) => index
@@ -414,11 +422,13 @@ impl IndexRegistry {
                     .map(|ids| AnnOrdinals {
                         ids,
                         diskann_sector_reads: 0,
+                        diskann_io_backend: None,
                     }),
                 VectorIndexKind::Ivf(ivf) => {
                     index.ivf_candidates(ivf, &search).map(|ids| AnnOrdinals {
                         ids,
                         diskann_sector_reads: 0,
+                        diskann_io_backend: None,
                     })
                 }
                 VectorIndexKind::IvfRabitq(ivf) => {
@@ -427,6 +437,7 @@ impl IndexRegistry {
                         .map(|ids| AnnOrdinals {
                             ids,
                             diskann_sector_reads: 0,
+                            diskann_io_backend: None,
                         })
                 }
                 VectorIndexKind::Diskann(diskann) => index.diskann_candidates(diskann, &search),
@@ -437,6 +448,7 @@ impl IndexRegistry {
                 ids: OrdinalSet::new(&self.ordinals, result.ids),
             },
             diskann_sector_reads: result.diskann_sector_reads,
+            diskann_io_backend: result.diskann_io_backend,
         }))
     }
 
@@ -496,6 +508,7 @@ impl IndexRegistry {
                 fts_scores: Some(fts_scores),
                 used_ann: false,
                 diskann_sector_reads: 0,
+                diskann_io_backend: None,
                 used_scalar,
                 used_fts_index: true,
             });
@@ -507,6 +520,7 @@ impl IndexRegistry {
             fts_scores: None,
             used_ann: false,
             diskann_sector_reads: 0,
+            diskann_io_backend: None,
             used_scalar,
             used_fts_index: false,
         })
@@ -530,11 +544,13 @@ impl IndexRegistry {
             let ann = self.candidates(docs, source_revision, query, None)?;
             let used_ann = ann.is_some();
             let diskann_sector_reads = ann.as_ref().map_or(0, |ann| ann.diskann_sector_reads);
+            let diskann_io_backend = ann.as_ref().and_then(|ann| ann.diskann_io_backend);
             return Ok(CandidatePlan {
                 selection: ann.map(|ann| ann.selection),
                 fts_scores: None,
                 used_ann,
                 diskann_sector_reads,
+                diskann_io_backend,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -552,6 +568,7 @@ impl IndexRegistry {
                 fts_scores: None,
                 used_ann: false,
                 diskann_sector_reads: 0,
+                diskann_io_backend: None,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -576,6 +593,7 @@ impl IndexRegistry {
                 fts_scores: None,
                 used_ann: false,
                 diskann_sector_reads: 0,
+                diskann_io_backend: None,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -588,6 +606,7 @@ impl IndexRegistry {
                 fts_scores: None,
                 used_ann: false,
                 diskann_sector_reads: 0,
+                diskann_io_backend: None,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -597,6 +616,7 @@ impl IndexRegistry {
             fts_scores: None,
             used_ann: true,
             diskann_sector_reads: ann.diskann_sector_reads,
+            diskann_io_backend: ann.diskann_io_backend,
             used_scalar,
             used_fts_index: false,
         })

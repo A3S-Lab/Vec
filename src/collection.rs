@@ -11,7 +11,7 @@ mod validation;
 #[cfg(feature = "async")]
 mod async_api;
 
-use crate::config::{ConfigBuilder, Durability};
+use crate::config::{ConfigBuilder, Durability, IoBackend};
 use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, ErrorCode, Result};
 use crate::index::IndexRegistry;
@@ -34,14 +34,13 @@ use validation::{
 
 /// Supported options for creating or opening a collection.
 ///
-/// Storage layout and I/O backend knobs remain outside the public contract
-/// until distinct implementations exist:
+/// Storage layout, buffer, and segment knobs remain outside the public
+/// contract:
 ///
 /// ```compile_fail
 /// use a3s_vec::CollectionOptions;
 ///
 /// let mut options = CollectionOptions::new().unwrap();
-/// options.set_enable_mmap(false).unwrap();
 /// options.set_max_buffer_size(1024).unwrap();
 /// options.set_segment_num(2).unwrap();
 /// ```
@@ -49,6 +48,7 @@ use validation::{
 pub struct CollectionOptions {
     read_only: bool,
     durability: Option<Durability>,
+    io_backend: Option<IoBackend>,
 }
 
 impl CollectionOptions {
@@ -68,6 +68,18 @@ impl CollectionOptions {
     }
     pub fn durability(&self) -> Option<Durability> {
         self.durability
+    }
+    /// Overrides the process-wide derived-sidecar I/O backend for this handle.
+    ///
+    /// When absent, the backend configured through [`crate::ConfigBuilder`] is
+    /// captured when the collection is created or opened.
+    pub fn set_io_backend(&mut self, value: IoBackend) -> Result<()> {
+        self.io_backend = Some(value);
+        Ok(())
+    }
+    /// Returns this handle's explicit I/O backend override, if any.
+    pub fn io_backend(&self) -> Option<IoBackend> {
+        self.io_backend
     }
 }
 
@@ -102,6 +114,10 @@ pub struct CollectionStats {
     pub revision: u64,
     #[serde(default)]
     pub index_cache_hit: bool,
+    /// Resolved sidecar backend for this collection handle. A cache miss may
+    /// rebuild indexes in memory without exercising the configured backend.
+    #[serde(default)]
+    pub io_backend: IoBackend,
     pub read_only: bool,
     pub wal_active_seq: u64,
     pub wal_checkpoint_seq: u64,
@@ -220,6 +236,7 @@ impl Collection {
             IndexRegistry::restore_cache(
                 &bytes,
                 diskann_file,
+                config.io_backend,
                 &schema,
                 &docs,
                 revision,
@@ -391,6 +408,7 @@ impl Collection {
             indexes,
             revision: state.revision,
             index_cache_hit: state.index_cache_hit,
+            io_backend: state.config.io_backend,
             read_only: state.options.read_only,
             wal_active_seq: storage.manifest.wal_active_seq,
             wal_checkpoint_seq: storage.manifest.wal_checkpoint_seq,
@@ -416,6 +434,9 @@ impl Collection {
             fts_index_query_count: registry.fts_index_query_count.load(AtomicOrdering::Relaxed),
             ann_query_count: registry.ann_query_count.load(AtomicOrdering::Relaxed),
             diskann_query_count: registry.diskann_query_count.load(AtomicOrdering::Relaxed),
+            diskann_mmap_query_count: registry
+                .diskann_mmap_query_count
+                .load(AtomicOrdering::Relaxed),
             diskann_sector_read_count: registry
                 .diskann_sector_read_count
                 .load(AtomicOrdering::Relaxed),
@@ -429,6 +450,7 @@ impl Collection {
             indexed_field_count: basic.indexes.len(),
             indexes: basic.indexes,
             index_cache_hit: basic.index_cache_hit,
+            io_backend: basic.io_backend,
             read_only: basic.read_only,
             wal_active_seq: basic.wal_active_seq,
             wal_checkpoint_seq: basic.wal_checkpoint_seq,

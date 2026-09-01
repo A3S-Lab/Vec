@@ -1,7 +1,9 @@
 //! Bounded, atomic storage shared by non-authoritative index artifacts.
 
 use super::manifest::sync_directory;
+use crate::config::IoBackend;
 use crate::error::{Error, Result};
+use memmap2::{Mmap, MmapMut};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -13,6 +15,12 @@ pub(crate) struct PositionedFile {
     file: Arc<File>,
     length: u64,
     label: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RandomAccessReader {
+    Positioned(PositionedFile),
+    Mmap { bytes: Arc<Mmap>, label: Arc<str> },
 }
 
 impl PositionedFile {
@@ -32,6 +40,75 @@ impl PositionedFile {
         let mut bytes = vec![0_u8; length];
         self.read_exact_at(0, &mut bytes)?;
         Ok(bytes)
+    }
+
+    pub(crate) fn into_random_access(
+        self,
+        backend: IoBackend,
+        validated_bytes: &[u8],
+    ) -> Result<RandomAccessReader> {
+        match backend {
+            IoBackend::Positioned => Ok(RandomAccessReader::Positioned(self)),
+            IoBackend::Mmap => {
+                if validated_bytes.is_empty() {
+                    return Err(Error::internal(format!("cannot mmap empty {}", self.label)));
+                }
+                let mut mapping = MmapMut::map_anon(validated_bytes.len()).map_err(|error| {
+                    Error::resource_exhausted(format!(
+                        "allocate mmap snapshot for {}: {error}",
+                        self.label
+                    ))
+                })?;
+                mapping.copy_from_slice(validated_bytes);
+                let mapping = mapping.make_read_only().map_err(|error| {
+                    Error::internal(format!(
+                        "make mmap snapshot read-only for {}: {error}",
+                        self.label
+                    ))
+                })?;
+                Ok(RandomAccessReader::Mmap {
+                    bytes: Arc::new(mapping),
+                    label: Arc::from(self.label),
+                })
+            }
+        }
+    }
+}
+
+impl RandomAccessReader {
+    pub(crate) fn len(&self) -> u64 {
+        match self {
+            Self::Positioned(file) => file.len(),
+            Self::Mmap { bytes, .. } => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        }
+    }
+
+    pub(crate) fn io_backend(&self) -> IoBackend {
+        match self {
+            Self::Positioned(_) => IoBackend::Positioned,
+            Self::Mmap { .. } => IoBackend::Mmap,
+        }
+    }
+
+    pub(crate) fn read_exact_at(&self, offset: u64, output: &mut [u8]) -> Result<()> {
+        match self {
+            Self::Positioned(file) => file.read_exact_at(offset, output),
+            Self::Mmap { bytes, label } => {
+                let start = usize::try_from(offset).map_err(|_| {
+                    Error::resource_exhausted(format!("read {label}: offset exceeds usize"))
+                })?;
+                let end = start.checked_add(output.len()).ok_or_else(|| {
+                    Error::resource_exhausted(format!("read {label}: byte range overflow"))
+                })?;
+                let source = bytes.get(start..end).ok_or_else(|| {
+                    Error::internal(format!(
+                        "read {label}: derived index artifact ended before its declared length"
+                    ))
+                })?;
+                output.copy_from_slice(source);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -172,8 +249,8 @@ fn read_at(file: &File, bytes: &mut [u8], offset: u64) -> std::io::Result<usize>
 
 #[cfg(test)]
 mod tests {
-    use super::{read, read_exact_at};
-    use crate::ErrorCode;
+    use super::{open, read, read_exact_at};
+    use crate::{ErrorCode, IoBackend};
     use std::fs::{self, File};
     use std::path::Path;
     use tempfile::tempdir;
@@ -204,5 +281,32 @@ mod tests {
         )
         .expect_err("oversized artifact must fail");
         assert_eq!(error.code, ErrorCode::ResourceExhausted);
+    }
+
+    #[test]
+    fn anonymous_mmap_snapshot_is_immutable_and_bounds_checked() {
+        let temporary = tempdir().expect("temporary directory must be available");
+        let relative = Path::new("mapped.bin");
+        let path = temporary.path().join(relative);
+        fs::write(&path, b"0123456789").expect("fixture must write");
+        let file = open(temporary.path(), relative, 10, "mapped fixture")
+            .expect("fixture must open")
+            .expect("fixture must exist");
+        let bytes = file.read_all().expect("fixture must be readable");
+        let reader = file
+            .into_random_access(IoBackend::Mmap, &bytes)
+            .expect("mmap snapshot must build");
+        fs::write(&path, b"x").expect("source file must truncate");
+
+        let mut selected = [0_u8; 4];
+        reader
+            .read_exact_at(3, &mut selected)
+            .expect("snapshot read must succeed");
+        assert_eq!(&selected, b"3456");
+        assert_eq!(reader.io_backend(), IoBackend::Mmap);
+        let error = reader
+            .read_exact_at(8, &mut selected)
+            .expect_err("out-of-range snapshot read must fail");
+        assert_eq!(error.code, ErrorCode::InternalError);
     }
 }

@@ -7,7 +7,7 @@ workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
 The project is an active prototype. HNSW, IVF, HNSW/IVF RaBitQ, L2 Vamana,
-product-quantized L2 DiskANN with native sector-aligned positioned traversal,
+product-quantized L2 DiskANN with typed positioned or immutable mmap-snapshot traversal,
 scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough.
@@ -114,7 +114,7 @@ async fn search(collection: &Collection, query: &SearchQuery) -> Result<Vec<Doc>
 
 `query_async`, `multi_query_async`, and `group_by_async` require an active
 Tokio runtime and execute the complete synchronous snapshot, planner,
-positioned-I/O, fallback, and exact-refinement path on its blocking pool. They
+sidecar-I/O, fallback, and exact-refinement path on its blocking pool. They
 produce the same results and telemetry as their synchronous counterparts; the
 feature is an executor-safety boundary, not a latency claim. Tokio cannot
 cancel `spawn_blocking` work after it starts, so dropping one of these futures
@@ -136,8 +136,8 @@ does not cancel its underlying query.
 - Deterministic product-quantizer training with up to 256 centroids per chunk,
   one-byte codes, query-local ADC tables, and exact full-vector re-ranking.
 - Native 4 KiB-sector Vamana/DiskANN files with fixed full-vector or PQ-code
-  records, CRC validation, bounded positioned reads, and failure-closed
-  in-memory fallback.
+  records, CRC validation, bounded positioned reads or immutable anonymous mmap
+  snapshots, and failure-closed in-memory fallback.
 - Index-only FP16, symmetric INT8, and symmetric INT4 quantization.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
@@ -145,17 +145,34 @@ does not cancel its underlying query.
 Vamana accepts unquantized L2 vectors. `IndexParams::diskann` uses the same
 deterministic graph and enables corpus-trained PQ when `pq_chunk_num > 0`;
 zero selects full-vector graph scoring. A freshly built or rebuilt generation
-traverses in memory. After a validated cache reopen, bounded queries load only
-the required fixed-record sectors through positioned reads and retain a
-request-local sector/node cache. PQ queries build one centroid-distance table
+traverses in memory. After a validated cache reopen, bounded queries use
+portable positioned reads by default and retain a request-local sector/node
+cache. `IoBackend::Mmap` instead copies the already validated sidecar into a
+read-only anonymous memory map at open time and serves the same bounded extents
+from that immutable snapshot. PQ queries build one centroid-distance table
 and sum code distances during graph traversal. Incremental overlays share the
 reader; a full rebuild retrains the codebook and invalidates the reader until
 the next validated reopen. A short read or malformed record falls back to the
 equivalent in-memory full-vector or ADC graph, and authoritative vectors still
 perform final re-ranking. The file is an A3S-native format, not the Microsoft
-DiskANN C++ format. The optional Tokio entry points keep these positioned reads
-off runtime workers; native async file reads and sound file-backed mmap remain
-future accelerators.
+DiskANN C++ format. The mmap snapshot is independent of later replacement or
+truncation of the source file, but open performs a full sidecar copy and keeps
+that additional memory for the handle's lifetime. The optional Tokio entry
+points keep either backend off runtime workers; native async file reads and
+direct file-backed mmap remain future accelerators.
+
+Select mmap for one collection handle with a typed option:
+
+```rust
+use a3s_vec::{Collection, CollectionOptions, IoBackend, Result};
+
+fn open_with_mmap(path: &str) -> Result<Collection> {
+    let mut options = CollectionOptions::new()?;
+    options.set_io_backend(IoBackend::Mmap)?;
+    Collection::open(path, Some(&options))
+}
+```
+
 The same query control selects the bounded list size for both index types:
 
 ```rust
@@ -305,9 +322,9 @@ cache/sidecar pair
 is ignored and rebuilt from recovered documents; read-only opens never repair
 it.
 
-The public API supports read-only handles, configurable durability, explicit
-`flush`, targeted `rebuild_index`, whole-registry `optimize`, and per-handle
-cache-hit/query/candidate plus DiskANN sector-read telemetry.
+The public API supports read-only handles, configurable durability and sidecar
+I/O, explicit `flush`, targeted `rebuild_index`, whole-registry `optimize`, and
+per-handle cache-hit/query/candidate plus DiskANN backend/sector-read telemetry.
 
 ## Current boundaries
 
@@ -315,13 +332,13 @@ cache-hit/query/candidate plus DiskANN sector-read telemetry.
 | --- | --- |
 | Flat, HNSW, IVF | Implemented |
 | HNSW/IVF RaBitQ | Implemented for L2, inner product, and cosine with 1-to-9-bit codes and exact re-ranking |
-| L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned sidecar reads after reopen |
-| L2 DiskANN PQ/ADC and incremental overlays | Implemented in memory and through positioned PQ-code reads after reopen |
+| L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
+| L2 DiskANN PQ/ADC and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot PQ-code reads after reopen |
 | Sector-aligned native Vamana/DiskANN file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
-| On-demand DiskANN query reader | Portable positioned reads plus optional Tokio blocking-pool query entry points; native async file reads and mmap remain roadmap |
+| DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |

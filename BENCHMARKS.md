@@ -56,37 +56,45 @@ noise, while the IVF estimator adds measurable work. The rows are a
 regression baseline for compact-code execution; SIMD and code-only persisted
 layouts remain possible later optimizations.
 
-The positioned-reader Vamana/PQ baseline was recorded on 2026-09-01 on Windows
+The sidecar-reader Vamana/PQ baseline was recorded on 2026-09-01 on Windows
 x86_64 with an Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. It
 uses the same deterministic vectors, query count, rounds, and percentile
 methodology. Both graph families validate L2 only, so their reference is a
-separate exact L2 run. Each positioned row closes and reopens the collection
-read-only, asserts a validated cache hit, performs one untimed warmup, and then
-traverses the A3S-native sidecar. The PQ row uses eight balanced chunks and up
-to 256 centroids per chunk. Open-time full-file validation is excluded;
-operating-system page-cache effects are not controlled.
+separate exact L2 run. Every positioned or mmap row closes and reopens the
+collection read-only, asserts a validated cache hit and the requested backend,
+performs one untimed warmup, and then traverses the A3S-native sidecar. The
+benchmark also asserts identical mapped and positioned result IDs and exact
+backend telemetry counts. PQ uses eight balanced chunks and up to 256 centroids
+per chunk. Open-time full-file validation and the mmap backend's full-copy setup
+are excluded; operating-system page-cache effects on positioned reads are not
+controlled.
 
 | Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) | Sidecar (bytes) | 4 KiB sectors/query |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Exact | L2 | 1.0000 | 143.88 | 130.30 | 198.40 | 328.20 | n/a | n/a | 0.00 |
-| In-memory Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 309.48 | 303.20 | 539.90 | 745.50 | 681,828 | n/a | 0.00 |
-| Positioned Vamana after reopen (same parameters) | L2 | 1.0000 | 1,313.91 | 1,297.90 | 1,634.30 | 1,774.60 | 681,828 | 823,296 | 138.04 |
-| In-memory DiskANN PQ8 (same graph/query controls) | L2 | 1.0000 | 262.71 | 260.90 | 494.20 | 679.40 | 732,668 | n/a | 0.00 |
-| Positioned DiskANN PQ8 after reopen | L2 | 1.0000 | 1,048.10 | 997.10 | 1,596.10 | 1,694.90 | 732,668 | 622,592 | 108.16 |
+| Exact | L2 | 1.0000 | 128.28 | 126.10 | 139.80 | 257.30 | n/a | n/a | 0.00 |
+| In-memory Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 311.75 | 306.60 | 380.00 | 516.90 | 681,828 | n/a | 0.00 |
+| Positioned Vamana after reopen (same parameters) | L2 | 1.0000 | 1,283.52 | 1,264.50 | 1,534.40 | 1,812.30 | 681,828 | 823,296 | 138.04 |
+| Mmap-snapshot Vamana after reopen (same parameters) | L2 | 1.0000 | 846.68 | 827.50 | 1,071.30 | 1,325.40 | 681,828 | 823,296 | 138.04 |
+| In-memory DiskANN PQ8 (same graph/query controls) | L2 | 1.0000 | 269.32 | 261.30 | 309.90 | 405.50 | 732,668 | n/a | 0.00 |
+| Positioned DiskANN PQ8 after reopen | L2 | 1.0000 | 1,036.52 | 977.70 | 1,745.30 | 1,927.60 | 732,668 | 622,592 | 108.16 |
+| Mmap-snapshot DiskANN PQ8 after reopen | L2 | 1.0000 | 702.38 | 708.70 | 766.40 | 825.80 | 732,668 | 622,592 | 108.16 |
 
 This is correctness, compression, and I/O-volume evidence, not an exact-scan
-speedup claim. Against the matching Vamana rows, PQ8 reduced the in-memory
-median by 15.1 percent, the positioned median by 20.2 percent, sidecar bytes by
-24.4 percent, and loaded sectors/query by 21.6 percent while retaining
-recall@10 1.0000. It remained slower than the 143.88 µs exact L2 scan at this
-small corpus. The estimated in-memory payload is 7.5 percent larger because
-the derived cache deliberately retains authoritative-equivalent full vectors
-for validation, fallback, and final refinement in addition to PQ state. Each
-query owns a bounded extent/node cache, so repeated graph edges within one
-query do not repeat file reads. Cross-query caching is left to the operating
-system. The optional Tokio query methods move identical work to the blocking
-pool and therefore make no latency claim. Native async file reads and mmap
-remain open optimizations; RaBitQ evidence is reported in the cosine table
+speedup claim. PQ8 reduced sidecar bytes by 24.4 percent and staged sectors per
+query by 21.6 percent while retaining recall@10 1.0000. Against its matching
+positioned row, the mmap snapshot reduced the measured Vamana median by 34.0
+percent and the PQ8 median by 32.2 percent. Both remained slower than the
+128.28 µs exact L2 scan at this small corpus. The mapped backend is not a
+memory-lazy file mapping: it copies the complete validated sidecar into a
+read-only anonymous map during open and retains that sidecar-sized allocation,
+which this query-only table excludes. The estimated in-memory payload is 7.5
+percent larger for PQ because the derived cache deliberately retains
+authoritative-equivalent full vectors for validation, fallback, and final
+refinement in addition to PQ state. Each query owns a bounded extent/node cache,
+so repeated graph edges within one query do not repeat backend reads. The
+optional Tokio query methods move identical work to the blocking pool and
+therefore make no latency claim. Native async file reads and direct file-backed
+mmap remain open optimizations; RaBitQ evidence is reported in the cosine table
 above.
 
 Immediately before the exact executor replaced full result materialization and
@@ -274,8 +282,9 @@ snapshot/checkpoint/committed-WAL identity. Exact format-2/3 fixtures, older
 version bytes, and missing, stale, corrupt, oversized, or structurally invalid
 files all fall back to rebuilding from documents; a read-only open never writes
 or repairs them. This reopen fixture does not issue queries. Cache-restored
-Vamana and DiskANN generations now use positioned sidecar traversal; their
-separate recall, latency, capacity, and sector-volume evidence appears above.
+Vamana and DiskANN generations use the configured positioned or immutable
+mmap-snapshot sidecar traversal; their separate recall, latency, capacity, and
+sector-volume evidence appears above.
 
 The same benchmark then opens the all-index fixture for writes and measures one
 derived-index rebuild per call. ANN and full rebuilds refresh the cache after
