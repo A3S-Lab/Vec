@@ -31,7 +31,9 @@ impl Collection {
             params.index_type,
             IndexType::Flat
                 | IndexType::Hnsw
+                | IndexType::HnswRabitq
                 | IndexType::Ivf
+                | IndexType::IvfRabitq
                 | IndexType::Diskann
                 | IndexType::Vamana
                 | IndexType::Invert
@@ -171,7 +173,9 @@ fn should_rewrite_index_cache(schema: &CollectionSchema, field_name: Option<&str
                         matches!(
                             params.index_type,
                             IndexType::Hnsw
+                                | IndexType::HnswRabitq
                                 | IndexType::Ivf
+                                | IndexType::IvfRabitq
                                 | IndexType::Diskann
                                 | IndexType::Vamana
                         )

@@ -426,8 +426,8 @@ impl SearchQuery {
     pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
         apply_ivf_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF RaBitQ")
+    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
+        apply_ivf_rabitq_query_controls(&mut self.params, params)
     }
     pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
         unsupported_query_controls("Flat refinement")
@@ -614,8 +614,8 @@ impl GroupBySearchQuery {
     pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
         apply_ivf_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF RaBitQ")
+    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
+        apply_ivf_rabitq_query_controls(&mut self.params, params)
     }
     pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
         unsupported_query_controls("Flat refinement")
@@ -671,6 +671,37 @@ pub(crate) fn apply_ivf_query_controls(
     target.insert("nprobe".into(), json!(params.nprobe));
     target.insert("is_using_refiner".into(), json!(params.is_using_refiner));
     target.insert("scale_factor".into(), json!(params.scale_factor));
+    Ok(())
+}
+
+pub(crate) fn apply_ivf_rabitq_query_controls(
+    target: &mut Map<String, Value>,
+    params: IvfRabitqQueryParams,
+) -> Result<()> {
+    if params.nprobe <= 0 {
+        return Err(Error::invalid_argument(
+            "IVF RaBitQ nprobe must be positive",
+        ));
+    }
+    if !params.radius.is_finite() {
+        return Err(Error::invalid_argument("IVF RaBitQ radius must be finite"));
+    }
+    if !params.scale_factor.is_finite() || params.scale_factor <= 0.0 {
+        return Err(Error::invalid_argument(
+            "IVF RaBitQ scale factor must be finite and positive",
+        ));
+    }
+    clear_ann_query_controls(target);
+    target.insert("type".into(), json!("ivf_rabitq"));
+    target.insert("nprobe".into(), json!(params.nprobe));
+    target.insert("is_linear".into(), json!(params.is_linear));
+    target.insert("is_using_refiner".into(), json!(params.is_using_refiner));
+    target.insert("scale_factor".into(), json!(params.scale_factor));
+    if params.radius == 0.0 {
+        target.remove("radius");
+    } else {
+        target.insert("radius".into(), json!(params.radius));
+    }
     Ok(())
 }
 

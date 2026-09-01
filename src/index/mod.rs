@@ -1,5 +1,6 @@
 //! Immutable, revision-tagged in-memory ANN index generations.
 
+mod build;
 mod cache;
 mod diskann;
 mod diskann_index;
@@ -10,17 +11,20 @@ mod ordinal_map;
 mod ordinals;
 mod product_quantization;
 mod quantization;
+mod rabitq;
+mod rabitq_index;
 mod rebuild;
 mod scalar;
 mod vamana;
 mod vector_query;
 
-use crate::doc::{DocumentMap, VectorValue};
+use crate::doc::DocumentMap;
 use crate::error::{Error, Result};
 use crate::query::SearchQuery;
 use crate::schema::{CollectionSchema, IndexParams};
 use crate::stats::IndexStat;
 use crate::types::{IndexType, MetricType};
+use build::{build_vector_index, encode_vector};
 use diskann_index::DiskannIndex;
 use fts::FtsIndexRegistry;
 use hnsw::HnswIndex;
@@ -29,6 +33,7 @@ use ordinal_map::OrdinalMap;
 pub(crate) use ordinals::OrdinalScores;
 use ordinals::{OrdinalSet, OrdinalTable};
 use quantization::{score, QuantizedVector};
+use rabitq_index::{HnswRabitqIndex, IvfRabitqIndex};
 use roaring::RoaringTreemap;
 use scalar::{ScalarCandidates, ScalarIndexRegistry};
 use std::collections::{BTreeMap, BTreeSet};
@@ -85,7 +90,9 @@ struct AnnSearchContext<'a> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum VectorIndexKind {
     Hnsw(HnswIndex),
+    HnswRabitq(HnswRabitqIndex),
     Ivf(IvfIndex),
+    IvfRabitq(IvfRabitqIndex),
     Diskann(DiskannIndex),
     Vamana(VamanaIndex),
 }
@@ -394,22 +401,37 @@ impl IndexRegistry {
             eligible_count,
             ordinals: &self.ordinals,
         };
-        let result = match &index.base.kind {
-            VectorIndexKind::Hnsw(hnsw) => {
-                index.hnsw_candidates(hnsw, &search).map(|ids| AnnOrdinals {
-                    ids,
-                    diskann_sector_reads: 0,
-                })
-            }
-            VectorIndexKind::Ivf(ivf) => {
-                index.ivf_candidates(ivf, &search).map(|ids| AnnOrdinals {
-                    ids,
-                    diskann_sector_reads: 0,
-                })
-            }
-            VectorIndexKind::Diskann(diskann) => index.diskann_candidates(diskann, &search),
-            VectorIndexKind::Vamana(vamana) => index.vamana_candidates(vamana, &search),
-        };
+        let result =
+            match &index.base.kind {
+                VectorIndexKind::Hnsw(hnsw) => {
+                    index.hnsw_candidates(hnsw, &search).map(|ids| AnnOrdinals {
+                        ids,
+                        diskann_sector_reads: 0,
+                    })
+                }
+                VectorIndexKind::HnswRabitq(hnsw) => index
+                    .hnsw_rabitq_candidates(hnsw, &search)
+                    .map(|ids| AnnOrdinals {
+                        ids,
+                        diskann_sector_reads: 0,
+                    }),
+                VectorIndexKind::Ivf(ivf) => {
+                    index.ivf_candidates(ivf, &search).map(|ids| AnnOrdinals {
+                        ids,
+                        diskann_sector_reads: 0,
+                    })
+                }
+                VectorIndexKind::IvfRabitq(ivf) => {
+                    index
+                        .ivf_rabitq_candidates(ivf, &search)
+                        .map(|ids| AnnOrdinals {
+                            ids,
+                            diskann_sector_reads: 0,
+                        })
+                }
+                VectorIndexKind::Diskann(diskann) => index.diskann_candidates(diskann, &search),
+                VectorIndexKind::Vamana(vamana) => index.vamana_candidates(vamana, &search),
+            };
         Ok(result.map(|result| AnnCandidates {
             selection: CandidateSelection {
                 ids: OrdinalSet::new(&self.ordinals, result.ids),
@@ -639,7 +661,9 @@ impl VectorIndex {
             .saturating_add(self.tombstones.serialized_size());
         let kind = match &self.base.kind {
             VectorIndexKind::Hnsw(index) => index.estimated_payload_bytes(),
+            VectorIndexKind::HnswRabitq(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Ivf(index) => index.estimated_payload_bytes(),
+            VectorIndexKind::IvfRabitq(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Diskann(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Vamana(index) => index.estimated_payload_bytes(),
         };
@@ -773,160 +797,21 @@ fn proportional_candidate_limit(target: usize, population: usize, eligible: usiz
         .min(population)
 }
 
-fn build_vector_index(
-    docs: &DocumentMap,
-    field_name: &str,
-    dimension: u32,
-    params: &IndexParams,
-    source_revision: u64,
-    ordinals: &OrdinalTable,
-) -> Result<VectorIndex> {
-    let dimension = usize::try_from(dimension)
-        .map_err(|_| Error::resource_exhausted("vector dimension exceeds this platform"))?;
-    let vectors = collect_vectors(docs, field_name, params, ordinals)?;
-    let vector_ordinals: RoaringTreemap = vectors.keys().collect();
-    let kind = match params.index_type {
-        IndexType::Hnsw => VectorIndexKind::Hnsw(HnswIndex::build(
-            &vectors,
-            ordinals,
-            positive_parameter(params, "m")?,
-            positive_parameter(params, "ef_construction")?,
-            params.metric_type,
-        )),
-        IndexType::Ivf => VectorIndexKind::Ivf(IvfIndex::build(
-            &vectors,
-            positive_parameter(params, "n_list")?,
-            nonnegative_parameter(params, "n_iters")?,
-        )),
-        IndexType::Diskann => VectorIndexKind::Diskann(DiskannIndex::build(
-            &vectors,
-            ordinals,
-            dimension,
-            positive_parameter(params, "max_degree")?,
-            positive_parameter(params, "list_size")?,
-            nonnegative_parameter(params, "pq_chunk_num")?,
-            finite_parameter(params, "alpha")?,
-            params.metric_type,
-        )?),
-        IndexType::Vamana => VectorIndexKind::Vamana(VamanaIndex::build(
-            &vectors,
-            ordinals,
-            positive_parameter(params, "max_degree")?,
-            positive_parameter(params, "search_list_size")?,
-            finite_parameter(params, "alpha")?,
-            params.metric_type,
-        )),
-        _ => {
-            return Err(Error::not_supported(format!(
-                "{:?} does not have an in-memory ANN implementation",
-                params.index_type
-            )))
-        }
-    };
-    Ok(VectorIndex {
-        params: params.clone(),
-        source_revision,
-        base: Arc::new(VectorIndexBase {
-            vectors,
-            vector_ordinals,
-            kind,
-            diskann: None,
-        }),
-        delta: BTreeMap::new(),
-        delta_ordinals: RoaringTreemap::new(),
-        tombstones: RoaringTreemap::new(),
-    })
-}
-
 fn delta_compaction_limit(base_len: usize) -> usize {
     let fractional =
         base_len.saturating_add(DELTA_COMPACTION_DIVISOR - 1) / DELTA_COMPACTION_DIVISOR;
     fractional.clamp(MIN_DELTA_COMPACTION, MAX_DELTA_COMPACTION)
 }
 
-fn collect_vectors(
-    docs: &DocumentMap,
-    field_name: &str,
-    params: &IndexParams,
-    ordinals: &OrdinalTable,
-) -> Result<OrdinalMap<QuantizedVector>> {
-    docs.iter()
-        .filter_map(|(id, doc)| doc.vector(field_name).map(|vector| (id, vector)))
-        .map(|(id, vector)| {
-            let ordinal = ordinals.ordinal(id).ok_or_else(|| {
-                Error::internal(format!("vector ordinal is missing for document '{id}'"))
-            })?;
-            Ok((ordinal, encode_vector(id, field_name, params, vector)?))
-        })
-        .collect()
-}
-
-fn encode_vector(
-    id: &str,
-    field_name: &str,
-    params: &IndexParams,
-    vector: &VectorValue,
-) -> Result<QuantizedVector> {
-    let dense = vector.to_dense_f32().ok_or_else(|| {
-        Error::resource_exhausted(format!(
-            "document '{id}' field '{field_name}' cannot be represented by the f32 ANN kernel"
-        ))
-    })?;
-    QuantizedVector::encode(dense, params.quantize_type).map_err(|error| {
-        Error::new(
-            error.code,
-            format!(
-                "build {:?} index for document '{id}' field '{field_name}': {}",
-                params.index_type, error.message
-            ),
-        )
-    })
-}
-
-fn positive_parameter(params: &IndexParams, name: &str) -> Result<usize> {
-    let value = params
-        .params
-        .get(name)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            Error::invalid_argument(format!("index parameter '{name}' must be positive"))
-        })?;
-    if value == 0 {
-        return Err(Error::invalid_argument(format!(
-            "index parameter '{name}' must be positive"
-        )));
-    }
-    usize::try_from(value)
-        .map_err(|_| Error::resource_exhausted(format!("index parameter '{name}' is too large")))
-}
-
-fn nonnegative_parameter(params: &IndexParams, name: &str) -> Result<usize> {
-    let value = params
-        .params
-        .get(name)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            Error::invalid_argument(format!("index parameter '{name}' must be non-negative"))
-        })?;
-    usize::try_from(value)
-        .map_err(|_| Error::resource_exhausted(format!("index parameter '{name}' is too large")))
-}
-
-fn finite_parameter(params: &IndexParams, name: &str) -> Result<f64> {
-    params
-        .params
-        .get(name)
-        .and_then(serde_json::Value::as_f64)
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| {
-            Error::invalid_argument(format!("index parameter '{name}' must be a finite number"))
-        })
-}
-
 fn is_in_memory_ann(index_type: IndexType) -> bool {
     matches!(
         index_type,
-        IndexType::Hnsw | IndexType::Ivf | IndexType::Diskann | IndexType::Vamana
+        IndexType::Hnsw
+            | IndexType::HnswRabitq
+            | IndexType::Ivf
+            | IndexType::IvfRabitq
+            | IndexType::Diskann
+            | IndexType::Vamana
     )
 }
 

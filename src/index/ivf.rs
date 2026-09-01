@@ -27,12 +27,8 @@ impl IvfIndex {
             .map(|(ordinal, vector)| (ordinal, vector.decode()))
             .collect();
         let count = n_list.min(decoded.len()).max(1);
-        let mut centroids = diverse_seeds(&decoded, count);
         let iterations = if n_iters == 0 { 3 } else { n_iters };
-        for _ in 0..iterations {
-            let assignments = assign(&decoded, &centroids);
-            centroids = recompute(&decoded, &assignments, &centroids);
-        }
+        let centroids = train_centroids(&decoded, count, iterations);
         let assignments = assign(&decoded, &centroids);
         let mut postings = vec![RoaringTreemap::new(); centroids.len()];
         for ((ordinal, _), centroid) in decoded.iter().zip(assignments) {
@@ -170,6 +166,22 @@ impl IvfIndex {
     }
 }
 
+pub(super) fn train_centroids(
+    items: &[(u64, Vec<f32>)],
+    count: usize,
+    iterations: usize,
+) -> Vec<Vec<f32>> {
+    if items.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let mut centroids = diverse_seeds(items, count.min(items.len()));
+    for _ in 0..iterations {
+        let assignments = assign(items, &centroids);
+        centroids = recompute(items, &assignments, &centroids);
+    }
+    centroids
+}
+
 fn diverse_seeds(items: &[(u64, Vec<f32>)], count: usize) -> Vec<Vec<f32>> {
     let mut selected = vec![0];
     while selected.len() < count {
@@ -250,7 +262,7 @@ fn recompute(
         .collect()
 }
 
-fn squared_l2(left: &[f32], right: &[f32]) -> f64 {
+pub(super) fn squared_l2(left: &[f32], right: &[f32]) -> f64 {
     if left.len() != right.len() {
         return f64::INFINITY;
     }

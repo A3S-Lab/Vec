@@ -23,16 +23,15 @@ pub(super) fn validate_index_configuration(
 
     match params.index_type {
         IndexType::Hnsw => validate_hnsw_configuration(data_type, params),
+        IndexType::HnswRabitq => validate_hnsw_rabitq_configuration(data_type, params),
         IndexType::Ivf => validate_ivf_configuration(data_type, params),
+        IndexType::IvfRabitq => validate_ivf_rabitq_configuration(data_type, params),
         IndexType::Diskann => validate_diskann_configuration(data_type, dimension, params),
         IndexType::Vamana => validate_vamana_configuration(data_type, params),
         IndexType::Flat => validate_flat_configuration(data_type, params),
         IndexType::Invert => validate_invert_configuration(data_type, params),
         IndexType::Fts => validate_fts_configuration(params),
         IndexType::Undefined => Err(Error::invalid_argument("index type must be defined")),
-        unsupported => Err(Error::not_supported(format!(
-            "{unsupported:?} index execution is not implemented"
-        ))),
     }
 }
 
@@ -107,6 +106,11 @@ fn validate_invert_configuration(data_type: DataType, params: &IndexParams) -> R
 
 fn validate_hnsw_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
     validate_ann_base(data_type, params)?;
+    if params.quantize_type == QuantizeType::Rabitq {
+        return Err(Error::invalid_argument(
+            "RaBitQ quantization requires the HnswRabitq index type",
+        ));
+    }
     validate_parameter_names(params, &["m", "ef_construction", "quantize_type"])?;
     positive_integer(params, "m")?;
     positive_integer(params, "ef_construction")?;
@@ -115,6 +119,11 @@ fn validate_hnsw_configuration(data_type: DataType, params: &IndexParams) -> Res
 
 fn validate_ivf_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
     validate_ann_base(data_type, params)?;
+    if params.quantize_type == QuantizeType::Rabitq {
+        return Err(Error::invalid_argument(
+            "RaBitQ quantization requires the IvfRabitq index type",
+        ));
+    }
     validate_parameter_names(params, &["n_list", "n_iters", "use_soar", "quantize_type"])?;
     positive_integer(params, "n_list")?;
     nonnegative_integer(params, "n_iters")?;
@@ -134,6 +143,67 @@ fn validate_ivf_configuration(data_type: DataType, params: &IndexParams) -> Resu
         ));
     }
     validate_redundant_quantize_parameter(params)
+}
+
+fn validate_hnsw_rabitq_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
+    validate_rabitq_base(data_type, params)?;
+    validate_parameter_names(
+        params,
+        &[
+            "m",
+            "ef_construction",
+            "quantize_type",
+            "total_bits",
+            "num_clusters",
+            "sample_count",
+        ],
+    )?;
+    positive_integer(params, "m")?;
+    positive_integer(params, "ef_construction")?;
+    rabitq_bits(params)?;
+    positive_integer(params, "num_clusters")?;
+    nonnegative_integer(params, "sample_count")?;
+    validate_redundant_quantize_parameter(params)
+}
+
+fn validate_ivf_rabitq_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
+    validate_rabitq_base(data_type, params)?;
+    validate_parameter_names(
+        params,
+        &["n_list", "total_bits", "sample_count", "quantize_type"],
+    )?;
+    positive_integer(params, "n_list")?;
+    rabitq_bits(params)?;
+    nonnegative_integer(params, "sample_count")?;
+    validate_redundant_quantize_parameter(params)
+}
+
+fn validate_rabitq_base(data_type: DataType, params: &IndexParams) -> Result<()> {
+    validate_ann_base(data_type, params)?;
+    if params.quantize_type != QuantizeType::Rabitq {
+        return Err(Error::invalid_argument(
+            "RaBitQ index types require Rabitq quantization",
+        ));
+    }
+    if !matches!(
+        params.metric_type,
+        MetricType::L2 | MetricType::Ip | MetricType::Cosine
+    ) {
+        return Err(Error::not_supported(
+            "RaBitQ supports L2, inner-product, and cosine metrics",
+        ));
+    }
+    Ok(())
+}
+
+fn rabitq_bits(params: &IndexParams) -> Result<u64> {
+    let total_bits = positive_integer(params, "total_bits")?;
+    if total_bits > 9 {
+        return Err(Error::invalid_argument(
+            "RaBitQ total_bits must be in 1..=9",
+        ));
+    }
+    Ok(total_bits)
 }
 
 fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
@@ -198,7 +268,11 @@ fn validate_ann_base(data_type: DataType, params: &IndexParams) -> Result<()> {
     }
     if !matches!(
         params.quantize_type,
-        QuantizeType::Undefined | QuantizeType::Fp16 | QuantizeType::Int8 | QuantizeType::Int4
+        QuantizeType::Undefined
+            | QuantizeType::Fp16
+            | QuantizeType::Int8
+            | QuantizeType::Int4
+            | QuantizeType::Rabitq
     ) {
         return Err(Error::not_supported(format!(
             "{:?} ANN quantization is not implemented",

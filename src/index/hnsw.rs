@@ -3,8 +3,7 @@
 mod search;
 
 use self::search::{
-    greedy_search, greedy_search_quantized, search_layer, search_layer_quantized,
-    search_layer_quantized_filtered,
+    greedy_search, greedy_search_by, search_layer, search_layer_by, search_layer_filtered_by,
 };
 use super::ordinal_map::OrdinalMap;
 use super::ordinals::OrdinalTable;
@@ -143,35 +142,38 @@ impl HnswIndex {
         if vectors.is_empty() {
             return RoaringTreemap::new();
         }
-        let ef = self.candidate_limit(requested_ef, topk, vectors.len());
-        if ef >= vectors.len() {
-            return vectors.keys().collect();
+        self.candidates_by(ordinals, requested_ef, topk, &|ordinal| {
+            vectors
+                .get(ordinal)
+                .map(|vector| super::quantization::score(query, vector, metric))
+        })
+    }
+
+    pub(super) fn candidates_by(
+        &self,
+        ordinals: &OrdinalTable,
+        requested_ef: Option<usize>,
+        topk: usize,
+        score_for: &impl Fn(u64) -> Option<f64>,
+    ) -> RoaringTreemap {
+        let vector_count = self.layers.first().map_or(0, OrdinalMap::len);
+        if vector_count == 0 {
+            return RoaringTreemap::new();
+        }
+        let ef = self.candidate_limit(requested_ef, topk, vector_count);
+        if ef >= vector_count {
+            return self.layers[0].keys().collect();
         }
         let Some(mut entry) = self.entry_ordinal else {
             return RoaringTreemap::new();
         };
         for layer in (1..self.layers.len()).rev() {
-            entry = greedy_search_quantized(
-                &self.layers[layer],
-                vectors,
-                ordinals,
-                query,
-                entry,
-                metric,
-            );
+            entry = greedy_search_by(&self.layers[layer], ordinals, entry, score_for);
         }
-        search_layer_quantized(
-            &self.layers[0],
-            vectors,
-            ordinals,
-            query,
-            &[entry],
-            ef,
-            metric,
-        )
-        .into_iter()
-        .take(ef)
-        .collect()
+        search_layer_by(&self.layers[0], &[entry], ef, ordinals, score_for)
+            .into_iter()
+            .take(ef)
+            .collect()
     }
 
     /// Searches for eligible results while retaining every graph node as a
@@ -191,8 +193,35 @@ impl HnswIndex {
         if vectors.is_empty() || filter.eligible_count == 0 || result_limit == 0 {
             return RoaringTreemap::new();
         }
+        self.filtered_candidates_by(
+            ordinals,
+            result_limit,
+            traversal_limit,
+            filter,
+            &|ordinal| {
+                vectors
+                    .get(ordinal)
+                    .map(|vector| super::quantization::score(query, vector, metric))
+            },
+        )
+    }
+
+    pub(super) fn filtered_candidates_by(
+        &self,
+        ordinals: &OrdinalTable,
+        result_limit: usize,
+        traversal_limit: usize,
+        filter: HnswFilter<'_>,
+        score_for: &impl Fn(u64) -> Option<f64>,
+    ) -> RoaringTreemap {
+        if self.layers.first().map_or(true, OrdinalMap::is_empty)
+            || filter.eligible_count == 0
+            || result_limit == 0
+        {
+            return RoaringTreemap::new();
+        }
         if result_limit >= filter.eligible_count {
-            return vectors
+            return self.layers[0]
                 .keys()
                 .filter(|ordinal| {
                     filter.allowed.contains(*ordinal) && !filter.excluded.contains(*ordinal)
@@ -203,25 +232,16 @@ impl HnswIndex {
             return RoaringTreemap::new();
         };
         for layer in (1..self.layers.len()).rev() {
-            entry = greedy_search_quantized(
-                &self.layers[layer],
-                vectors,
-                ordinals,
-                query,
-                entry,
-                metric,
-            );
+            entry = greedy_search_by(&self.layers[layer], ordinals, entry, score_for);
         }
-        search_layer_quantized_filtered(
+        search_layer_filtered_by(
             &self.layers[0],
-            vectors,
-            ordinals,
-            query,
             &[entry],
             result_limit,
             traversal_limit,
-            metric,
-            filter,
+            ordinals,
+            score_for,
+            &|ordinal| filter.allowed.contains(ordinal) && !filter.excluded.contains(ordinal),
         )
         .into_iter()
         .collect()

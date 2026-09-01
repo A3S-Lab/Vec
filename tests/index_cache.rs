@@ -1,6 +1,7 @@
 use a3s_vec::{
     Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
-    FieldSchema, Fts, HnswQueryParams, IndexParams, IndexType, MetricType, SearchQuery,
+    FieldSchema, Fts, HnswQueryParams, IndexParams, IndexType, IvfRabitqQueryParams, MetricType,
+    SearchQuery,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,18 @@ fn diskann_schema() -> CollectionSchema {
         .expect("DiskANN index must be valid");
     CollectionSchema::builder("diskann-pq-cache-contract")
         .add_field(language)
+        .add_field(embedding)
+        .build()
+        .expect("schema must be valid")
+}
+
+fn rabitq_schema(name: &str, params: &IndexParams) -> CollectionSchema {
+    let mut embedding =
+        FieldSchema::new("embedding", DataType::VectorFp32, false, 2).expect("field must be valid");
+    embedding
+        .set_index_params(params)
+        .expect("RaBitQ index must be valid");
+    CollectionSchema::builder(name)
         .add_field(embedding)
         .build()
         .expect("schema must be valid")
@@ -236,6 +249,80 @@ fn create_lexical_fixture(path: &Path) -> Vec<(String, u32)> {
     let expected = lexical_ranking(&collection);
     collection.close().expect("collection must close");
     expected
+}
+
+#[test]
+fn hnsw_and_ivf_rabitq_generations_round_trip_through_the_derived_cache() {
+    for index_type in [IndexType::HnswRabitq, IndexType::IvfRabitq] {
+        let temporary = tempdir().expect("temporary directory must be available");
+        let path = temporary.path().join(format!("rabitq-{index_type:?}"));
+        let params = match index_type {
+            IndexType::HnswRabitq => IndexParams::hnsw_rabitq(MetricType::L2, 8, 32)
+                .expect("HNSW RaBitQ params must be valid"),
+            IndexType::IvfRabitq => IndexParams::ivf_rabitq(MetricType::L2, 8, 7, 64)
+                .expect("IVF RaBitQ params must be valid"),
+            _ => unreachable!("fixture only contains RaBitQ index families"),
+        };
+        let schema = rabitq_schema("rabitq-cache-contract", &params);
+        let collection = Collection::create(
+            path.to_str().expect("collection path must be UTF-8"),
+            &schema,
+            None,
+        )
+        .expect("collection must be created");
+        let docs = documents(128);
+        collection
+            .insert(&docs.iter().collect::<Vec<_>>())
+            .expect("documents must be inserted");
+        let mut query =
+            SearchQuery::new("embedding", &[127.0, 1.0], 8).expect("query must be valid");
+        match index_type {
+            IndexType::HnswRabitq => query
+                .set_hnsw_params(HnswQueryParams::new(128, 0.0, false, true))
+                .expect("HNSW RaBitQ controls must be valid"),
+            IndexType::IvfRabitq => {
+                let mut controls = IvfRabitqQueryParams::new(8, 0.0, false, true);
+                controls
+                    .set_scale_factor(16.0)
+                    .expect("IVF RaBitQ scale must be valid");
+                query
+                    .set_ivf_rabitq_params(controls)
+                    .expect("IVF RaBitQ controls must be valid");
+            }
+            _ => unreachable!("fixture only contains RaBitQ index families"),
+        }
+        let expected = ranking(&collection, &query);
+        collection.close().expect("collection must close");
+        assert!(cache_path(&path).exists());
+
+        let reopened = open_read_only(&path);
+        let stats = reopened.stats().expect("stats must succeed");
+        assert!(stats.index_cache_hit);
+        assert_eq!(stats.indexes[0].index_type, index_type);
+        assert_eq!(ranking(&reopened, &query), expected);
+        reopened.close().expect("read-only collection must close");
+
+        let cache = cache_path(&path);
+        let mut corrupted = fs::read(&cache).expect("RaBitQ cache must exist");
+        let last = corrupted
+            .last_mut()
+            .expect("RaBitQ cache must contain a payload");
+        *last ^= 0x5a;
+        fs::write(&cache, &corrupted).expect("corrupt RaBitQ cache fixture must write");
+        let fallback = open_read_only(&path);
+        assert!(
+            !fallback
+                .stats()
+                .expect("stats must succeed")
+                .index_cache_hit
+        );
+        assert_eq!(ranking(&fallback, &query), expected);
+        fallback.close().expect("fallback collection must close");
+        assert_eq!(
+            fs::read(&cache).expect("corrupt cache must remain readable"),
+            corrupted
+        );
+    }
 }
 
 #[test]

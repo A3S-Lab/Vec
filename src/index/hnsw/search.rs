@@ -1,9 +1,8 @@
 //! Allocation-conscious deterministic HNSW traversal.
 
-use super::HnswFilter;
 use crate::index::ordinal_map::OrdinalMap;
 use crate::index::ordinals::OrdinalTable;
-use crate::index::quantization::{score, score_dense, QuantizedVector};
+use crate::index::quantization::score_dense;
 use crate::types::MetricType;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
@@ -77,25 +76,21 @@ pub(super) fn greedy_search(
     }
 }
 
-pub(super) fn greedy_search_quantized(
+pub(super) fn greedy_search_by(
     layer: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<QuantizedVector>,
     ordinals: &OrdinalTable,
-    query: &[f32],
     entry: u64,
-    metric: MetricType,
+    score_for: &impl Fn(u64) -> Option<f64>,
 ) -> u64 {
     let mut current = entry;
-    let mut current_score = vectors
-        .get(entry)
-        .map_or(f64::NEG_INFINITY, |vector| score(query, vector, metric));
+    let mut current_score = score_for(entry).unwrap_or(f64::NEG_INFINITY);
     loop {
         let mut best = scored_node(current, current_score, ordinals);
         for neighbor in layer.get(current).into_iter().flatten().copied() {
-            let Some(vector) = vectors.get(neighbor) else {
+            let Some(score) = score_for(neighbor) else {
                 continue;
             };
-            let candidate = scored_node(neighbor, score(query, vector, metric), ordinals);
+            let candidate = scored_node(neighbor, score, ordinals);
             if candidate > best {
                 best = candidate;
             }
@@ -124,33 +119,25 @@ pub(super) fn search_layer(
     })
 }
 
-pub(super) fn search_layer_quantized(
+pub(super) fn search_layer_by(
     layer: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<QuantizedVector>,
-    ordinals: &OrdinalTable,
-    query: &[f32],
     entries: &[u64],
     ef: usize,
-    metric: MetricType,
+    ordinals: &OrdinalTable,
+    score_for: &impl Fn(u64) -> Option<f64>,
 ) -> Vec<u64> {
-    bounded_graph_search(layer, entries, ef, ordinals, |ordinal| {
-        vectors
-            .get(ordinal)
-            .map(|vector| score(query, vector, metric))
-    })
+    bounded_graph_search(layer, entries, ef, ordinals, score_for)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn search_layer_quantized_filtered(
+pub(super) fn search_layer_filtered_by(
     layer: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<QuantizedVector>,
-    ordinals: &OrdinalTable,
-    query: &[f32],
     entries: &[u64],
     result_limit: usize,
     traversal_limit: usize,
-    metric: MetricType,
-    filter: HnswFilter<'_>,
+    ordinals: &OrdinalTable,
+    score_for: &impl Fn(u64) -> Option<f64>,
+    is_allowed: &impl Fn(u64) -> bool,
 ) -> Vec<u64> {
     bounded_filtered_graph_search(
         layer,
@@ -158,12 +145,8 @@ pub(super) fn search_layer_quantized_filtered(
         result_limit,
         traversal_limit,
         ordinals,
-        |ordinal| {
-            vectors
-                .get(ordinal)
-                .map(|vector| score(query, vector, metric))
-        },
-        |ordinal| filter.allowed.contains(ordinal) && !filter.excluded.contains(ordinal),
+        score_for,
+        is_allowed,
     )
 }
 

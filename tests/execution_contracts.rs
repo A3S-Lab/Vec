@@ -142,7 +142,7 @@ fn flat_index_is_a_live_exact_path_and_never_ann_telemetry() {
 }
 
 #[test]
-fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
+fn ann_query_controls_are_typed_while_unused_controls_remain_unsupported() {
     let mut vector =
         SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
     vector
@@ -165,11 +165,20 @@ fn ann_query_controls_are_typed_while_future_controls_remain_unsupported() {
     assert_eq!(vamana.params["type"], json!("diskann"));
     assert_eq!(vamana.params["list_size"], json!(32));
 
-    let error = SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10)
-        .expect("query must be valid")
-        .set_ivf_rabitq_params(IvfRabitqQueryParams::new(8, 0.0, false, false))
-        .expect_err("IVF RaBitQ controls must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
+    let mut ivf_rabitq =
+        SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
+    let mut rabitq_params = IvfRabitqQueryParams::new(8, 2.5, false, true);
+    rabitq_params
+        .set_scale_factor(3.0)
+        .expect("RaBitQ refinement scale must be valid");
+    ivf_rabitq
+        .set_ivf_rabitq_params(rabitq_params)
+        .expect("IVF RaBitQ controls must be accepted");
+    assert_eq!(ivf_rabitq.params["type"], json!("ivf_rabitq"));
+    assert_eq!(ivf_rabitq.params["nprobe"], json!(8));
+    assert_eq!(ivf_rabitq.params["radius"], json!(2.5));
+    assert_eq!(ivf_rabitq.params["scale_factor"], json!(3.0));
+    assert_eq!(ivf_rabitq.params["is_using_refiner"], json!(true));
 
     let mut flat =
         SearchQuery::new("embedding", &[1.0, 0.0, 0.0], 10).expect("query must be valid");
@@ -309,10 +318,13 @@ fn supported_exact_query_controls_are_executed_and_observed() {
 }
 
 #[test]
-fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundary() {
+fn live_ann_indexes_are_accepted_while_unused_build_parameters_fail_at_schema_boundary() {
     for params in [
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf(MetricType::Cosine, 64, 10, false).expect("descriptor must be valid"),
+        IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
+        IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
+            .expect("descriptor must be valid"),
         IndexParams::diskann(MetricType::L2, 32, 100, 2).expect("descriptor must be valid"),
         IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid"),
     ] {
@@ -322,21 +334,6 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
             .set_index_params(&params)
             .expect("native ANN indexes must enter the schema");
         assert!(field.has_index());
-    }
-
-    let future_vector_indexes = [
-        IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
-            .expect("descriptor must be valid"),
-        IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
-    ];
-    for params in future_vector_indexes {
-        let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
-            .expect("vector schema must be valid");
-        let error = field
-            .set_index_params(&params)
-            .expect_err("a future physical index must not enter a schema");
-        assert_eq!(error.code, ErrorCode::NotSupported);
-        assert!(!field.has_index());
     }
 
     let mut scalar =

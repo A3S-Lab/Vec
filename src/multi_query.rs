@@ -3,8 +3,9 @@
 use crate::error::{Error, Result};
 use crate::query::{
     apply_diskann_query_controls, apply_fts_query_controls, apply_hnsw_query_controls,
-    apply_ivf_query_controls, unsupported_query_controls, DiskannQueryParams, FlatQueryParams, Fts,
-    FtsQueryParams, HnswQueryParams, IvfQueryParams, IvfRabitqQueryParams, SearchQuery,
+    apply_ivf_query_controls, apply_ivf_rabitq_query_controls, unsupported_query_controls,
+    DiskannQueryParams, FlatQueryParams, Fts, FtsQueryParams, HnswQueryParams, IvfQueryParams,
+    IvfRabitqQueryParams, SearchQuery,
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,8 +133,8 @@ impl SubQuery {
     pub fn set_ivf_params(&mut self, params: IvfQueryParams) -> Result<()> {
         apply_ivf_query_controls(&mut self.params, params)
     }
-    pub fn set_ivf_rabitq_params(&mut self, _params: IvfRabitqQueryParams) -> Result<()> {
-        unsupported_query_controls("IVF RaBitQ")
+    pub fn set_ivf_rabitq_params(&mut self, params: IvfRabitqQueryParams) -> Result<()> {
+        apply_ivf_rabitq_query_controls(&mut self.params, params)
     }
     pub fn set_flat_params(&mut self, _params: FlatQueryParams) -> Result<()> {
         unsupported_query_controls("Flat refinement")

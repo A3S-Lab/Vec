@@ -3,6 +3,7 @@
 use super::diskann_index::DiskannIndex;
 use super::hnsw::{HnswFilter, HnswIndex};
 use super::ivf::{scaled_candidate_limit, IvfIndex};
+use super::rabitq_index::{HnswRabitqIndex, IvfRabitqIndex};
 use super::vamana::VamanaIndex;
 use super::{
     bitmap_count_to_usize, candidate_set_is_sufficient, optional_f32_query_parameter,
@@ -63,6 +64,48 @@ impl VectorIndex {
         candidate_set_is_sufficient(&merged, search).then_some(merged)
     }
 
+    pub(super) fn hnsw_rabitq_candidates(
+        &self,
+        hnsw: &HnswRabitqIndex,
+        search: &AnnSearchContext<'_>,
+    ) -> Option<RoaringTreemap> {
+        let requested_ef = optional_positive_query_parameter(search.query, "ef");
+        let limit = hnsw.candidate_limit(requested_ef, search.topk, search.eligible_count);
+        let base = if let Some(allowed) = search.allowed {
+            let base_eligible_count = self.base_eligible_vector_count(allowed);
+            let traversal_limit =
+                proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
+            if traversal_limit >= search.eligible_count {
+                return None;
+            }
+            hnsw.filtered_candidates(
+                search.ordinals,
+                search.vector,
+                limit,
+                traversal_limit,
+                HnswFilter {
+                    allowed,
+                    excluded: &self.tombstones,
+                    eligible_count: base_eligible_count,
+                },
+            )
+        } else {
+            let base_ef = limit
+                .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
+                .min(self.base.vectors.len());
+            hnsw.candidates(search.ordinals, search.vector, Some(base_ef), search.topk)
+        };
+        let merged = self.merge_candidates(
+            base,
+            search.vector,
+            Some(limit),
+            search.metric,
+            search.allowed,
+            search.ordinals,
+        );
+        candidate_set_is_sufficient(&merged, search).then_some(merged)
+    }
+
     pub(super) fn ivf_candidates(
         &self,
         ivf: &IvfIndex,
@@ -101,6 +144,47 @@ impl VectorIndex {
             search.ordinals,
         );
         candidate_set_is_sufficient(&limited, search).then_some(limited)
+    }
+
+    pub(super) fn ivf_rabitq_candidates(
+        &self,
+        ivf: &IvfRabitqIndex,
+        search: &AnnSearchContext<'_>,
+    ) -> Option<RoaringTreemap> {
+        let requested_nprobe = optional_positive_query_parameter(search.query, "nprobe");
+        let scale_factor =
+            optional_f32_query_parameter(search.query, "scale_factor").unwrap_or(4.0);
+        let limit = scaled_candidate_limit(search.topk, scale_factor, search.eligible_count);
+        let base_limit = if search.allowed.is_some() {
+            limit
+        } else {
+            limit
+                .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
+                .min(self.base.vectors.len())
+        };
+        let base = search.allowed.map_or_else(
+            || ivf.candidates(search.vector, requested_nprobe, base_limit, search.ordinals),
+            |allowed| {
+                ivf.filtered_candidates(
+                    search.vector,
+                    requested_nprobe,
+                    base_limit,
+                    base_limit,
+                    allowed,
+                    &self.tombstones,
+                    search.ordinals,
+                )
+            },
+        );
+        let merged = self.merge_candidates(
+            base,
+            search.vector,
+            Some(limit),
+            search.metric,
+            search.allowed,
+            search.ordinals,
+        );
+        candidate_set_is_sufficient(&merged, search).then_some(merged)
     }
 
     pub(super) fn vamana_candidates(

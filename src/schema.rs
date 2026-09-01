@@ -87,9 +87,9 @@ pub struct FtsIndexParam {
 ///
 /// The open `params` map is retained for adapter compatibility, but collection
 /// schemas reject entries that do not have an execution consumer. Live Flat,
-/// HNSW, IVF, Vamana, DiskANN/PQ, scalar-inverted, and scan-FTS configurations are validated at the
-/// field boundary; attaching a future descriptor returns
-/// [`crate::ErrorCode::NotSupported`].
+/// HNSW, IVF, HNSW/IVF `RaBitQ`, Vamana, DiskANN/PQ, scalar-inverted, and
+/// scan-FTS configurations are validated at the field boundary; attaching a
+/// future descriptor returns [`crate::ErrorCode::NotSupported`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexParams {
     pub index_type: IndexType,
@@ -143,16 +143,19 @@ impl IndexParams {
         total_bits: i32,
         sample_count: i32,
     ) -> Result<Self> {
-        if nlist <= 0 || total_bits <= 0 || sample_count < 0 {
+        if nlist <= 0 || !(1..=9).contains(&total_bits) || sample_count < 0 {
             return Err(Error::invalid_argument(
-                "IVF RaBitQ parameters are out of range",
+                "IVF RaBitQ requires positive nlist, total_bits in 1..=9, and non-negative sample_count",
             ));
         }
         let mut out = Self::new(IndexType::IvfRabitq, metric);
+        out.quantize_type = QuantizeType::Rabitq;
         out.params.insert("n_list".into(), json!(nlist));
         out.params.insert("total_bits".into(), json!(total_bits));
         out.params
             .insert("sample_count".into(), json!(sample_count));
+        out.params
+            .insert("quantize_type".into(), json!(QuantizeType::Rabitq));
         Ok(out)
     }
 
@@ -202,8 +205,29 @@ impl IndexParams {
     }
 
     pub fn hnsw_rabitq(metric: MetricType, m: i32, ef_construction: i32) -> Result<Self> {
+        Self::hnsw_rabitq_with_options(metric, m, ef_construction, 7, 16, 0)
+    }
+
+    pub fn hnsw_rabitq_with_options(
+        metric: MetricType,
+        m: i32,
+        ef_construction: i32,
+        total_bits: i32,
+        num_clusters: i32,
+        sample_count: i32,
+    ) -> Result<Self> {
+        if !(1..=9).contains(&total_bits) || num_clusters <= 0 || sample_count < 0 {
+            return Err(Error::invalid_argument(
+                "HNSW RaBitQ requires total_bits in 1..=9, positive num_clusters, and non-negative sample_count",
+            ));
+        }
         let mut out = Self::hnsw_with_quantize(metric, m, ef_construction, QuantizeType::Rabitq)?;
         out.index_type = IndexType::HnswRabitq;
+        out.params.insert("total_bits".into(), json!(total_bits));
+        out.params
+            .insert("num_clusters".into(), json!(num_clusters));
+        out.params
+            .insert("sample_count".into(), json!(sample_count));
         Ok(out)
     }
 

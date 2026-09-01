@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
-const CACHE_FORMAT_VERSION: u32 = 9;
+const CACHE_FORMAT_VERSION: u32 = 10;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
 const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -179,7 +179,12 @@ fn validate_indexes(
                 .filter(|params| {
                     matches!(
                         params.index_type,
-                        IndexType::Hnsw | IndexType::Ivf | IndexType::Diskann | IndexType::Vamana
+                        IndexType::Hnsw
+                            | IndexType::HnswRabitq
+                            | IndexType::Ivf
+                            | IndexType::IvfRabitq
+                            | IndexType::Diskann
+                            | IndexType::Vamana
                     )
                 })
                 .map(|params| (field, params))
@@ -271,6 +276,7 @@ fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
             };
             hnsw.validates(&index.base.vectors, m, ef_construction)
         }
+        VectorIndexKind::HnswRabitq(hnsw) => validate_hnsw_rabitq(index, hnsw, dimension),
         VectorIndexKind::Ivf(ivf) => {
             if index.params.index_type != IndexType::Ivf {
                 return false;
@@ -280,6 +286,7 @@ fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
             };
             ivf.validates(&index.base.vectors, dimension, n_list)
         }
+        VectorIndexKind::IvfRabitq(ivf) => validate_ivf_rabitq(index, ivf, dimension),
         VectorIndexKind::Diskann(diskann) => {
             if index.params.index_type != IndexType::Diskann {
                 return false;
@@ -321,6 +328,68 @@ fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
             vamana.validates(&index.base.vectors, max_degree, search_list_size, alpha)
         }
     }
+}
+
+fn validate_hnsw_rabitq(
+    index: &VectorIndex,
+    hnsw: &super::rabitq_index::HnswRabitqIndex,
+    dimension: usize,
+) -> bool {
+    if index.params.index_type != IndexType::HnswRabitq {
+        return false;
+    }
+    let Some(m) = positive_param(index, "m") else {
+        return false;
+    };
+    let Some(ef_construction) = positive_param(index, "ef_construction") else {
+        return false;
+    };
+    let Some(total_bits) = positive_param(index, "total_bits") else {
+        return false;
+    };
+    let Some(num_clusters) = positive_param(index, "num_clusters") else {
+        return false;
+    };
+    let Some(sample_count) = nonnegative_param(index, "sample_count") else {
+        return false;
+    };
+    hnsw.validates(
+        &index.base.vectors,
+        dimension,
+        m,
+        ef_construction,
+        total_bits,
+        num_clusters,
+        sample_count,
+        index.params.metric_type,
+    )
+}
+
+fn validate_ivf_rabitq(
+    index: &VectorIndex,
+    ivf: &super::rabitq_index::IvfRabitqIndex,
+    dimension: usize,
+) -> bool {
+    if index.params.index_type != IndexType::IvfRabitq {
+        return false;
+    }
+    let Some(n_list) = positive_param(index, "n_list") else {
+        return false;
+    };
+    let Some(total_bits) = positive_param(index, "total_bits") else {
+        return false;
+    };
+    let Some(sample_count) = nonnegative_param(index, "sample_count") else {
+        return false;
+    };
+    ivf.validates(
+        &index.base.vectors,
+        dimension,
+        n_list,
+        total_bits,
+        sample_count,
+        index.params.metric_type,
+    )
 }
 
 fn expected_vector_ordinals(

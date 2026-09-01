@@ -2,7 +2,8 @@
 
 use a3s_vec::{
     Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
-    FieldSchema, HnswQueryParams, IndexParams, IvfQueryParams, MetricType, SearchQuery,
+    FieldSchema, HnswQueryParams, IndexParams, IvfQueryParams, IvfRabitqQueryParams, MetricType,
+    SearchQuery,
 };
 use std::fs;
 use std::hint::black_box;
@@ -24,12 +25,28 @@ struct Measurement {
     rankings: Vec<Vec<String>>,
 }
 
+struct CosineBenchmark {
+    exact: Measurement,
+    hnsw: Measurement,
+    hnsw_payload: u64,
+    hnsw_rabitq: Measurement,
+    hnsw_rabitq_payload: u64,
+    ivf: Measurement,
+    ivf_payload: u64,
+    ivf_rabitq: Measurement,
+    ivf_rabitq_payload: u64,
+}
+
 struct BenchmarkReport {
     exact: Measurement,
     hnsw: Measurement,
     hnsw_payload: u64,
+    hnsw_rabitq: Measurement,
+    hnsw_rabitq_payload: u64,
     ivf: Measurement,
     ivf_payload: u64,
+    ivf_rabitq: Measurement,
+    ivf_rabitq_payload: u64,
     exact_l2: Measurement,
     vamana: Measurement,
     vamana_positioned: Measurement,
@@ -201,6 +218,80 @@ fn run_pq_fixture(collection: &Collection, queries: &[Vec<f32>]) -> (Measurement
     (measurement, estimated_payload_bytes(collection))
 }
 
+fn run_cosine_fixture(collection: &Collection, queries: &[Vec<f32>]) -> CosineBenchmark {
+    let exact = run_queries(collection, queries, |_| {});
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::hnsw(MetricType::Cosine, 16, 96).expect("HNSW descriptor must be valid"),
+        )
+        .expect("HNSW index must build");
+    let hnsw = run_queries(collection, queries, |query| {
+        query
+            .set_hnsw_params(HnswQueryParams::new(64, 0.0, false, true))
+            .expect("HNSW controls must be valid");
+    });
+    let hnsw_payload = estimated_payload_bytes(collection);
+
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 96)
+                .expect("HNSW RaBitQ descriptor must be valid"),
+        )
+        .expect("HNSW RaBitQ index must build");
+    let hnsw_rabitq = run_queries(collection, queries, |query| {
+        query
+            .set_hnsw_params(HnswQueryParams::new(64, 0.0, false, true))
+            .expect("HNSW RaBitQ controls must be valid");
+    });
+    let hnsw_rabitq_payload = estimated_payload_bytes(collection);
+
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::ivf(MetricType::Cosine, 64, 8, false)
+                .expect("IVF descriptor must be valid"),
+        )
+        .expect("IVF index must build");
+    let ivf = run_queries(collection, queries, |query| {
+        query
+            .set_ivf_params(IvfQueryParams::new(8, true, 8.0))
+            .expect("IVF controls must be valid");
+    });
+    let ivf_payload = estimated_payload_bytes(collection);
+
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::ivf_rabitq(MetricType::Cosine, 64, 7, 1_000)
+                .expect("IVF RaBitQ descriptor must be valid"),
+        )
+        .expect("IVF RaBitQ index must build");
+    let ivf_rabitq = run_queries(collection, queries, |query| {
+        let mut controls = IvfRabitqQueryParams::new(8, 0.0, false, true);
+        controls
+            .set_scale_factor(8.0)
+            .expect("IVF RaBitQ refinement scale must be valid");
+        query
+            .set_ivf_rabitq_params(controls)
+            .expect("IVF RaBitQ controls must be valid");
+    });
+    let ivf_rabitq_payload = estimated_payload_bytes(collection);
+
+    CosineBenchmark {
+        exact,
+        hnsw,
+        hnsw_payload,
+        hnsw_rabitq,
+        hnsw_rabitq_payload,
+        ivf,
+        ivf_payload,
+        ivf_rabitq,
+        ivf_rabitq_payload,
+    }
+}
+
 fn run_positioned_fixture(path: &Path, queries: &[Vec<f32>]) -> (Measurement, f64) {
     let mut read_only = CollectionOptions::new().expect("options must be valid");
     read_only
@@ -274,6 +365,24 @@ fn print_report(report: &BenchmarkReport) {
         micros(report.ivf.p95),
         micros(report.ivf.p99),
         report.ivf_payload,
+    );
+    println!(
+        "hnsw_rabitq7_ef64,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0,0.00",
+        recall(&report.exact.rankings, &report.hnsw_rabitq.rankings),
+        micros_per_query(report.hnsw_rabitq.median_round),
+        micros(report.hnsw_rabitq.p50),
+        micros(report.hnsw_rabitq.p95),
+        micros(report.hnsw_rabitq.p99),
+        report.hnsw_rabitq_payload,
+    );
+    println!(
+        "ivf_rabitq7_nprobe8_refine80,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0,0.00",
+        recall(&report.exact.rankings, &report.ivf_rabitq.rankings),
+        micros_per_query(report.ivf_rabitq.median_round),
+        micros(report.ivf_rabitq.p50),
+        micros(report.ivf_rabitq.p95),
+        micros(report.ivf_rabitq.p99),
+        report.ivf_rabitq_payload,
     );
     println!(
         "exact,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0,0,0.00",
@@ -359,33 +468,7 @@ fn main() {
         .expect("documents must be inserted");
     let queries = query_vectors();
 
-    let exact = run_queries(&collection, &queries, |_| {});
-    collection
-        .create_index(
-            "embedding",
-            &IndexParams::hnsw(MetricType::Cosine, 16, 96).expect("HNSW descriptor must be valid"),
-        )
-        .expect("HNSW index must build");
-    let hnsw = run_queries(&collection, &queries, |query| {
-        query
-            .set_hnsw_params(HnswQueryParams::new(64, 0.0, false, true))
-            .expect("HNSW controls must be valid");
-    });
-    let hnsw_payload = estimated_payload_bytes(&collection);
-
-    collection
-        .create_index(
-            "embedding",
-            &IndexParams::ivf(MetricType::Cosine, 64, 8, false)
-                .expect("IVF descriptor must be valid"),
-        )
-        .expect("IVF index must build");
-    let ivf = run_queries(&collection, &queries, |query| {
-        query
-            .set_ivf_params(IvfQueryParams::new(8, true, 8.0))
-            .expect("IVF controls must be valid");
-    });
-    let ivf_payload = estimated_payload_bytes(&collection);
+    let cosine = run_cosine_fixture(&collection, &queries);
 
     let (exact_l2, vamana, vamana_payload) = run_vamana_fixture(&collection, &queries);
     collection.close().expect("collection must close");
@@ -405,11 +488,15 @@ fn main() {
     let (pq_positioned, pq_sectors_per_query) = run_positioned_fixture(&collection_path, &queries);
     let pq_sidecar = sidecar_bytes(&collection_path);
     print_report(&BenchmarkReport {
-        exact,
-        hnsw,
-        hnsw_payload,
-        ivf,
-        ivf_payload,
+        exact: cosine.exact,
+        hnsw: cosine.hnsw,
+        hnsw_payload: cosine.hnsw_payload,
+        hnsw_rabitq: cosine.hnsw_rabitq,
+        hnsw_rabitq_payload: cosine.hnsw_rabitq_payload,
+        ivf: cosine.ivf,
+        ivf_payload: cosine.ivf_payload,
+        ivf_rabitq: cosine.ivf_rabitq,
+        ivf_rabitq_payload: cosine.ivf_rabitq_payload,
         exact_l2,
         vamana,
         vamana_positioned,

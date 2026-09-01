@@ -569,7 +569,10 @@ fn graph_storage(kind: &VectorIndexKind) -> Option<(&VamanaIndex, Option<&Produc
     match kind {
         VectorIndexKind::Diskann(index) => Some((index.graph(), index.quantizer())),
         VectorIndexKind::Vamana(index) => Some((index, None)),
-        VectorIndexKind::Hnsw(_) | VectorIndexKind::Ivf(_) => None,
+        VectorIndexKind::Hnsw(_)
+        | VectorIndexKind::HnswRabitq(_)
+        | VectorIndexKind::Ivf(_)
+        | VectorIndexKind::IvfRabitq(_) => None,
     }
 }
 

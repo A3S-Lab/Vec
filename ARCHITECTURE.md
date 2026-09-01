@@ -73,6 +73,7 @@ crates/vec/
 │   │   └── validation.rs      # write normalization and validation
 │   ├── index/
 │   │   ├── mod.rs             # revision-tagged index registry and planner
+│   │   ├── build.rs           # complete immutable ANN base construction
 │   │   ├── cache.rs           # validated derived-index cache + restore gate
 │   │   ├── diskann.rs         # native sector-aligned Vamana/DiskANN codec
 │   │   ├── diskann/
@@ -93,6 +94,10 @@ crates/vec/
 │   │   ├── ordinals.rs        # shared persistent ID/ordinal generation
 │   │   ├── product_quantization.rs # deterministic codebooks/codes/ADC tables
 │   │   ├── quantization.rs    # index-only FP16/INT8/packed-INT4 codecs
+│   │   ├── rabitq.rs           # multi-bit codes and unbiased estimator
+│   │   ├── rabitq/
+│   │   │   └── rotation.rs     # deterministic signed Hadamard rotation
+│   │   ├── rabitq_index.rs     # HNSW/IVF RaBitQ execution adapters
 │   │   ├── rebuild.rs         # targeted generation rebuild coordination
 │   │   ├── scalar.rs          # persistent dictionaries + Roaring postings
 │   │   └── vector_query.rs     # ANN base/overlay candidate traversal
@@ -129,7 +134,7 @@ crates/vec/
     └── vector_codecs.rs       # native codec/metric/storage contracts
 ```
 
-The checked-in `index/` module owns real HNSW/IVF/Vamana/DiskANN candidate generation,
+The checked-in `index/` module owns real HNSW/IVF/RaBitQ/Vamana/DiskANN candidate generation,
 scalar posting dictionaries, indexed BM25 term-frequency postings, and their
 revision-aware selection contract. It also owns the native sector-aligned
 Vamana/DiskANN codec and positioned query reader plus its fallback, corruption, and
@@ -262,15 +267,17 @@ Vamana owns `max_degree`, build/search list sizes, alpha, and deterministic
 two-pass RobustPrune construction. DiskANN owns the same graph controls plus
 `pq_chunk_num`; positive chunk counts train generation-scoped product
 codebooks and select ADC traversal, while zero keeps full-vector traversal.
-HNSW and IVF own optional FP16/INT8/INT4 index quantization; every ANN path uses
-exact re-ranking. FTS
+HNSW and IVF own optional FP16/INT8/INT4 index quantization. Their dedicated
+RaBitQ families own deterministic center training, one-to-nine-bit compact
+codes, HNSW `ef`, IVF `nprobe`, and bounded exact refinement; every ANN path
+uses exact re-ranking. FTS
 owns standard, whitespace, n-gram, and optional Jieba tokenizers, persistent
 term-frequency postings, document lengths, exact `f64` BM25 corpus statistics,
 the OR/AND analyzed-term default operator, ordered lowercase/ASCII-folding/
 Snowball-stemmer filters, and structured boolean/phrase expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-DiskANN mmap/async acceleration, RaBitQ,
+DiskANN mmap/async acceleration,
 wildcard/fielded/boosted/fuzzy/range FTS syntax, and
 tokenizer extras without an execution consumer return `NotSupported` before
 mutation. Unknown
@@ -369,10 +376,11 @@ still a prototype; a more compact schema delta format may replace it only with
 equivalent recovery tests.
 
 `indexes/index-cache.bin` and `indexes/diskann-graph.bin` are never referenced
-by the manifest and are never commit points. Cache format 9 stores the shared
-ordinal table plus HNSW/IVF/Vamana/DiskANN, PQ codebooks and codes, scalar,
-FTS, parsed tokenizer, and ordered token-filter generations; the structurally
-different format-2/3/4/5/6/7/8
+by the manifest and are never commit points. Cache format 10 stores the shared
+ordinal table plus HNSW/IVF/RaBitQ/Vamana/DiskANN, RaBitQ rotations, centers,
+compact codes, PQ codebooks and codes, scalar, FTS, parsed tokenizer, and
+ordered token-filter generations; the structurally different
+format-2/3/4/5/6/7/8/9
 payloads are ignored and rebuilt rather than reinterpreted. The
 cache has its own magic, format version, payload length, and CRC, with a 512
 MiB payload bound. Reuse
@@ -427,13 +435,13 @@ invalid record falls back to the equivalent in-memory full-vector or ADC graph.
 `diskann_sector_read_count` report only successful positioned traversals.
 
 `rebuild_index(field)` clones the current registry, rebuilds only the named
-HNSW, IVF, Vamana, DiskANN, scalar, or FTS generation against the shared ordinal table,
+HNSW, IVF, HNSW/IVF RaBitQ, Vamana, DiskANN, scalar, or FTS generation against the shared ordinal table,
 and
 publishes once. Unrelated immutable generations remain shared. `optimize()` is
 the explicit whole-registry rebuild; neither path mutates authoritative
 documents or their revision. A scalar/FTS-only rebuild preserves exact logical
 content and therefore does not rewrite the equivalent cache generation;
-HNSW/IVF/Vamana/DiskANN rebuilds and `optimize()` refresh it after publication.
+HNSW/IVF/RaBitQ/Vamana/DiskANN rebuilds and `optimize()` refresh it after publication.
 
 Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
 committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
@@ -473,7 +481,7 @@ The target and fallback implementations are:
 | L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
 | L2 DiskANN/PQ | Vamana graph + deterministic per-chunk codebooks/codes + ADC + bounded overlays | In-memory ADC + flat re-rank |
 | DiskANN query reader | Request-local positioned full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
-| RaBitQ | Binary/scalar codes and refinement | Full-vector re-rank |
+| HNSW/IVF RaBitQ | Fixed-seed signed Hadamard rotation + compact 1-to-9-bit residual codes + unbiased traversal/refinement estimator | Full-vector re-rank/filter fallback |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
 | FTS | Contiguous term/posting/length bases + persistent deltas; Unicode tokenizers/filters, structured boolean/phrase AST, BM25 | Exact token scan fallback |
 
@@ -485,7 +493,7 @@ number is repeated. Any mismatch makes open ignore the cache rather than
 return unverifiable results.
 
 At the current baseline, Flat executes the exact oracle directly. HNSW, IVF,
-L2 Vamana, and L2 DiskANN select candidates only when the immutable registry
+HNSW/IVF RaBitQ, L2 Vamana, and L2 DiskANN select candidates only when the immutable registry
 entry matches the captured collection revision and metric; otherwise planning
 falls back to Flat. Each
 revision shares a complete base with older readers and owns a bounded overlay;
@@ -497,8 +505,9 @@ re-ranking then matches Flat ordering and scores. A freshly built Vamana base
 traverses in memory; a cache-restored base uses the native sidecar's positioned
 reader for bounded traversal and fails closed to that same memory graph.
 DiskANN follows the same lifecycle, but a positive `pq_chunk_num` uses ADC for
-both in-memory and positioned traversal. Standalone RaBitQ descriptors remain
-serializable for adapters but cannot attach to a schema. Scalar generations use
+both in-memory and positioned traversal. RaBitQ uses compact codes only for
+candidate traversal/refinement and retains the same authoritative exact-score
+handoff. Scalar generations use
 the same source-revision
 check. Equality,
 range, `IN`, null, wildcard, prefix, and suffix leaves produce exact bitmaps;
@@ -519,6 +528,20 @@ sort by ascending primary key even when mutation order assigned the opposite
 ordinal order. The same kernel builds graph connections and serves queries,
 replacing repeated whole-vector sorts and front removals without changing the
 deterministic candidate contract.
+
+RaBitQ first normalizes vectors for cosine and trains deterministic Lloyd
+centers over either the full generation or the configured evenly spaced
+sample, raised to at least the requested center count. Four fixed-seed
+sign/Hadamard rounds form a portable orthogonal random
+rotation with power-of-two zero padding. Each rotated residual stores its sign
+bit plus zero to eight extended magnitude bits, packed without byte alignment;
+an iterative least-squares rescale maximizes residual/code alignment. Query
+rotation is computed once. HNSW feeds the unbiased residual estimator directly
+into the shared graph heap, while IVF probes its ordinal postings, ranks the
+bounded refiner set with the same estimator, and then hands ordinals to exact
+document scoring. L2 uses center-relative distance estimation; inner product
+and normalized cosine use center plus residual dot estimation. Delta vectors
+remain full precision until normal compaction rebuilds and retrains the base.
 
 Vamana starts at the vector nearest the dataset centroid. It initializes a
 seeded R-regular directed graph and performs two deterministic build passes,
@@ -586,8 +609,8 @@ Request
   → parse each filter and FTS expression once
   → derive a revision-matched scalar bitmap prefilter when safe
   → refine a conservative bitmap before bounded vector candidate selection
-  → select matching HNSW/IVF/Vamana/DiskANN/FTS generations or exact scan fallbacks
-  → exact-score a selective set, or push a larger eligible set into HNSW/IVF/Vamana/DiskANN
+  → select matching HNSW/IVF/RaBitQ/Vamana/DiskANN/FTS generations or exact scan fallbacks
+  → exact-score a selective set, or push a larger eligible set into HNSW/IVF/RaBitQ/Vamana/DiskANN
   → traverse indexed term postings or execute scan BM25 with identical stats
   → retain exact dense/sparse/FTS results in a deterministic bounded top-k heap
   → fuse exact branch results when requested

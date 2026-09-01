@@ -12,8 +12,8 @@ memory, Darwin arm64, Rust/Cargo 1.98.0.
 ## Query recall and latency
 
 `benches/ann_recall.rs` creates 2,000 vectors with 32 dimensions and runs 48
-top-10 queries for cosine exact/HNSW/IVF and L2 exact/Vamana/DiskANN-PQ modes. One untimed
-warmup precedes each mode. `Median round` is the
+top-10 queries for cosine exact/HNSW/IVF, HNSW/IVF RaBitQ, and L2
+exact/Vamana/DiskANN-PQ modes. One untimed warmup precedes each mode. `Median round` is the
 median of five timed rounds divided by 48; p50/p95/p99 use nearest-rank
 percentiles over all 240 individual queries. Index construction is excluded.
 
@@ -32,6 +32,30 @@ ANN vectors, ordinal slot membership, graph edges, centroids, and postings. It
 excludes allocator/container overhead plus authoritative document storage; it
 is not process RSS or a heap-profiler measurement.
 
+The RaBitQ rows were added on 2026-09-01 and measured on Windows x86_64 with an
+Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. The table below is
+the final post-change run after numeric hardening. Both variants use seven bits;
+HNSW uses 16 centers and `ef=64`, while IVF uses 64 lists/centers,
+`nprobe=8`, a 1,000-vector training sample, and an 80-vector exact-refiner
+limit. All modes keep authoritative vectors for final public scoring.
+
+| Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Exact | Cosine | 1.0000 | 180.37 | 169.70 | 228.60 | 244.90 | n/a |
+| HNSW | Cosine | 1.0000 | 123.56 | 120.60 | 170.80 | 236.80 | 795,592 |
+| HNSW RaBitQ7 | Cosine | 1.0000 | 122.96 | 120.70 | 170.40 | 236.60 | 949,664 |
+| IVF | Cosine | 0.9083 | 68.00 | 67.20 | 88.80 | 129.30 | 276,028 |
+| IVF RaBitQ7 | Cosine | 0.9083 | 91.72 | 84.00 | 149.40 | 243.30 | 436,244 |
+
+The fixed fixture shows no recall regression from RaBitQ: HNSW remains 1.0000
+and both IVF variants remain 0.9083, where the shared eight-list probe window
+is the limiting factor. It is not a memory or speedup claim. The deterministic
+payload estimate intentionally counts full refinement vectors plus RaBitQ
+centers/codes. At only 32 dimensions the HNSW medians are within run-to-run
+noise, while the IVF estimator adds measurable work. The rows are a
+regression baseline for compact-code execution; SIMD and code-only persisted
+layouts remain possible later optimizations.
+
 The positioned-reader Vamana/PQ baseline was recorded on 2026-09-01 on Windows
 x86_64 with an Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. It
 uses the same deterministic vectors, query count, rounds, and percentile
@@ -44,23 +68,24 @@ operating-system page-cache effects are not controlled.
 
 | Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) | Sidecar (bytes) | 4 KiB sectors/query |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Exact | L2 | 1.0000 | 135.29 | 129.90 | 145.70 | 241.60 | n/a | n/a | 0.00 |
-| In-memory Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 302.42 | 300.30 | 345.20 | 429.90 | 681,828 | n/a | 0.00 |
-| Positioned Vamana after reopen (same parameters) | L2 | 1.0000 | 1,319.95 | 1,330.70 | 1,512.10 | 1,616.10 | 681,828 | 823,296 | 138.04 |
-| In-memory DiskANN PQ8 (same graph/query controls) | L2 | 1.0000 | 256.45 | 258.20 | 290.50 | 321.50 | 732,668 | n/a | 0.00 |
-| Positioned DiskANN PQ8 after reopen | L2 | 1.0000 | 959.81 | 961.60 | 1,094.40 | 1,232.60 | 732,668 | 622,592 | 108.16 |
+| Exact | L2 | 1.0000 | 143.88 | 130.30 | 198.40 | 328.20 | n/a | n/a | 0.00 |
+| In-memory Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 309.48 | 303.20 | 539.90 | 745.50 | 681,828 | n/a | 0.00 |
+| Positioned Vamana after reopen (same parameters) | L2 | 1.0000 | 1,313.91 | 1,297.90 | 1,634.30 | 1,774.60 | 681,828 | 823,296 | 138.04 |
+| In-memory DiskANN PQ8 (same graph/query controls) | L2 | 1.0000 | 262.71 | 260.90 | 494.20 | 679.40 | 732,668 | n/a | 0.00 |
+| Positioned DiskANN PQ8 after reopen | L2 | 1.0000 | 1,048.10 | 997.10 | 1,596.10 | 1,694.90 | 732,668 | 622,592 | 108.16 |
 
 This is correctness, compression, and I/O-volume evidence, not an exact-scan
 speedup claim. Against the matching Vamana rows, PQ8 reduced the in-memory
-median by 15.2 percent, the positioned median by 27.3 percent, sidecar bytes by
+median by 15.1 percent, the positioned median by 20.2 percent, sidecar bytes by
 24.4 percent, and loaded sectors/query by 21.6 percent while retaining
-recall@10 1.0000. It remained slower than the 135.29 µs exact L2 scan at this
+recall@10 1.0000. It remained slower than the 143.88 µs exact L2 scan at this
 small corpus. The estimated in-memory payload is 7.5 percent larger because
 the derived cache deliberately retains authoritative-equivalent full vectors
 for validation, fallback, and final refinement in addition to PQ state. Each
 query owns a bounded extent/node cache, so repeated graph edges within one
 query do not repeat file reads. Cross-query caching is left to the operating
-system. RaBitQ, mmap, and asynchronous I/O remain open optimizations.
+system. Mmap and asynchronous I/O remain open optimizations; RaBitQ evidence
+is reported in the cosine table above.
 
 Immediately before the exact executor replaced full result materialization and
 sorting with a deterministic bounded top-k heap, the same exact fixture produced
@@ -237,9 +262,9 @@ its row, so its 0.4 percent difference is treated as measurement noise rather
 than a binary-decoding regression.
 
 A cache hit still performs snapshot/WAL recovery, document normalization and
-validation, cache decoding, and structural/content validation. Cache format 9
-contains the shared ordinal table plus HNSW/IVF/Vamana/DiskANN, PQ state,
-scalar, FTS, parsed tokenizer, and ordered token-filter generations. A Vamana
+validation, cache decoding, and structural/content validation. Cache format 10
+contains the shared ordinal table plus HNSW/IVF/RaBitQ/Vamana/DiskANN, PQ
+state, scalar, FTS, parsed tokenizer, and ordered token-filter generations. A Vamana
 or DiskANN hit also validates the native 4 KiB-sector graph/vector-or-code
 sidecar. Both artifacts are
 non-authoritative and bound to the format, schema, revision, and exact manifest
