@@ -84,8 +84,10 @@ the derived cache deliberately retains authoritative-equivalent full vectors
 for validation, fallback, and final refinement in addition to PQ state. Each
 query owns a bounded extent/node cache, so repeated graph edges within one
 query do not repeat file reads. Cross-query caching is left to the operating
-system. Mmap and asynchronous I/O remain open optimizations; RaBitQ evidence
-is reported in the cosine table above.
+system. The optional Tokio query methods move identical work to the blocking
+pool and therefore make no latency claim. Native async file reads and mmap
+remain open optimizations; RaBitQ evidence is reported in the cosine table
+above.
 
 Immediately before the exact executor replaced full result materialization and
 sorting with a deterministic bounded top-k heap, the same exact fixture produced

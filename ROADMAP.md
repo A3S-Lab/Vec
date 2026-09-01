@@ -94,7 +94,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 205 passing unit/integration tests plus four
+all-feature baseline has 208 passing unit/integration tests plus four
 compile-fail doctests; default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -116,7 +116,10 @@ runner work. HNSW/IVF/RaBitQ/Vamana/DiskANN schema and query controls execute ag
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
 immutable generations. Native sector-aligned Vamana/DiskANN files, bounded
 positioned query traversal, PQ/ADC compression, and portable multi-bit RaBitQ
-are live; mmap/async acceleration remains future work.
+are live. The optional `async` feature moves query, multi-query, and group-by
+snapshot/planner/positioned-I/O work to Tokio's blocking pool with identical
+results, fallbacks, and telemetry. Native async file reads and sound
+file-backed mmap remain future work.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -604,6 +607,14 @@ execution are implemented.
   scalar-filter navigation, targeted rebuild, optimize, deterministic
   training, exhaustive-oracle ranking, fixed-seed recall, all bit widths,
   cache corruption fallback, and cache-format-10 reopen are covered.
+- Completed: the `async` feature exposes `query_async`, `multi_query_async`,
+  and `group_by_async`. Each method requires an active Tokio runtime and moves
+  the complete synchronous snapshot, planner, positioned sidecar traversal,
+  corruption fallback, exact refinement, and telemetry path to its blocking
+  pool. A cache-reopened PQ DiskANN integration fixture proves bit-identical
+  single, fused, and grouped results and then truncates the sidecar to prove
+  identical in-memory fallback; unit coverage proves work leaves the runtime
+  thread and missing-runtime use returns `FailedPrecondition`.
 - Completed: the repeated 2,000-vector cosine benchmark now includes HNSW and
   IVF RaBitQ7. On the latter 2026-09-01 Windows run, HNSW RaBitQ retained
   recall@10 1.0000 at a 122.96 microsecond median versus 123.56 for HNSW; IVF
@@ -620,8 +631,9 @@ execution are implemented.
   positioned medians were 262.71 and 1,048.10 microseconds versus 309.48 and
   1,313.91 for Vamana. Exact L2 remained faster at 143.88 microseconds, so no
   exact-scan speedup is claimed.
-- Remaining: optional mmap/async I/O acceleration and the Linux/macOS Intel
-  runtime portability gate. Non-L2 Vamana/DiskANN remains
+- Remaining: native async file reads or a sound immutable-file mmap backend,
+  plus the Linux/macOS Intel runtime portability gate. Non-L2 Vamana/DiskANN
+  remains
   explicit `NotSupported` until a correct metric transform is implemented.
 
 ## Phase 7 — Advanced collection API
@@ -669,7 +681,8 @@ execution are implemented.
 1. Land the contract/types and reference flat engine.
 2. Land WAL/snapshot recovery before ANN optimization.
 3. Add HNSW/IVF and FTS/scalar indexes behind the same planner contracts.
-4. Extend the completed DiskANN/PQ/RaBitQ path with mmap/async acceleration
-   only after equivalent exact-reference, recall, and corruption tests are green.
+4. Extend the completed DiskANN/PQ/RaBitQ path beyond scheduler-safe Tokio
+   query offload with native async reads or mmap only after equivalent
+   exact-reference, recall, and corruption tests are green.
 5. Finish API compatibility, Intel validation, and A3S integration as release
    work rather than mixing them into the storage core.

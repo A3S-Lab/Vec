@@ -66,6 +66,7 @@ crates/vec/
 │   ├── collection/
 │   │   ├── checkpoint.rs      # checkpoint + derived-cache maintenance
 │   │   ├── configuration.rs   # process defaults + collection overrides
+│   │   ├── async_api.rs       # optional Tokio blocking-pool query entry points
 │   │   ├── index_api.rs       # create/drop/rebuild/optimize publication
 │   │   ├── query_api.rs       # query/fetch/iterator collection API
 │   │   ├── query_contract.rs  # schema-derived route/type/dimension checks
@@ -121,6 +122,7 @@ crates/vec/
 └── tests/
     ├── concurrency.rs         # snapshot and writer-serialization evidence
     ├── ann_contracts.rs       # exhaustive, recall, lifecycle, quantization
+    ├── async_queries.rs       # Tokio/DiskANN parity and corruption fallback
     ├── contracts.rs           # typed query/write contract coverage
     ├── differential_fts.rs    # independent scan-BM25 reference
     ├── differential_oracle.rs # independent dense/sparse reference
@@ -253,9 +255,12 @@ racing whole-corpus posting updates always receive one complete bitmap/document
 revision. An equivalent FTS fixture verifies that term postings, BM25 corpus
 statistics, and documents also publish as one generation.
 
-No async runtime is required by the core API. Optional async helpers use
-`spawn_blocking` around the same synchronous transaction boundaries, so a
-caller never blocks an async executor thread on disk or index work.
+No async runtime is required by the core API. With the `async` feature,
+`query_async`, `multi_query_async`, and `group_by_async` use `spawn_blocking`
+around the same synchronous snapshot and query boundaries, so a caller does
+not block a Tokio runtime worker on disk or index work. Polling these helpers
+without an active Tokio runtime returns `FailedPrecondition` instead of
+panicking.
 
 Runtime configuration follows an executable-contract rule. `ConfigBuilder`
 owns only the process durability default and WAL operation/byte checkpoint
@@ -284,10 +289,9 @@ Snowball-stemmer filters, and structured boolean, field-qualified, wildcard,
 boosted, fuzzy, range, and phrase-proximity expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-DiskANN mmap/async acceleration and tokenizer extras without an execution
-consumer return `NotSupported` before
-mutation. Unknown
-deserialized keys return `InvalidArgument`. Non-zero segment sizing and
+Public DiskANN mmap/backend-selection controls and tokenizer extras without an
+execution consumer remain absent or return `NotSupported` before mutation.
+Unknown deserialized keys return `InvalidArgument`. Non-zero segment sizing and
 add/alter concurrency return `NotSupported`. Ready ANN, scalar, and FTS
 generations appear in index telemetry and increment their respective query
 counters.
@@ -439,6 +443,10 @@ its newly persisted sidecar is validated on reopen. A query-time short read or
 invalid record falls back to the equivalent in-memory full-vector or ADC graph.
 `diskann_query_count` and
 `diskann_sector_read_count` report only successful positioned traversals.
+The optional Tokio query methods move this entire positioned traversal and
+authoritative refinement path to the runtime's blocking pool; they do not fork
+planner, scoring, fallback, or telemetry semantics. Native async file reads and
+a sound immutable-file mmap strategy remain separate optimizations.
 
 `rebuild_index(field)` clones the current registry, rebuilds only the named
 HNSW, IVF, HNSW/IVF RaBitQ, Vamana, DiskANN, scalar, or FTS generation against the shared ordinal table,

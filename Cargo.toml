@@ -13,6 +13,8 @@ categories = ["database-implementations", "algorithms"]
 [features]
 default = []
 jieba = ["zvec-core/jieba"]
+# Tokio-facing query methods offload the synchronous snapshot/planner/I/O path
+# to the runtime's blocking pool. The core API remains runtime-independent.
 async = ["dep:tokio"]
 
 [dependencies]

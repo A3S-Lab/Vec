@@ -96,6 +96,30 @@ fn main() -> Result<()> {
 }
 ```
 
+Tokio applications can opt into scheduler-safe query methods without making
+the core collection runtime-dependent:
+
+```toml
+[dependencies]
+a3s-vec = { path = "crates/vec", features = ["async"] }
+```
+
+```rust
+use a3s_vec::{Collection, Doc, Result, SearchQuery};
+
+async fn search(collection: &Collection, query: &SearchQuery) -> Result<Vec<Doc>> {
+    collection.query_async(query).await
+}
+```
+
+`query_async`, `multi_query_async`, and `group_by_async` require an active
+Tokio runtime and execute the complete synchronous snapshot, planner,
+positioned-I/O, fallback, and exact-refinement path on its blocking pool. They
+produce the same results and telemetry as their synchronous counterparts; the
+feature is an executor-safety boundary, not a latency claim. Tokio cannot
+cancel `spawn_blocking` work after it starts, so dropping one of these futures
+does not cancel its underlying query.
+
 ## Retrieval capabilities
 
 ### Vectors and indexes
@@ -129,7 +153,9 @@ reader; a full rebuild retrains the codebook and invalidates the reader until
 the next validated reopen. A short read or malformed record falls back to the
 equivalent in-memory full-vector or ADC graph, and authoritative vectors still
 perform final re-ranking. The file is an A3S-native format, not the Microsoft
-DiskANN C++ format; mmap and asynchronous I/O remain optional accelerators.
+DiskANN C++ format. The optional Tokio entry points keep these positioned reads
+off runtime workers; native async file reads and sound file-backed mmap remain
+future accelerators.
 The same query control selects the bounded list size for both index types:
 
 ```rust
@@ -295,7 +321,7 @@ cache-hit/query/candidate plus DiskANN sector-read telemetry.
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
-| On-demand DiskANN query reader | Implemented with portable positioned reads; mmap/async acceleration remains roadmap |
+| On-demand DiskANN query reader | Portable positioned reads plus optional Tokio blocking-pool query entry points; native async file reads and mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |
@@ -315,6 +341,7 @@ cargo test
 cargo test --no-default-features
 cargo test --all-features
 cargo +1.75.0 test --locked
+cargo +1.75.0 test --locked --features async
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features

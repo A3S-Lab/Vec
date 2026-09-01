@@ -8,6 +8,9 @@ mod query_contract;
 mod query_engine;
 mod validation;
 
+#[cfg(feature = "async")]
+mod async_api;
+
 use crate::config::{ConfigBuilder, Durability};
 use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, ErrorCode, Result};

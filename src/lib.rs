@@ -18,7 +18,9 @@
 //! wildcard/fuzzy/range terms, boosts, and ordered phrase proximity. HNSW and
 //! IVF also provide multi-bit `RaBitQ` families with exact re-ranking. `DiskANN`
 //! uses deterministic PQ training, ADC graph traversal, and on-demand
-//! positioned reads; mmap/async acceleration remains explicit future work.
+//! positioned reads. With the `async` feature, query, multi-query, and group-by
+//! entry points run that same work on Tokio's blocking pool. A native async file
+//! backend and sound file-backed mmap remain explicit future work.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
