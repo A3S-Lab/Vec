@@ -41,8 +41,8 @@ and array type, and numeric scalar/array conversion is checked at both extrema
 and beyond each representable boundary. Future index/query/schema tuning now
 fails explicitly unless it has an execution consumer; Flat and unindexed scan
 FTS telemetry do not claim approximate or physical-index execution. HNSW, IVF,
-L2 Vamana with in-memory or positioned sidecar traversal, and FTS are live
-derived indexes with dedicated telemetry.
+L2 Vamana, L2 DiskANN/PQ with in-memory or positioned sidecar traversal, and
+FTS are live derived indexes with dedicated telemetry.
 Document generations
 share unchanged `Arc<Doc>` values through a persistent ordered tree, so ordinary
 writes copy only an O(log N) tree path. Indexed mutations share an immutable ANN
@@ -52,27 +52,28 @@ posting dictionaries and Roaring bitmaps prefilter vector, FTS, multi-query,
 and delete-by-filter execution while a final AST scan preserves exact
 eligibility. Revisioned FTS generations maintain term frequencies, document
 lengths, and corpus totals incrementally while preserving scan-oracle BM25
-scores. Scalar bitmaps are now pushed into HNSW/IVF/Vamana: rejected graph
+scores. Scalar bitmaps are now pushed into HNSW/IVF/Vamana/DiskANN: rejected graph
 nodes remain navigation bridges, IVF intersects ranked centroid ordinal
 postings and
 expands filtered probes to fill top-k, and an underfilled or costlier traversal
 falls back to exact eligible scoring. Vector, scalar, and FTS indexes share one
 persistent ordinal generation; vector membership and IVF postings stay as
 Roaring bitmaps through the bounded exact-executor handoff. Vector base/delta
-maps, HNSW/Vamana nodes and edges, IVF postings, tombstones, and candidate
+maps, HNSW/Vamana/DiskANN nodes and edges, IVF postings, tombstones, and candidate
 selections all
 use shared `u64` ordinals; direct-address ordinal arrays back vector slots and
-HNSW/Vamana graph layers. The persistent ordinal registry keeps ID-to-ordinal lookup in
+HNSW/Vamana/DiskANN graph layers. The persistent ordinal registry keeps ID-to-ordinal lookup in
 an ordered map and its dense append-only ordinal-to-ID lookup in an indexed
 vector, so immutable generations share the reverse mapping without tree-key
 comparisons during result resolution. HNSW uses deterministic frontier/result
 heaps with primary keys borrowed only for equal-score ordering instead of
 repeated candidate-vector sorting. A versioned, checksummed, manifest-bound
-derived-index cache now restores the shared ordinal plus HNSW/IVF/Vamana,
-scalar, and FTS generations across process restarts. Cache format 8 records
-Vamana graph state, parsed tokenizer, and ordered filter state beside the
-contiguous FTS layouts. A Vamana cache hit also requires the matching native
-4 KiB-sector graph/vector sidecar; format-2/3/4/5/6/7, stale, missing, or
+derived-index cache now restores the shared ordinal plus
+HNSW/IVF/Vamana/DiskANN, PQ, scalar, and FTS generations across process
+restarts. Cache format 9 records Vamana/DiskANN graph and PQ state, parsed
+tokenizer, and ordered filter state beside the contiguous FTS layouts. A
+Vamana or DiskANN cache hit also requires the matching native 4 KiB-sector
+graph/vector-or-code sidecar; format-2/3/4/5/6/7/8, stale, missing, or
 corrupt bytes fall back to document-derived rebuilds,
 and read-only opens never repair the cache. Indexed BM25 scores now
 remain in the shared ordinal domain through document lookup, eliminating
@@ -92,7 +93,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 175 passing unit/integration tests plus four
+all-feature baseline has 185 passing unit/integration tests plus four
 compile-fail doctests; default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -110,11 +111,11 @@ fault injection covers all 18 write/sync/rename/prune boundaries, including
 WAL and snapshot cleanup; lock conflicts include bounded owner metadata; and
 both fixed-seed mutation fuzzing and a libFuzzer/AddressSanitizer smoke target
 exercise recovery. The actual macOS 12 Intel runtime smoke remains external
-runner work. HNSW/IVF/Vamana schema and query controls execute against
+runner work. HNSW/IVF/Vamana/DiskANN schema and query controls execute against
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
-immutable generations. Native sector-aligned Vamana files and bounded
-positioned query traversal are live; compression and mmap/async acceleration
-remain future work.
+immutable generations. Native sector-aligned Vamana/DiskANN files, bounded
+positioned query traversal, and PQ/ADC compression are live; RaBitQ and
+mmap/async acceleration remain future work.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -324,8 +325,9 @@ remain future work.
   scalar, and FTS generations as optional derived state. Format 4 introduced
   the contiguous term/posting/document-length layouts, format 5 added parsed
   tokenizer state, format 6 added the ordered filter pipeline, and format 7
-  added Vamana graph generations. Format 8 requires the matching native
-  sector-aligned Vamana sidecar; exact legacy
+  added Vamana graph generations. Format 8 required the matching native
+  sector-aligned Vamana sidecar, and format 9 adds DiskANN generations plus PQ
+  codebooks/codes and requires the matching vector-or-code sidecar; exact legacy
   format-2/3 fixtures and older version bytes are ignored safely. Reuse is
   gated by format, CRC, schema, revision,
   exact manifest/WAL/snapshot identity, structural/live-membership validation,
@@ -358,7 +360,7 @@ remain future work.
 - Completed: index-only FP16, symmetric INT8, and packed symmetric INT4
   encodings reduce candidate-vector storage while authoritative vectors remain
   lossless. Every ANN result is re-ranked with the existing f64 exact oracle.
-- Completed: fixed-seed HNSW, IVF, and Vamana recall tests enforce bounded candidate
+- Completed: fixed-seed HNSW, IVF, Vamana, and DiskANN/PQ recall tests enforce bounded candidate
   counts and recall@10 thresholds. `cargo bench --bench ann_recall` provides a
   2,000-document, 32-dimension, five-round median latency/recall fixture.
   `cargo bench --bench incremental_write` compares single-document delta
@@ -416,7 +418,7 @@ remains open.
   only for exact execution. Scan-FTS restricts eligible scoring while retaining
   whole-corpus BM25 statistics. Each multi-query branch receives its own plan.
   Selective or costlier scalar sets bypass ANN for exact scoring; larger exact
-  sets are pushed into filter-aware HNSW/IVF/Vamana. Conservative boolean supersets
+  sets are pushed into filter-aware HNSW/IVF/Vamana/DiskANN. Conservative boolean supersets
   are refined against the authoritative AST before ANN, preventing unindexed
   conjuncts from spending the bounded candidate budget. Dedicated telemetry
   reports scalar-index use and exact re-rank candidate counts.
@@ -544,37 +546,50 @@ remains open.
   branches; candidates receive authoritative full-vector refinement.
 - Completed: immutable Vamana bases participate in incremental delta/tombstone
   overlays, scalar-filter planning, targeted rebuilds, telemetry, and validated
-  cache-format-8 reopen. Unit, exhaustive-oracle, bounded-candidate recall,
+  cache-format-9 reopen. Unit, exhaustive-oracle, bounded-candidate recall,
   mutation, rebuild, and cache-hit tests cover the slice.
-- Completed: every Vamana base is mirrored in the A3S-native
+- Completed: every Vamana and DiskANN base is mirrored in the A3S-native
   `indexes/diskann-graph.bin` format. Its versioned header and field metadata
   bind the schema digest, revision, and manifest-derived source identity;
-  full-vector/neighbor records use fixed lengths, pack without crossing 4 KiB
-  sectors, and use whole-sector strides when a record is larger than one
-  sector. A CRC covers metadata, padding, and data. Recovery uses bounded
+  full-vector or PQ-code neighbor records use fixed lengths, pack without
+  crossing 4 KiB sectors, and use whole-sector strides when a record is larger
+  than one sector. PQ codebooks live in field metadata. A CRC covers metadata,
+  padding, and data. Recovery uses bounded
   positional reads on Unix and Windows, validates canonical padding and graph
   contents, and treats missing, truncated, corrupt, or mismatched bytes as a
   cache miss. Read-only opens do not repair; writable opens atomically refresh
-  the sidecar before publishing cache format 8. Small- and multi-sector unit
+  the sidecar before publishing cache format 9. Small-, PQ-, and multi-sector unit
   fixtures plus public lifecycle tests cover those paths on Windows. The
   default-feature crate also cross-checks the Unix `read_at` branch for the
-  installed Linux x86_64 and macOS arm64 targets; the Intel macOS 12 runtime
-  gate remains external.
+  installed Linux x86_64/aarch64 and macOS arm64/x86_64 targets, including a
+  macOS 12 deployment target; the Intel macOS 12 runtime gate remains external.
 - Completed: a validated cache reopen attaches one immutable positioned reader
-  per Vamana field. Bounded queries load packed 4 KiB sectors or multi-sector
+  per Vamana or DiskANN field. Bounded queries load packed 4 KiB sectors or multi-sector
   node strides into a request-local extent/node cache, while incremental
   overlays retain the reader and complete rebuilds invalidate it until reopen.
   A query-time short read or malformed record falls back to the equivalent
-  in-memory graph. Packed/oversized, filtered/unfiltered parity, corruption,
+  in-memory full-vector or ADC graph. Packed/oversized/PQ,
+  filtered/unfiltered parity, corruption,
   overlay, rebuild, and telemetry fixtures cover the contract.
+- Completed: `IndexType::Diskann` accepts L2 with `pq_chunk_num` in
+  `0..=dimension`. Positive values split dimensions into balanced contiguous
+  chunks, train up to 256 deterministic centroids per chunk with eight Lloyd
+  iterations, encode one byte per chunk, and build one query-local ADC table.
+  In-memory and positioned traversals use identical codes/tables; full vectors
+  remain authoritative for exact final ranking and for delta documents until a
+  rebuild retrains the generation. Cache and sidecar validation cover
+  codebooks, codes, graph membership, deterministic training, filtered and
+  unfiltered parity, lifecycle, corruption, and query-time fallback.
 - Completed: the fixed 2,000-vector benchmark includes exact L2, in-memory
-  Vamana, and cache-reopened positioned Vamana at `list_size=64`. On the
-  2026-09-01 Windows fixture all three produced recall@10 1.0000. Positioned
-  traversal loaded 138.04 sectors/query and measured 1,765.98 microseconds at
-  the median versus 415.76 microseconds in memory and 191.97 microseconds for
-  exact L2, so no speedup is claimed.
-- Remaining: PQ/ADC, optional RaBitQ, optional mmap/async I/O acceleration, and
-  the Linux/macOS Intel runtime portability gate. Non-L2 Vamana remains
+  Vamana, DiskANN PQ8, and both cache-reopened positioned paths at
+  `list_size=64`. On the 2026-09-01 Windows fixture all five produced
+  recall@10 1.0000. PQ reduced sidecar size from 823,296 to 622,592 bytes and
+  positioned reads from 138.04 to 108.16 sectors/query. Its in-memory and
+  positioned medians were 256.45 and 959.81 microseconds versus 302.42 and
+  1,319.95 for Vamana. Exact L2 remained faster at 135.29 microseconds, so no
+  exact-scan speedup is claimed.
+- Remaining: optional RaBitQ, optional mmap/async I/O acceleration, and the
+  Linux/macOS Intel runtime portability gate. Non-L2 Vamana/DiskANN remains
   explicit `NotSupported` until a correct metric transform is implemented.
 
 ## Phase 7 — Advanced collection API
@@ -622,7 +637,7 @@ remains open.
 1. Land the contract/types and reference flat engine.
 2. Land WAL/snapshot recovery before ANN optimization.
 3. Add HNSW/IVF and FTS/scalar indexes behind the same planner contracts.
-4. Add DiskANN/PQ/RaBitQ only after the exact reference and corruption tests are
-   green.
+4. Extend the completed DiskANN/PQ path with RaBitQ or mmap/async acceleration
+   only after equivalent exact-reference, recall, and corruption tests are green.
 5. Finish API compatibility, Intel validation, and A3S integration as release
    work rather than mixing them into the storage core.

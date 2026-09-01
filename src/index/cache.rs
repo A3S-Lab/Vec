@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
-const CACHE_FORMAT_VERSION: u32 = 8;
+const CACHE_FORMAT_VERSION: u32 = 9;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
 const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -179,7 +179,7 @@ fn validate_indexes(
                 .filter(|params| {
                     matches!(
                         params.index_type,
-                        IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+                        IndexType::Hnsw | IndexType::Ivf | IndexType::Diskann | IndexType::Vamana
                     )
                 })
                 .map(|params| (field, params))
@@ -254,6 +254,10 @@ fn validate_vector_index(
     {
         return false;
     }
+    validate_vector_kind(index, dimension)
+}
+
+fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
     match &index.base.kind {
         VectorIndexKind::Hnsw(hnsw) => {
             if index.params.index_type != IndexType::Hnsw {
@@ -275,6 +279,31 @@ fn validate_vector_index(
                 return false;
             };
             ivf.validates(&index.base.vectors, dimension, n_list)
+        }
+        VectorIndexKind::Diskann(diskann) => {
+            if index.params.index_type != IndexType::Diskann {
+                return false;
+            }
+            let Some(max_degree) = positive_param(index, "max_degree") else {
+                return false;
+            };
+            let Some(list_size) = positive_param(index, "list_size") else {
+                return false;
+            };
+            let Some(pq_chunk_num) = nonnegative_param(index, "pq_chunk_num") else {
+                return false;
+            };
+            let Some(alpha) = finite_param(index, "alpha") else {
+                return false;
+            };
+            diskann.validates(
+                &index.base.vectors,
+                dimension,
+                max_degree,
+                list_size,
+                pq_chunk_num,
+                alpha,
+            )
         }
         VectorIndexKind::Vamana(vamana) => {
             if index.params.index_type != IndexType::Vamana {
@@ -312,6 +341,15 @@ fn positive_param(index: &VectorIndex, name: &str) -> Option<usize> {
         .get(name)
         .and_then(serde_json::Value::as_u64)
         .filter(|value| *value > 0)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn nonnegative_param(index: &VectorIndex, name: &str) -> Option<usize> {
+    index
+        .params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
 }
 

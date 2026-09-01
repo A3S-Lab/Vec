@@ -163,6 +163,98 @@ fn vamana_exhaustive_search_matches_the_exact_oracle() {
 }
 
 #[test]
+fn diskann_pq_exhaustive_search_matches_the_exact_oracle() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection = Collection::create(
+        temporary
+            .path()
+            .join("diskann-pq")
+            .to_str()
+            .expect("UTF-8 path"),
+        &schema(),
+        None,
+    )
+    .expect("collection must be created");
+    insert_docs(&collection, 96);
+
+    let mut query =
+        SearchQuery::new("embedding", &vector_for(37), 15).expect("query must be valid");
+    query
+        .params
+        .insert("metric".into(), serde_json::json!("l2"));
+    let exact = collection.query(&query).expect("exact query must succeed");
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::diskann(MetricType::L2, 16, 96, 4)
+                .expect("DiskANN descriptor must be valid"),
+        )
+        .expect("DiskANN PQ index creation must succeed");
+    query
+        .set_diskann_params(DiskannQueryParams::new(96))
+        .expect("DiskANN controls must be accepted");
+    let exhaustive = collection
+        .query(&query)
+        .expect("DiskANN PQ query must succeed");
+    assert_same_ranking(&exact, &exhaustive);
+
+    let stats = collection.stats().expect("stats must be available");
+    assert_eq!(stats.indexes.len(), 1);
+    assert_eq!(stats.indexes[0].index_type, IndexType::Diskann);
+    assert_eq!(stats.indexes[0].document_count, 96);
+}
+
+#[test]
+fn diskann_pq_recall_fixture_uses_adc_and_a_bounded_candidate_set() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection = Collection::create(
+        temporary
+            .path()
+            .join("diskann-pq-recall")
+            .to_str()
+            .expect("UTF-8 path"),
+        &schema(),
+        None,
+    )
+    .expect("collection must be created");
+    insert_docs(&collection, 320);
+    let mut query =
+        SearchQuery::new("embedding", &vector_for(177), 10).expect("query must be valid");
+    query
+        .params
+        .insert("metric".into(), serde_json::json!("l2"));
+    let exact = collection.query(&query).expect("exact query must succeed");
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::diskann(MetricType::L2, 24, 96, 4)
+                .expect("DiskANN descriptor must be valid"),
+        )
+        .expect("DiskANN PQ index must build");
+    query
+        .set_diskann_params(DiskannQueryParams::new(64))
+        .expect("DiskANN controls must be accepted");
+    let before = collection
+        .stats_snapshot()
+        .expect("stats snapshot must be available");
+    let approximate = collection
+        .query(&query)
+        .expect("DiskANN PQ query must succeed");
+    let after = collection
+        .stats_snapshot()
+        .expect("stats snapshot must be available");
+    let exact_ids = ids(&exact);
+    let hits = ids(&approximate)
+        .iter()
+        .filter(|id| exact_ids.contains(id))
+        .count();
+    assert!(hits >= 8, "recall@10 was only {hits}/10");
+    assert_eq!(after.ann_query_count - before.ann_query_count, 1);
+    assert!(after.candidates_scanned - before.candidates_scanned <= 64);
+    assert!(after.candidates_scanned - before.candidates_scanned < 320);
+}
+
+#[test]
 fn index_lifecycle_tracks_mutations_rebuilds_and_reopen() {
     let temporary = tempdir().expect("temporary directory must be available");
     let path = temporary.path().join("lifecycle");

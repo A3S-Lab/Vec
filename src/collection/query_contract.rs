@@ -97,7 +97,7 @@ fn validate_query_parameters(field: &QueryField<'_>, query: &SearchQuery) -> Res
             "type" => validate_ann_type(field, query)?,
             "ef" | "is_linear" => require_ann_index(field, IndexType::Hnsw, name)?,
             "nprobe" | "scale_factor" => require_ann_index(field, IndexType::Ivf, name)?,
-            "list_size" => require_ann_index(field, IndexType::Vamana, name)?,
+            "list_size" => require_diskann_family(field, name)?,
             "is_using_refiner" => require_any_ann_index(field, name)?,
             "operator" => {
                 return Err(Error::not_supported(format!(
@@ -136,16 +136,20 @@ fn validate_ann_type(field: &QueryField<'_>, query: &SearchQuery) -> Result<()> 
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| Error::invalid_argument("query parameter 'type' must be a string"))?;
     let expected = match kind.to_ascii_lowercase().as_str() {
-        "hnsw" => IndexType::Hnsw,
-        "ivf" => IndexType::Ivf,
-        "diskann" | "vamana" => IndexType::Vamana,
+        "hnsw" => Some(IndexType::Hnsw),
+        "ivf" => Some(IndexType::Ivf),
+        "diskann" => None,
+        "vamana" => Some(IndexType::Vamana),
         unsupported => {
             return Err(Error::not_supported(format!(
                 "query index type '{unsupported}' has no execution consumer"
             )))
         }
     };
-    require_ann_index(field, expected, "type")
+    match expected {
+        Some(expected) => require_ann_index(field, expected, "type"),
+        None => require_diskann_family(field, "type"),
+    }
 }
 
 fn require_ann_index(field: &QueryField<'_>, expected: IndexType, name: &str) -> Result<()> {
@@ -165,11 +169,27 @@ fn require_any_ann_index(field: &QueryField<'_>, name: &str) -> Result<()> {
     let actual = field
         .index_params
         .map_or(IndexType::Undefined, |params| params.index_type);
-    if matches!(actual, IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana) {
+    if matches!(
+        actual,
+        IndexType::Hnsw | IndexType::Ivf | IndexType::Diskann | IndexType::Vamana
+    ) {
         Ok(())
     } else {
         Err(Error::not_supported(format!(
             "query parameter '{name}' requires an ANN index"
+        )))
+    }
+}
+
+fn require_diskann_family(field: &QueryField<'_>, name: &str) -> Result<()> {
+    let actual = field
+        .index_params
+        .map_or(IndexType::Undefined, |params| params.index_type);
+    if matches!(actual, IndexType::Diskann | IndexType::Vamana) {
+        Ok(())
+    } else {
+        Err(Error::not_supported(format!(
+            "query parameter '{name}' requires a Diskann or Vamana index"
         )))
     }
 }

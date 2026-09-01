@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashSet};
 const INITIAL_GRAPH_SEED: u64 = 0x6a09_e667_f3bc_c909;
 const BUILD_ORDER_SEED: u64 = 0xbb67_ae85_84ca_a73b;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct VamanaIndex {
     graph: OrdinalMap<Vec<u64>>,
     entry_ordinal: Option<u64>,
@@ -151,17 +151,17 @@ impl VamanaIndex {
         topk: usize,
         metric: MetricType,
     ) -> RoaringTreemap {
-        let Some(entry) = self.entry_ordinal else {
-            return RoaringTreemap::new();
-        };
-        let limit = self.candidate_limit(requested_list_size, topk, vectors.len());
-        if limit >= vectors.len() {
-            return vectors.keys().collect();
-        }
-        greedy_search_quantized(&self.graph, vectors, ordinals, query, entry, limit, metric)
-            .candidates
-            .into_iter()
-            .collect()
+        self.scored_candidates(
+            vectors.len(),
+            ordinals,
+            requested_list_size,
+            topk,
+            &|ordinal| {
+                vectors
+                    .get(ordinal)
+                    .map(|vector| score(query, vector, metric))
+            },
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -176,17 +176,62 @@ impl VamanaIndex {
         allowed: &RoaringTreemap,
         excluded: &RoaringTreemap,
     ) -> RoaringTreemap {
+        self.scored_filtered_candidates(
+            vectors.len(),
+            ordinals,
+            result_limit,
+            traversal_limit,
+            allowed,
+            excluded,
+            &|ordinal| {
+                vectors
+                    .get(ordinal)
+                    .map(|vector| score(query, vector, metric))
+            },
+        )
+    }
+
+    pub(super) fn scored_candidates(
+        &self,
+        vector_count: usize,
+        ordinals: &OrdinalTable,
+        requested_list_size: Option<usize>,
+        topk: usize,
+        score_for: &impl Fn(u64) -> Option<f64>,
+    ) -> RoaringTreemap {
         let Some(entry) = self.entry_ordinal else {
             return RoaringTreemap::new();
         };
-        let search = greedy_search_quantized(
+        let limit = self.candidate_limit(requested_list_size, topk, vector_count);
+        if limit >= vector_count {
+            return self.graph.keys().collect();
+        }
+        bounded_search(&self.graph, ordinals, entry, limit, score_for)
+            .candidates
+            .into_iter()
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn scored_filtered_candidates(
+        &self,
+        vector_count: usize,
+        ordinals: &OrdinalTable,
+        result_limit: usize,
+        traversal_limit: usize,
+        allowed: &RoaringTreemap,
+        excluded: &RoaringTreemap,
+        score_for: &impl Fn(u64) -> Option<f64>,
+    ) -> RoaringTreemap {
+        let Some(entry) = self.entry_ordinal else {
+            return RoaringTreemap::new();
+        };
+        let search = bounded_search(
             &self.graph,
-            vectors,
             ordinals,
-            query,
             entry,
-            traversal_limit.min(vectors.len()).max(1),
-            metric,
+            traversal_limit.min(vector_count).max(1),
+            score_for,
         );
         let mut scored: Vec<ScoredOrdinal> = search
             .visited
@@ -195,12 +240,7 @@ impl VamanaIndex {
             .filter(|ordinal| allowed.contains(*ordinal) && !excluded.contains(*ordinal))
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .filter_map(|ordinal| {
-                vectors.get(ordinal).map(|vector| ScoredOrdinal {
-                    ordinal,
-                    score: score(query, vector, metric),
-                })
-            })
+            .filter_map(|ordinal| score_for(ordinal).map(|score| ScoredOrdinal { ordinal, score }))
             .collect();
         sort_scored(&mut scored, ordinals);
         scored
@@ -398,26 +438,10 @@ fn greedy_search(
     list_size: usize,
     metric: MetricType,
 ) -> GraphSearch {
-    bounded_search(graph, ordinals, entry, list_size, |ordinal| {
+    bounded_search(graph, ordinals, entry, list_size, &|ordinal| {
         vectors
             .get(ordinal)
             .map(|vector| score_dense(query, vector, metric))
-    })
-}
-
-fn greedy_search_quantized(
-    graph: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<QuantizedVector>,
-    ordinals: &OrdinalTable,
-    query: &[f32],
-    entry: u64,
-    list_size: usize,
-    metric: MetricType,
-) -> GraphSearch {
-    bounded_search(graph, ordinals, entry, list_size, |ordinal| {
-        vectors
-            .get(ordinal)
-            .map(|vector| score(query, vector, metric))
     })
 }
 
@@ -426,7 +450,7 @@ fn bounded_search(
     ordinals: &OrdinalTable,
     entry: u64,
     list_size: usize,
-    score_for: impl Fn(u64) -> Option<f64>,
+    score_for: &impl Fn(u64) -> Option<f64>,
 ) -> GraphSearch {
     let limit = list_size.max(1);
     let mut pool = score_for(entry).map_or_else(Vec::new, |score| {

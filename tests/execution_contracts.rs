@@ -313,6 +313,7 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
     for params in [
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf(MetricType::Cosine, 64, 10, false).expect("descriptor must be valid"),
+        IndexParams::diskann(MetricType::L2, 32, 100, 2).expect("descriptor must be valid"),
         IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid"),
     ] {
         let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
@@ -326,7 +327,6 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
     let future_vector_indexes = [
         IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
             .expect("descriptor must be valid"),
-        IndexParams::diskann(MetricType::Cosine, 32, 100, 8).expect("descriptor must be valid"),
         IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
     ];
     for params in future_vector_indexes {
@@ -401,6 +401,36 @@ fn ann_indexes_are_accepted_while_future_build_parameters_fail_at_schema_boundar
         .build()
         .expect_err("public or deserialized schema fields must be revalidated");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn diskann_rejects_ambiguous_quantization_and_invalid_pq_shapes() {
+    let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let cosine = IndexParams::diskann(MetricType::Cosine, 32, 100, 2)
+        .expect("descriptor must be syntactically valid");
+    let error = field
+        .set_index_params(&cosine)
+        .expect_err("DiskANN must not approximate cosine as L2");
+    assert_eq!(error.code, ErrorCode::NotSupported);
+
+    let too_many_chunks = IndexParams::diskann(MetricType::L2, 32, 100, 4)
+        .expect("descriptor must be syntactically valid");
+    let error = field
+        .set_index_params(&too_many_chunks)
+        .expect_err("PQ cannot create empty chunks");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let mut ambiguous =
+        IndexParams::diskann(MetricType::L2, 32, 100, 2).expect("descriptor must be valid");
+    ambiguous
+        .set_quantize_type(QuantizeType::Pq)
+        .expect("quantization descriptor must be syntactically valid");
+    let error = field
+        .set_index_params(&ambiguous)
+        .expect_err("DiskANN PQ must have one source of truth");
+    assert_eq!(error.code, ErrorCode::NotSupported);
+    assert!(!field.has_index());
 }
 
 #[test]

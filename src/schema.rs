@@ -87,7 +87,7 @@ pub struct FtsIndexParam {
 ///
 /// The open `params` map is retained for adapter compatibility, but collection
 /// schemas reject entries that do not have an execution consumer. Live Flat,
-/// HNSW, IVF, scalar-inverted, and scan-FTS configurations are validated at the
+/// HNSW, IVF, Vamana, DiskANN/PQ, scalar-inverted, and scan-FTS configurations are validated at the
 /// field boundary; attaching a future descriptor returns
 /// [`crate::ErrorCode::NotSupported`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -428,7 +428,7 @@ impl FieldSchema {
         })
     }
     pub fn set_index_params(&mut self, params: &IndexParams) -> Result<()> {
-        validate_index_configuration(&self.name, self.data_type, params)?;
+        validate_index_configuration(&self.name, self.data_type, self.dimension, params)?;
         self.index_params = Some(params.clone());
         Ok(())
     }
@@ -546,7 +546,7 @@ impl CollectionSchema {
     pub fn add_field(&mut self, field: &FieldSchema) -> Result<()> {
         self.ensure_unique(&field.name)?;
         if let Some(params) = &field.index_params {
-            validate_index_configuration(&field.name, field.data_type, params)?;
+            validate_index_configuration(&field.name, field.data_type, field.dimension, params)?;
         }
         if field.data_type.is_vector() {
             self.vectors.push(VectorSchema {
@@ -568,7 +568,7 @@ impl CollectionSchema {
             ));
         }
         if let Some(params) = &field.index_params {
-            validate_index_configuration(&field.name, field.data_type, params)?;
+            validate_index_configuration(&field.name, field.data_type, field.dimension, params)?;
         }
         self.vectors.push(field.clone());
         Ok(())
@@ -619,10 +619,20 @@ impl CollectionSchema {
         params: &IndexParams,
     ) -> Result<()> {
         if let Some(field) = self.fields.iter().find(|field| field.name == field_name) {
-            return validate_index_configuration(&field.name, field.data_type, params);
+            return validate_index_configuration(
+                &field.name,
+                field.data_type,
+                field.dimension,
+                params,
+            );
         }
         if let Some(field) = self.vectors.iter().find(|field| field.name == field_name) {
-            return validate_index_configuration(&field.name, field.data_type, params);
+            return validate_index_configuration(
+                &field.name,
+                field.data_type,
+                field.dimension,
+                params,
+            );
         }
         Err(Error::not_found(format!("field '{field_name}' not found")))
     }
@@ -670,7 +680,12 @@ impl CollectionSchema {
                 )));
             }
             if let Some(params) = &field.index_params {
-                validate_index_configuration(&field.name, field.data_type, params)?;
+                validate_index_configuration(
+                    &field.name,
+                    field.data_type,
+                    field.dimension,
+                    params,
+                )?;
             }
         }
         for field in &self.vectors {
@@ -681,7 +696,12 @@ impl CollectionSchema {
                 )));
             }
             if let Some(params) = &field.index_params {
-                validate_index_configuration(&field.name, field.data_type, params)?;
+                validate_index_configuration(
+                    &field.name,
+                    field.data_type,
+                    field.dimension,
+                    params,
+                )?;
             }
         }
         Ok(())

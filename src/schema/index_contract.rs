@@ -6,6 +6,7 @@ use crate::types::{DataType, IndexType, MetricType, QuantizeType};
 pub(super) fn validate_index_configuration(
     field_name: &str,
     data_type: DataType,
+    dimension: u32,
     params: &IndexParams,
 ) -> Result<()> {
     if params.index_type.is_vector_index() != data_type.is_vector() {
@@ -23,6 +24,7 @@ pub(super) fn validate_index_configuration(
     match params.index_type {
         IndexType::Hnsw => validate_hnsw_configuration(data_type, params),
         IndexType::Ivf => validate_ivf_configuration(data_type, params),
+        IndexType::Diskann => validate_diskann_configuration(data_type, dimension, params),
         IndexType::Vamana => validate_vamana_configuration(data_type, params),
         IndexType::Flat => validate_flat_configuration(data_type, params),
         IndexType::Invert => validate_invert_configuration(data_type, params),
@@ -32,6 +34,43 @@ pub(super) fn validate_index_configuration(
             "{unsupported:?} index execution is not implemented"
         ))),
     }
+}
+
+fn validate_diskann_configuration(
+    data_type: DataType,
+    dimension: u32,
+    params: &IndexParams,
+) -> Result<()> {
+    validate_ann_base(data_type, params)?;
+    if params.metric_type != MetricType::L2 {
+        return Err(Error::not_supported(
+            "DiskANN currently requires the L2 metric",
+        ));
+    }
+    if params.quantize_type != QuantizeType::Undefined {
+        return Err(Error::not_supported(
+            "DiskANN product quantization is configured with pq_chunk_num",
+        ));
+    }
+    validate_parameter_names(
+        params,
+        &["max_degree", "list_size", "pq_chunk_num", "alpha"],
+    )?;
+    positive_integer(params, "max_degree")?;
+    positive_integer(params, "list_size")?;
+    let chunks = nonnegative_integer(params, "pq_chunk_num")?;
+    if chunks > u64::from(dimension) {
+        return Err(Error::invalid_argument(
+            "DiskANN pq_chunk_num cannot exceed the vector dimension",
+        ));
+    }
+    let alpha = finite_number(params, "alpha")?;
+    if alpha < 1.0 {
+        return Err(Error::invalid_argument(
+            "DiskANN alpha must be finite and at least 1.0",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_invert_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {

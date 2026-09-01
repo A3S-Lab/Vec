@@ -6,8 +6,9 @@
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
-The project is an active prototype. HNSW, IVF, L2 Vamana with native
-sector-aligned positioned traversal, scalar inverted indexes, and FTS are live;
+The project is an active prototype. HNSW, IVF, L2 Vamana, product-quantized L2
+DiskANN with native sector-aligned positioned traversal, scalar inverted
+indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough.
 
@@ -18,10 +19,10 @@ stale, or not selective enough.
 
 | Need | Current implementation |
 | --- | --- |
-| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, in-memory/positioned L2 Vamana, and exact re-ranking |
+| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, L2 Vamana, PQ/ADC DiskANN, and exact re-ranking |
 | Workspace text search | BM25, Unicode n-grams, boolean groups, exact phrases, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
-| Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana sector sidecar |
+| Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana/DiskANN sector sidecar |
 | Predictable failure | Typed validation errors and exact fallbacks instead of silent approximation |
 
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
@@ -102,34 +103,41 @@ fn main() -> Result<()> {
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking.
 - Deterministic two-pass L2 Vamana construction, bounded `list_size` search,
   incremental overlays, and exact full-vector re-ranking.
-- Native 4 KiB-sector Vamana files with fixed records, CRC validation, bounded
-  positioned query reads, and failure-closed in-memory fallback.
+- Deterministic product-quantizer training with up to 256 centroids per chunk,
+  one-byte codes, query-local ADC tables, and exact full-vector re-ranking.
+- Native 4 KiB-sector Vamana/DiskANN files with fixed full-vector or PQ-code
+  records, CRC validation, bounded positioned reads, and failure-closed
+  in-memory fallback.
 - Index-only FP16, symmetric INT8, and symmetric INT4 quantization.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
 
-Vamana currently accepts unquantized L2 vectors. A freshly built or rebuilt
-generation traverses its immutable in-memory graph. After a validated cache
-reopen, bounded queries instead load only the required fixed-record sectors
-through positioned file reads and retain a request-local sector/node cache.
-Incremental overlays share that reader; a full rebuild invalidates it until the
-next validated reopen. A short read or malformed record falls back to the
-equivalent in-memory graph, and authoritative vectors still perform final
-re-ranking. The file is an A3S-native format, not the Microsoft DiskANN C++
-format; mmap and asynchronous I/O remain optional future accelerators. The
-DiskANN-compatible query control name selects the bounded list size:
+Vamana accepts unquantized L2 vectors. `IndexParams::diskann` uses the same
+deterministic graph and enables corpus-trained PQ when `pq_chunk_num > 0`;
+zero selects full-vector graph scoring. A freshly built or rebuilt generation
+traverses in memory. After a validated cache reopen, bounded queries load only
+the required fixed-record sectors through positioned reads and retain a
+request-local sector/node cache. PQ queries build one centroid-distance table
+and sum code distances during graph traversal. Incremental overlays share the
+reader; a full rebuild retrains the codebook and invalidates the reader until
+the next validated reopen. A short read or malformed record falls back to the
+equivalent in-memory full-vector or ADC graph, and authoritative vectors still
+perform final re-ranking. The file is an A3S-native format, not the Microsoft
+DiskANN C++ format; mmap and asynchronous I/O remain optional accelerators.
+The same query control selects the bounded list size for both index types:
 
 ```rust
 use a3s_vec::{DiskannQueryParams, IndexParams, MetricType, Result, SearchQuery};
 
-fn configure_vamana(query: &mut SearchQuery) -> Result<IndexParams> {
+fn configure_diskann_pq(query: &mut SearchQuery) -> Result<IndexParams> {
     query.set_diskann_params(DiskannQueryParams::new(64))?;
-    IndexParams::vamana(MetricType::L2, 32, 96, 1.2)
+    IndexParams::diskann(MetricType::L2, 32, 96, 8)
 }
 ```
 
-Non-L2 Vamana, graph saturation/occlusion tuning, and index quantization fail
-at schema validation until they have verified execution implementations.
+Non-L2 Vamana/DiskANN, Vamana graph saturation/occlusion tuning, and standalone
+Vamana quantization fail at schema validation until they have verified
+execution implementations.
 
 ### Full-text search
 
@@ -200,7 +208,7 @@ request
   → capture one immutable schema/document/index revision
   → validate route, type, dimension, limits, and syntax
   → derive scalar and FTS candidate ordinals when selective
-  → run HNSW/IVF/Vamana or the exact vector path
+  → run HNSW/IVF/Vamana/DiskANN or the exact vector path
   → verify filters and phrases against authoritative documents
   → exact-score, deterministic top-k, projection, and optional fusion
 ```
@@ -208,7 +216,7 @@ request
 - Flat vector and scan BM25 execution are always available as reference paths.
 - Every derived index generation is immutable and tagged with its source
   revision.
-- HNSW/IVF/Vamana candidates are re-ranked with authoritative vectors.
+- HNSW/IVF/Vamana/DiskANN candidates are re-ranked with authoritative vectors.
 - Indexed and scan FTS share `f64` corpus/scoring primitives and produce
   bit-identical public scores in differential fixtures.
 - Equal scores use ascending primary key as the deterministic tie-break.
@@ -221,12 +229,14 @@ WAL boundary. Version-3 JSON snapshots remain readable and upgrade at the next
 writable checkpoint.
 
 ANN, scalar, FTS, and the shared ordinal table are persisted separately as a
-non-authoritative derived cache. Cache format 8 includes Vamana graphs plus
-parsed tokenizer and ordered filter state. A Vamana generation additionally
+non-authoritative derived cache. Cache format 9 includes Vamana/DiskANN graphs,
+PQ codebooks/codes, parsed tokenizer, and ordered filter state. A Vamana or
+DiskANN generation additionally
 requires `indexes/diskann-graph.bin`: an A3S-native 4 KiB-sector mirror bound to
 the same revision, schema digest, and manifest identity. Its header, metadata,
-padding, full vectors, graph edges, and CRC are validated before a cache hit.
-A missing, stale, corrupt, structurally invalid, or pre-v8 cache/sidecar pair
+padding, full vectors or PQ codes/codebooks, graph edges, and CRC are validated
+before a cache hit. A missing, stale, corrupt, structurally invalid, or pre-v9
+cache/sidecar pair
 is ignored and rebuilt from recovered documents; read-only opens never repair
 it.
 
@@ -240,12 +250,13 @@ cache-hit/query/candidate plus DiskANN sector-read telemetry.
 | --- | --- |
 | Flat, HNSW, IVF | Implemented |
 | L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned sidecar reads after reopen |
-| Sector-aligned native Vamana file | Implemented |
+| L2 DiskANN PQ/ADC and incremental overlays | Implemented in memory and through positioned PQ-code reads after reopen |
+| Sector-aligned native Vamana/DiskANN file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/range syntax | Not implemented |
 | On-demand DiskANN query reader | Implemented with portable positioned reads; mmap/async acceleration remains roadmap |
-| PQ and standalone RaBitQ families | Roadmap |
+| Product quantization / standalone RaBitQ | PQ implemented for DiskANN / RaBitQ roadmap |
 | Binary vector query execution | Not implemented |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |
 

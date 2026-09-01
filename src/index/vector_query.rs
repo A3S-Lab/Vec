@@ -1,5 +1,6 @@
 //! ANN candidate traversal for immutable bases and incremental overlays.
 
+use super::diskann_index::DiskannIndex;
 use super::hnsw::{HnswFilter, HnswIndex};
 use super::ivf::{scaled_candidate_limit, IvfIndex};
 use super::vamana::VamanaIndex;
@@ -125,6 +126,110 @@ impl VectorIndex {
             ids: merged,
             diskann_sector_reads,
         })
+    }
+
+    pub(super) fn diskann_candidates(
+        &self,
+        diskann: &DiskannIndex,
+        search: &AnnSearchContext<'_>,
+    ) -> Option<AnnOrdinals> {
+        let requested_list_size = optional_positive_query_parameter(search.query, "list_size");
+        let limit = diskann.graph().candidate_limit(
+            requested_list_size,
+            search.topk,
+            search.eligible_count,
+        );
+        let (base, diskann_sector_reads) = match search.allowed {
+            Some(allowed) => self.diskann_filtered_base(diskann, search, allowed, limit)?,
+            None => self.diskann_unfiltered_base(diskann, search, limit)?,
+        };
+        let merged = self.merge_candidates(
+            base,
+            search.vector,
+            Some(limit),
+            search.metric,
+            search.allowed,
+            search.ordinals,
+        );
+        candidate_set_is_sufficient(&merged, search).then_some(AnnOrdinals {
+            ids: merged,
+            diskann_sector_reads,
+        })
+    }
+
+    fn diskann_filtered_base(
+        &self,
+        diskann: &DiskannIndex,
+        search: &AnnSearchContext<'_>,
+        allowed: &RoaringTreemap,
+        limit: usize,
+    ) -> Option<(RoaringTreemap, u64)> {
+        let base_eligible_count = self.base_eligible_vector_count(allowed);
+        let traversal_limit =
+            proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
+        if traversal_limit >= search.eligible_count {
+            return None;
+        }
+        if let Some(reader) = &self.base.diskann {
+            if let Ok(result) = reader.filtered_candidates(
+                search.vector,
+                limit,
+                traversal_limit,
+                search.metric,
+                allowed,
+                &self.tombstones,
+                search.ordinals,
+            ) {
+                return Some((result.candidates, result.sector_reads));
+            }
+        }
+        diskann
+            .filtered_candidates(
+                &self.base.vectors,
+                search.ordinals,
+                search.vector,
+                limit,
+                traversal_limit,
+                search.metric,
+                allowed,
+                &self.tombstones,
+            )
+            .ok()
+            .map(|candidates| (candidates, 0))
+    }
+
+    fn diskann_unfiltered_base(
+        &self,
+        diskann: &DiskannIndex,
+        search: &AnnSearchContext<'_>,
+        limit: usize,
+    ) -> Option<(RoaringTreemap, u64)> {
+        let base_list_size = limit
+            .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
+            .min(self.base.vectors.len());
+        if base_list_size < self.base.vectors.len() {
+            if let Some(reader) = &self.base.diskann {
+                if let Ok(result) = reader.candidates(
+                    search.vector,
+                    base_list_size,
+                    search.metric,
+                    search.ordinals,
+                ) {
+                    return Some((result.candidates, result.sector_reads));
+                }
+            }
+        }
+        diskann
+            .candidates(
+                &self.base.vectors,
+                search.ordinals,
+                search.vector,
+                Some(base_list_size),
+                search.topk,
+                search.metric,
+            )
+            .ok()
+            .map(|candidates| (candidates, 0))
     }
 
     fn vamana_filtered_base(

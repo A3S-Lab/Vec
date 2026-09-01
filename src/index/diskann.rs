@@ -1,4 +1,4 @@
-//! Native, sector-aligned persistence for Vamana graph generations.
+//! Native, sector-aligned persistence for Vamana and `DiskANN` generations.
 //!
 //! This is an A3S-owned format, not the Microsoft `DiskANN` C++ wire format.
 //! It mirrors the immutable in-memory Vamana base so recovery can validate the
@@ -7,10 +7,13 @@
 mod codec;
 mod reader;
 
+use super::product_quantization::{ProductCodebook, ProductQuantizer};
+use super::vamana::VamanaIndex;
 use super::{IndexRegistry, VectorIndex, VectorIndexKind};
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
 use crate::storage::PositionedFile;
+use crate::types::IndexType;
 use codec::{
     align_up, encoded_bytes_len, push_bytes, push_u32, push_u64, put_u32, put_u64, read_u32,
     read_u64, usize_to_u32, usize_to_u64, SliceReader,
@@ -22,16 +25,19 @@ pub(super) const SECTOR_BYTES: usize = 4_096;
 pub(super) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 const MAGIC: &[u8; 8] = b"A3SDAN01";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const FIXED_HEADER_BYTES: usize = 64;
 const CHECKSUM_OFFSET: usize = 48;
-const FIELD_METADATA_BYTES: usize = 64;
+const FIELD_METADATA_BYTES: usize = 80;
 const RECORD_PREFIX_BYTES: usize = 16;
 const NONE_ORDINAL: u64 = u64::MAX;
 
 struct FieldLayout<'a> {
     name: &'a str,
     index: &'a VectorIndex,
+    index_type: IndexType,
+    graph: &'a VamanaIndex,
+    pq: Option<&'a ProductQuantizer>,
     dimension: usize,
     max_degree: usize,
     list_size: usize,
@@ -61,6 +67,7 @@ struct ReaderSpec {
     sectors_per_node: usize,
     data_offset: usize,
     ordinals: Vec<u64>,
+    codebook: Option<ProductCodebook>,
 }
 
 pub(super) fn encode(
@@ -103,53 +110,7 @@ pub(super) fn encode(
     let metadata_end = FIXED_HEADER_BYTES
         .checked_add(prepared.metadata_bytes)
         .ok_or_else(|| Error::resource_exhausted("DiskANN metadata length overflow"))?;
-    let mut metadata = Vec::with_capacity(prepared.metadata_bytes);
-    push_bytes(&mut metadata, source_identity.as_bytes())?;
-    push_bytes(&mut metadata, schema.digest().as_bytes())?;
-    for field in &prepared.fields {
-        push_bytes(&mut metadata, field.name.as_bytes())?;
-        push_u64(
-            &mut metadata,
-            usize_to_u64(field.index.base.vectors.len(), "node count")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.dimension, "vector dimension")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.max_degree, "maximum degree")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.list_size, "search list size")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.record_bytes, "record length")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.nodes_per_sector, "nodes per sector")?,
-        );
-        push_u32(
-            &mut metadata,
-            usize_to_u32(field.sectors_per_node, "sectors per node")?,
-        );
-        push_u64(&mut metadata, field.alpha.to_bits());
-        push_u64(&mut metadata, field.entry_ordinal.unwrap_or(NONE_ORDINAL));
-        push_u64(
-            &mut metadata,
-            usize_to_u64(field.data_offset, "field data offset")?,
-        );
-        push_u64(
-            &mut metadata,
-            usize_to_u64(field.data_bytes, "field data length")?,
-        );
-    }
-    if metadata.len() != prepared.metadata_bytes {
-        return Err(Error::internal("DiskANN metadata layout drifted"));
-    }
+    let metadata = encode_metadata(&prepared, schema, source_identity)?;
     output[FIXED_HEADER_BYTES..metadata_end].copy_from_slice(&metadata);
 
     for field in &prepared.fields {
@@ -158,6 +119,73 @@ pub(super) fn encode(
     let checksum = crc32fast::hash(&output[FIXED_HEADER_BYTES..]);
     put_u32(&mut output, CHECKSUM_OFFSET, checksum);
     Ok(Some(output))
+}
+
+fn encode_metadata(
+    prepared: &PreparedLayout<'_>,
+    schema: &CollectionSchema,
+    source_identity: &str,
+) -> Result<Vec<u8>> {
+    let mut metadata = Vec::with_capacity(prepared.metadata_bytes);
+    push_bytes(&mut metadata, source_identity.as_bytes())?;
+    push_bytes(&mut metadata, schema.digest().as_bytes())?;
+    for field in &prepared.fields {
+        push_bytes(&mut metadata, field.name.as_bytes())?;
+        encode_field_metadata(&mut metadata, field)?;
+    }
+    if metadata.len() != prepared.metadata_bytes {
+        return Err(Error::internal("DiskANN metadata layout drifted"));
+    }
+    Ok(metadata)
+}
+
+fn encode_field_metadata(metadata: &mut Vec<u8>, field: &FieldLayout<'_>) -> Result<()> {
+    push_u64(
+        metadata,
+        usize_to_u64(field.index.base.vectors.len(), "node count")?,
+    );
+    for (value, label) in [
+        (field.dimension, "vector dimension"),
+        (field.max_degree, "maximum degree"),
+        (field.list_size, "search list size"),
+        (field.record_bytes, "record length"),
+        (field.nodes_per_sector, "nodes per sector"),
+        (field.sectors_per_node, "sectors per node"),
+    ] {
+        push_u32(metadata, usize_to_u32(value, label)?);
+    }
+    push_u64(metadata, field.alpha.to_bits());
+    push_u64(metadata, field.entry_ordinal.unwrap_or(NONE_ORDINAL));
+    push_u64(
+        metadata,
+        usize_to_u64(field.data_offset, "field data offset")?,
+    );
+    push_u64(
+        metadata,
+        usize_to_u64(field.data_bytes, "field data length")?,
+    );
+    push_u32(metadata, u32::from(field.index_type));
+    push_u32(metadata, u32::from(field.pq.is_some()));
+    push_u32(
+        metadata,
+        usize_to_u32(
+            field.pq.map_or(0, |pq| pq.codebook().chunk_count()),
+            "PQ chunk count",
+        )?,
+    );
+    push_u32(
+        metadata,
+        usize_to_u32(
+            field.pq.map_or(0, |pq| pq.codebook().centroid_count()),
+            "PQ centroid count",
+        )?,
+    );
+    if let Some(pq) = field.pq {
+        for value in pq.codebook().flattened_centroids() {
+            push_u32(metadata, value.to_bits());
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validates(
@@ -221,6 +249,13 @@ pub(super) fn validates(
             || reader.read_u64() != Some(field.entry_ordinal.unwrap_or(NONE_ORDINAL))
             || reader.read_u64() != u64::try_from(field.data_offset).ok()
             || reader.read_u64() != u64::try_from(field.data_bytes).ok()
+            || reader.read_u32() != Some(u32::from(field.index_type))
+            || reader.read_u32() != Some(u32::from(field.pq.is_some()))
+            || reader.read_u32()
+                != u32::try_from(field.pq.map_or(0, |pq| pq.codebook().chunk_count())).ok()
+            || reader.read_u32()
+                != u32::try_from(field.pq.map_or(0, |pq| pq.codebook().centroid_count())).ok()
+            || !validate_codebook_metadata(&mut reader, field)
             || !validate_field(bytes, field)
         {
             return false;
@@ -270,6 +305,7 @@ pub(super) fn attach(
             sectors_per_node: field.sectors_per_node,
             data_offset: field.data_offset,
             ordinals: field.index.base.vectors.keys().collect(),
+            codebook: field.pq.map(|pq| pq.codebook().clone()),
         })
         .collect();
     drop(prepared);
@@ -284,6 +320,7 @@ pub(super) fn attach(
             spec.sectors_per_node,
             spec.data_offset,
             spec.ordinals.into_iter(),
+            spec.codebook,
         ) else {
             return false;
         };
@@ -302,21 +339,28 @@ fn prepare<'a>(
 ) -> Result<PreparedLayout<'a>> {
     let mut fields = Vec::new();
     for (name, index) in &registry.indexes {
-        let VectorIndexKind::Vamana(vamana) = &index.base.kind else {
+        let Some((graph, pq)) = graph_storage(&index.base.kind) else {
             continue;
         };
         let dimension = schema
             .vectors
             .iter()
             .find(|field| field.name == *name)
-            .ok_or_else(|| Error::internal(format!("Vamana field '{name}' is absent from schema")))?
+            .ok_or_else(|| Error::internal(format!("graph field '{name}' is absent from schema")))?
             .dimension;
         let dimension = usize::try_from(dimension)
-            .map_err(|_| Error::resource_exhausted("Vamana dimension is too large"))?;
-        let max_degree = vamana.max_degree();
-        let vector_bytes = dimension
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or_else(|| Error::resource_exhausted("DiskANN vector record length overflow"))?;
+            .map_err(|_| Error::resource_exhausted("graph dimension is too large"))?;
+        let max_degree = graph.max_degree();
+        let vector_bytes = pq.map_or_else(
+            || {
+                dimension
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or_else(|| {
+                        Error::resource_exhausted("DiskANN vector record length overflow")
+                    })
+            },
+            |pq| Ok(pq.codebook().chunk_count()),
+        )?;
         let neighbor_bytes = max_degree
             .checked_mul(std::mem::size_of::<u64>())
             .ok_or_else(|| Error::resource_exhausted("DiskANN neighbor record length overflow"))?;
@@ -331,11 +375,14 @@ fn prepare<'a>(
         fields.push(FieldLayout {
             name,
             index,
+            index_type: index.params.index_type,
+            graph,
+            pq,
             dimension,
             max_degree,
-            list_size: vamana.default_list_size(),
-            alpha: vamana.alpha(),
-            entry_ordinal: vamana.entry_ordinal(),
+            list_size: graph.default_list_size(),
+            alpha: graph.alpha(),
+            entry_ordinal: graph.entry_ordinal(),
             record_bytes,
             nodes_per_sector,
             sectors_per_node,
@@ -348,9 +395,15 @@ fn prepare<'a>(
         .checked_add(encoded_bytes_len(schema.digest().as_bytes())?)
         .ok_or_else(|| Error::resource_exhausted("DiskANN metadata length overflow"))?;
     for field in &fields {
+        let codebook_bytes = field
+            .pq
+            .map_or(0, |pq| pq.codebook().flattened_centroids().count())
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| Error::resource_exhausted("DiskANN PQ codebook length overflow"))?;
         metadata_bytes = metadata_bytes
             .checked_add(encoded_bytes_len(field.name.as_bytes())?)
             .and_then(|value| value.checked_add(FIELD_METADATA_BYTES))
+            .and_then(|value| value.checked_add(codebook_bytes))
             .ok_or_else(|| Error::resource_exhausted("DiskANN field metadata length overflow"))?;
     }
     let data_offset = align_up(
@@ -403,15 +456,13 @@ fn field_storage(record_bytes: usize, node_count: usize) -> Result<(usize, usize
 }
 
 fn encode_field(output: &mut [u8], field: &FieldLayout<'_>) -> Result<()> {
-    let VectorIndexKind::Vamana(vamana) = &field.index.base.kind else {
-        return Err(Error::internal("DiskANN field lost its Vamana graph"));
-    };
-    if vamana
+    if field
+        .graph
         .nodes()
         .map(|(ordinal, _)| ordinal)
         .ne(field.index.base.vectors.keys())
     {
-        return Err(Error::internal("Vamana graph and vector ordinals differ"));
+        return Err(Error::internal("graph and vector ordinals differ"));
     }
     for (sequence, (ordinal, vector)) in field.index.base.vectors.iter().enumerate() {
         let position = record_position(field, sequence)
@@ -422,22 +473,37 @@ fn encode_field(output: &mut [u8], field: &FieldLayout<'_>) -> Result<()> {
         let record = output
             .get_mut(position..end)
             .ok_or_else(|| Error::internal("DiskANN record exceeds its field"))?;
-        let neighbors = vamana
+        let neighbors = field
+            .graph
             .neighbors(ordinal)
-            .ok_or_else(|| Error::internal("Vamana node is missing from its graph"))?;
+            .ok_or_else(|| Error::internal("node is missing from its graph"))?;
         if neighbors.len() > field.max_degree {
-            return Err(Error::internal("Vamana node exceeds its maximum degree"));
+            return Err(Error::internal("graph node exceeds its maximum degree"));
         }
         put_u64(record, 0, ordinal);
         put_u32(record, 8, usize_to_u32(neighbors.len(), "node degree")?);
-        let decoded = vector.decode();
-        if decoded.len() != field.dimension {
-            return Err(Error::internal("Vamana vector dimension drifted"));
-        }
         let mut cursor = RECORD_PREFIX_BYTES;
-        for value in decoded {
-            put_u32(record, cursor, value.to_bits());
-            cursor += std::mem::size_of::<f32>();
+        if let Some(pq) = field.pq {
+            let code = pq
+                .code(ordinal)
+                .ok_or_else(|| Error::internal("DiskANN PQ code is missing"))?;
+            let end = cursor
+                .checked_add(code.len())
+                .ok_or_else(|| Error::resource_exhausted("DiskANN PQ record overflow"))?;
+            record
+                .get_mut(cursor..end)
+                .ok_or_else(|| Error::internal("DiskANN PQ code exceeds its record"))?
+                .copy_from_slice(code);
+            cursor = end;
+        } else {
+            let decoded = vector.decode();
+            if decoded.len() != field.dimension {
+                return Err(Error::internal("graph vector dimension drifted"));
+            }
+            for value in decoded {
+                put_u32(record, cursor, value.to_bits());
+                cursor += std::mem::size_of::<f32>();
+            }
         }
         for neighbor in neighbors {
             put_u64(record, cursor, *neighbor);
@@ -448,9 +514,6 @@ fn encode_field(output: &mut [u8], field: &FieldLayout<'_>) -> Result<()> {
 }
 
 fn validate_field(bytes: &[u8], field: &FieldLayout<'_>) -> bool {
-    let VectorIndexKind::Vamana(vamana) = &field.index.base.kind else {
-        return false;
-    };
     for (sequence, (ordinal, vector)) in field.index.base.vectors.iter().enumerate() {
         let Some(position) = record_position(field, sequence) else {
             return false;
@@ -458,7 +521,7 @@ fn validate_field(bytes: &[u8], field: &FieldLayout<'_>) -> bool {
         let Some(record) = bytes.get(position..position.saturating_add(field.record_bytes)) else {
             return false;
         };
-        let Some(neighbors) = vamana.neighbors(ordinal) else {
+        let Some(neighbors) = field.graph.neighbors(ordinal) else {
             return false;
         };
         if read_u64(record, 0) != Some(ordinal)
@@ -467,13 +530,26 @@ fn validate_field(bytes: &[u8], field: &FieldLayout<'_>) -> bool {
         {
             return false;
         }
-        let decoded = vector.decode();
         let mut cursor = RECORD_PREFIX_BYTES;
-        for expected in decoded {
-            if read_u32(record, cursor) != Some(expected.to_bits()) {
+        if let Some(pq) = field.pq {
+            let Some(expected) = pq.code(ordinal) else {
+                return false;
+            };
+            let Some(end) = cursor.checked_add(expected.len()) else {
+                return false;
+            };
+            if record.get(cursor..end) != Some(expected) {
                 return false;
             }
-            cursor += std::mem::size_of::<f32>();
+            cursor = end;
+        } else {
+            let decoded = vector.decode();
+            for expected in decoded {
+                if read_u32(record, cursor) != Some(expected.to_bits()) {
+                    return false;
+                }
+                cursor += std::mem::size_of::<f32>();
+            }
         }
         for slot in 0..field.max_degree {
             let expected = neighbors.get(slot).copied().unwrap_or(0);
@@ -487,6 +563,22 @@ fn validate_field(bytes: &[u8], field: &FieldLayout<'_>) -> bool {
         }
     }
     validate_field_padding(bytes, field)
+}
+
+fn graph_storage(kind: &VectorIndexKind) -> Option<(&VamanaIndex, Option<&ProductQuantizer>)> {
+    match kind {
+        VectorIndexKind::Diskann(index) => Some((index.graph(), index.quantizer())),
+        VectorIndexKind::Vamana(index) => Some((index, None)),
+        VectorIndexKind::Hnsw(_) | VectorIndexKind::Ivf(_) => None,
+    }
+}
+
+fn validate_codebook_metadata(reader: &mut SliceReader<'_>, field: &FieldLayout<'_>) -> bool {
+    field.pq.map_or(true, |pq| {
+        pq.codebook()
+            .flattened_centroids()
+            .all(|expected| reader.read_u32() == Some(expected.to_bits()))
+    })
 }
 
 fn validate_field_padding(bytes: &[u8], field: &FieldLayout<'_>) -> bool {

@@ -42,6 +42,43 @@ fn fixture(dimension: u32, count: u16) -> (CollectionSchema, DocumentMap, IndexR
     (schema, docs, registry)
 }
 
+fn pq_fixture(
+    dimension: u32,
+    count: u16,
+    chunks: i32,
+) -> (CollectionSchema, DocumentMap, IndexRegistry) {
+    let mut embedding = FieldSchema::new("embedding", DataType::VectorFp32, false, dimension)
+        .expect("field must be valid");
+    embedding
+        .set_index_params(
+            &IndexParams::diskann(MetricType::L2, 16, 64, chunks)
+                .expect("DiskANN params must be valid"),
+        )
+        .expect("DiskANN field must be valid");
+    let schema = CollectionSchema::builder("diskann-pq-sector-fixture")
+        .add_field(embedding)
+        .build()
+        .expect("schema must be valid");
+    let docs: DocumentMap = (0..count)
+        .map(|index| {
+            let id = format!("doc-{index:03}");
+            let mut doc = Doc::with_pk(&id).expect("document must be valid");
+            let vector: Vec<f32> = (0..dimension)
+                .map(|coordinate| {
+                    f32::from(index)
+                        + f32::from(u16::try_from(coordinate).expect("fixture coordinate fits u16"))
+                            / 1_024.0
+                })
+                .collect();
+            doc.add_vector_f32("embedding", &vector)
+                .expect("vector must be valid");
+            (id, Arc::new(doc))
+        })
+        .collect();
+    let registry = IndexRegistry::build(&schema, &docs, 7).expect("DiskANN index must build");
+    (schema, docs, registry)
+}
+
 #[test]
 fn small_records_pack_without_crossing_sectors_and_validate_strictly() {
     let (schema, _docs, registry) = fixture(2, 64);
@@ -200,4 +237,125 @@ fn positioned_reader_matches_the_memory_graph_for_packed_and_oversized_records()
         assert_eq!(actual.candidates, expected, "dimension={dimension}");
         assert!(actual.sector_reads > 0, "dimension={dimension}");
     }
+}
+
+#[test]
+fn pq_records_are_compact_validated_and_match_in_memory_adc() {
+    let (schema, _docs, registry) = pq_fixture(128, 64, 8);
+    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let field = &prepared.fields[0];
+    let dense_record_bytes = super::align_up(
+        16 + 128 * std::mem::size_of::<f32>() + 16 * std::mem::size_of::<u64>(),
+        std::mem::size_of::<u64>(),
+    )
+    .expect("dense fixture record must align");
+    assert!(field.record_bytes < dense_record_bytes);
+    assert_eq!(field.record_bytes, 152);
+
+    let bytes = encode(&registry, &schema, 7, "source")
+        .expect("sidecar must encode")
+        .expect("DiskANN requires a sidecar");
+    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
+    let temporary = tempdir().expect("temporary directory must be available");
+    let storage =
+        StorageHandle::create(temporary.path(), &schema, false).expect("storage must be created");
+    storage
+        .write_diskann_file(&bytes, false)
+        .expect("sidecar must be written");
+    let file = storage
+        .open_diskann_file()
+        .expect("sidecar must open")
+        .expect("sidecar must exist");
+    let mut attached = registry.clone();
+    assert!(attach(Some(file), &mut attached, &schema, 7, "source"));
+    let index = attached
+        .indexes
+        .get("embedding")
+        .expect("DiskANN index must exist");
+    let VectorIndexKind::Diskann(diskann) = &index.base.kind else {
+        panic!("fixture must build DiskANN");
+    };
+    let query = vec![17.25_f32; 128];
+    let expected = diskann
+        .candidates(
+            &index.base.vectors,
+            &attached.ordinals,
+            &query,
+            Some(24),
+            10,
+            MetricType::L2,
+        )
+        .expect("memory ADC must succeed");
+    let actual = index
+        .base
+        .diskann
+        .as_ref()
+        .expect("positioned reader must attach")
+        .candidates(&query, 24, MetricType::L2, &attached.ordinals)
+        .expect("positioned ADC must succeed");
+    assert_eq!(actual.candidates, expected);
+    assert!(actual.sector_reads > 0);
+
+    let allowed: RoaringTreemap = index
+        .base
+        .vectors
+        .keys()
+        .filter(|ordinal| ordinal % 2 == 0)
+        .collect();
+    let excluded: RoaringTreemap = [18_u64].into_iter().collect();
+    let expected = diskann
+        .filtered_candidates(
+            &index.base.vectors,
+            &attached.ordinals,
+            &query,
+            5,
+            24,
+            MetricType::L2,
+            &allowed,
+            &excluded,
+        )
+        .expect("filtered memory ADC must succeed");
+    let actual = index
+        .base
+        .diskann
+        .as_ref()
+        .expect("positioned reader must attach")
+        .filtered_candidates(
+            &query,
+            5,
+            24,
+            MetricType::L2,
+            &allowed,
+            &excluded,
+            &attached.ordinals,
+        )
+        .expect("filtered positioned ADC must succeed");
+    assert_eq!(actual.candidates, expected);
+    assert!(actual.sector_reads > 0);
+
+    let mut invalid_code = bytes;
+    invalid_code[field.data_offset + 16] = u8::MAX;
+    let checksum = crc32fast::hash(&invalid_code[FIXED_HEADER_BYTES..]);
+    put_u32(&mut invalid_code, CHECKSUM_OFFSET, checksum);
+    assert!(!validates(
+        Some(&invalid_code),
+        &registry,
+        &schema,
+        7,
+        "source"
+    ));
+}
+
+#[test]
+fn zero_pq_chunks_keep_diskann_on_the_full_vector_record_path() {
+    let (schema, _docs, registry) = pq_fixture(4, 16, 0);
+    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let field = &prepared.fields[0];
+    assert!(field.pq.is_none());
+    assert_eq!(field.index_type, crate::IndexType::Diskann);
+    assert_eq!(field.record_bytes, 160);
+    let bytes = encode(&registry, &schema, 7, "source")
+        .expect("sidecar must encode")
+        .expect("DiskANN requires a sidecar");
+    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
 }

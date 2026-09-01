@@ -28,7 +28,14 @@ impl IndexRegistry {
             if is_in_memory_ann(params.index_type) {
                 next.indexes.insert(
                     field_name.to_string(),
-                    build_vector_index(docs, field_name, params, source_revision, &self.ordinals)?,
+                    build_vector_index(
+                        docs,
+                        field_name,
+                        field.dimension,
+                        params,
+                        source_revision,
+                        &self.ordinals,
+                    )?,
                 );
                 return Ok(next);
             }

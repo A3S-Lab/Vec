@@ -7,15 +7,17 @@
 //! Apple Silicon, Linux, and Windows.
 //!
 //! A collection's document snapshot and WAL are authoritative. Flat queries
-//! execute against that snapshot; revision-tagged HNSW, IVF, and in-memory L2
-//! Vamana generations select bounded candidates before exact re-ranking. Each
-//! Vamana base also has an A3S-native, sector-aligned recovery sidecar. Native
+//! execute against that snapshot; revision-tagged HNSW, IVF, L2 Vamana, and
+//! product-quantized L2 `DiskANN` generations select bounded candidates before
+//! exact re-ranking. Each Vamana/DiskANN base also has an A3S-native,
+//! sector-aligned recovery sidecar. Native
 //! numeric vector encodings are preserved at rest and remain distinct from index-only
 //! FP16/INT8/INT4 scalar quantization. Revisioned scalar and full-text indexes
 //! accelerate structured and lexical retrieval, including Unicode n-grams,
 //! ordered token filters, boolean groups, required/prohibited clauses, and
-//! exact phrases. On-demand/mmap `DiskANN` query traversal, compression, and
-//! wildcard/fielded/boosted FTS syntax still return typed unsupported errors.
+//! exact phrases. `DiskANN` uses deterministic PQ training, ADC graph traversal,
+//! and on-demand positioned reads; mmap/async acceleration, `RaBitQ`, and
+//! wildcard/fielded/boosted FTS syntax remain explicit future work.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:

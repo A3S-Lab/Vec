@@ -32,6 +32,7 @@ impl Collection {
             IndexType::Flat
                 | IndexType::Hnsw
                 | IndexType::Ivf
+                | IndexType::Diskann
                 | IndexType::Vamana
                 | IndexType::Invert
                 | IndexType::Fts
@@ -169,7 +170,10 @@ fn should_rewrite_index_cache(schema: &CollectionSchema, field_name: Option<&str
                     && field.index_params.as_ref().is_some_and(|params| {
                         matches!(
                             params.index_type,
-                            IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+                            IndexType::Hnsw
+                                | IndexType::Ivf
+                                | IndexType::Diskann
+                                | IndexType::Vamana
                         )
                     })
             })

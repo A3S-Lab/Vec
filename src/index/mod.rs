@@ -2,11 +2,13 @@
 
 mod cache;
 mod diskann;
+mod diskann_index;
 mod fts;
 mod hnsw;
 mod ivf;
 mod ordinal_map;
 mod ordinals;
+mod product_quantization;
 mod quantization;
 mod rebuild;
 mod scalar;
@@ -19,6 +21,7 @@ use crate::query::SearchQuery;
 use crate::schema::{CollectionSchema, IndexParams};
 use crate::stats::IndexStat;
 use crate::types::{IndexType, MetricType};
+use diskann_index::DiskannIndex;
 use fts::FtsIndexRegistry;
 use hnsw::HnswIndex;
 use ivf::IvfIndex;
@@ -83,6 +86,7 @@ struct AnnSearchContext<'a> {
 enum VectorIndexKind {
     Hnsw(HnswIndex),
     Ivf(IvfIndex),
+    Diskann(DiskannIndex),
     Vamana(VamanaIndex),
 }
 
@@ -158,7 +162,14 @@ impl IndexRegistry {
             }
             indexes.insert(
                 field.name.clone(),
-                build_vector_index(docs, &field.name, params, source_revision, &ordinals)?,
+                build_vector_index(
+                    docs,
+                    &field.name,
+                    field.dimension,
+                    params,
+                    source_revision,
+                    &ordinals,
+                )?,
             );
         }
         let scalar_indexes = ScalarIndexRegistry::build(schema, docs, source_revision, &ordinals)?;
@@ -254,7 +265,14 @@ impl IndexRegistry {
             else {
                 indexes.insert(
                     field.name.clone(),
-                    build_vector_index(docs, &field.name, params, source_revision, &ordinals)?,
+                    build_vector_index(
+                        docs,
+                        &field.name,
+                        field.dimension,
+                        params,
+                        source_revision,
+                        &ordinals,
+                    )?,
                 );
                 continue;
             };
@@ -289,7 +307,14 @@ impl IndexRegistry {
             }
 
             if next.should_compact() {
-                next = build_vector_index(docs, &field.name, params, source_revision, &ordinals)?;
+                next = build_vector_index(
+                    docs,
+                    &field.name,
+                    field.dimension,
+                    params,
+                    source_revision,
+                    &ordinals,
+                )?;
             }
             indexes.insert(field.name.clone(), next);
         }
@@ -382,6 +407,7 @@ impl IndexRegistry {
                     diskann_sector_reads: 0,
                 })
             }
+            VectorIndexKind::Diskann(diskann) => index.diskann_candidates(diskann, &search),
             VectorIndexKind::Vamana(vamana) => index.vamana_candidates(vamana, &search),
         };
         Ok(result.map(|result| AnnCandidates {
@@ -614,6 +640,7 @@ impl VectorIndex {
         let kind = match &self.base.kind {
             VectorIndexKind::Hnsw(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Ivf(index) => index.estimated_payload_bytes(),
+            VectorIndexKind::Diskann(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Vamana(index) => index.estimated_payload_bytes(),
         };
         u64::try_from(vectors.saturating_add(membership).saturating_add(kind)).unwrap_or(u64::MAX)
@@ -749,10 +776,13 @@ fn proportional_candidate_limit(target: usize, population: usize, eligible: usiz
 fn build_vector_index(
     docs: &DocumentMap,
     field_name: &str,
+    dimension: u32,
     params: &IndexParams,
     source_revision: u64,
     ordinals: &OrdinalTable,
 ) -> Result<VectorIndex> {
+    let dimension = usize::try_from(dimension)
+        .map_err(|_| Error::resource_exhausted("vector dimension exceeds this platform"))?;
     let vectors = collect_vectors(docs, field_name, params, ordinals)?;
     let vector_ordinals: RoaringTreemap = vectors.keys().collect();
     let kind = match params.index_type {
@@ -768,6 +798,16 @@ fn build_vector_index(
             positive_parameter(params, "n_list")?,
             nonnegative_parameter(params, "n_iters")?,
         )),
+        IndexType::Diskann => VectorIndexKind::Diskann(DiskannIndex::build(
+            &vectors,
+            ordinals,
+            dimension,
+            positive_parameter(params, "max_degree")?,
+            positive_parameter(params, "list_size")?,
+            nonnegative_parameter(params, "pq_chunk_num")?,
+            finite_parameter(params, "alpha")?,
+            params.metric_type,
+        )?),
         IndexType::Vamana => VectorIndexKind::Vamana(VamanaIndex::build(
             &vectors,
             ordinals,
@@ -886,7 +926,7 @@ fn finite_parameter(params: &IndexParams, name: &str) -> Result<f64> {
 fn is_in_memory_ann(index_type: IndexType) -> bool {
     matches!(
         index_type,
-        IndexType::Hnsw | IndexType::Ivf | IndexType::Vamana
+        IndexType::Hnsw | IndexType::Ivf | IndexType::Diskann | IndexType::Vamana
     )
 }
 

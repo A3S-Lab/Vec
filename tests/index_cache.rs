@@ -45,6 +45,23 @@ fn vamana_schema() -> CollectionSchema {
         .expect("schema must be valid")
 }
 
+fn diskann_schema() -> CollectionSchema {
+    let language =
+        FieldSchema::new("language", DataType::String, false, 0).expect("field must be valid");
+    let mut embedding =
+        FieldSchema::new("embedding", DataType::VectorFp32, false, 2).expect("field must be valid");
+    embedding
+        .set_index_params(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("DiskANN params must be valid"),
+        )
+        .expect("DiskANN index must be valid");
+    CollectionSchema::builder("diskann-pq-cache-contract")
+        .add_field(language)
+        .add_field(embedding)
+        .build()
+        .expect("schema must be valid")
+}
+
 fn document(id: &str, coordinate: f32, language: &str) -> Doc {
     let mut doc = Doc::with_pk(id).expect("document must be valid");
     doc.add_string("language", language)
@@ -758,5 +775,63 @@ fn diskann_reader_survives_overlays_and_is_invalidated_by_rebuilds() {
     assert_eq!(
         after_reopen.diskann_query_count - before_reopen.diskann_query_count,
         1
+    );
+}
+
+#[test]
+fn product_quantized_diskann_round_trips_with_adc_reader_and_overlay() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("diskann-pq-reader");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &diskann_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(192);
+    let inserted = collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 192);
+    collection
+        .rebuild_index("embedding")
+        .expect("DiskANN PQ index must rebuild");
+    let late = document("late", 191.5, "rust");
+    collection
+        .upsert(&[&late])
+        .expect("DiskANN overlay must publish");
+    let query = vamana_query(191.5, 10, 48);
+    let expected = ranking(&collection, &query);
+    collection.close().expect("collection must close");
+
+    let bytes = fs::read(diskann_path(&path)).expect("DiskANN sidecar must exist");
+    assert_eq!(bytes.len() % DISKANN_SECTOR_BYTES, 0);
+    let reopened = open_read_only(&path);
+    let stats = reopened.stats().expect("stats must succeed");
+    assert!(stats.index_cache_hit);
+    assert_eq!(stats.indexes[0].index_type, IndexType::Diskann);
+    let before = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&reopened, &query), expected);
+    let after = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(after.diskann_query_count - before.diskann_query_count, 1);
+    assert!(after.diskann_sector_read_count > before.diskann_sector_read_count);
+
+    let sidecar = fs::OpenOptions::new()
+        .write(true)
+        .open(diskann_path(&path))
+        .expect("sidecar must open for fault injection");
+    sidecar
+        .set_len(u64::try_from(DISKANN_SECTOR_BYTES).expect("sector size fits u64"))
+        .expect("sidecar must truncate");
+    let before_fallback = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&reopened, &query), expected);
+    let after_fallback = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after_fallback.diskann_query_count,
+        before_fallback.diskann_query_count
+    );
+    assert_eq!(
+        after_fallback.diskann_sector_read_count,
+        before_fallback.diskann_sector_read_count
     );
 }

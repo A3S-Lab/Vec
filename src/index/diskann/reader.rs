@@ -3,6 +3,7 @@
 use super::SECTOR_BYTES;
 use crate::error::{Error, Result};
 use crate::index::ordinals::OrdinalTable;
+use crate::index::product_quantization::{AdcTable, ProductCodebook};
 use crate::index::quantization::score_dense;
 use crate::storage::PositionedFile;
 use crate::types::MetricType;
@@ -21,11 +22,13 @@ pub(in crate::index) struct FieldReader {
     data_offset: u64,
     record_sequences: Vec<Option<usize>>,
     node_count: usize,
+    codebook: Option<ProductCodebook>,
 }
 
 #[derive(Debug)]
 struct DiskNode {
     vector: Vec<f32>,
+    code: Vec<u8>,
     neighbors: Vec<u64>,
 }
 
@@ -66,6 +69,7 @@ impl FieldReader {
         sectors_per_node: usize,
         data_offset: usize,
         ordinals: impl Iterator<Item = u64>,
+        codebook: Option<ProductCodebook>,
     ) -> Result<Self> {
         let mut record_sequences = Vec::new();
         let mut node_count = 0_usize;
@@ -89,6 +93,12 @@ impl FieldReader {
                 "DiskANN entry ordinal is absent from the field",
             ));
         }
+        if codebook
+            .as_ref()
+            .is_some_and(|codebook| codebook.dimension() != dimension)
+        {
+            return Err(Error::internal("DiskANN PQ codebook dimension is invalid"));
+        }
         Ok(Self {
             file,
             dimension,
@@ -101,6 +111,7 @@ impl FieldReader {
                 .map_err(|_| Error::resource_exhausted("DiskANN data offset exceeds u64"))?,
             record_sequences,
             node_count,
+            codebook,
         })
     }
 
@@ -117,8 +128,21 @@ impl FieldReader {
                 sector_reads: 0,
             });
         };
+        let table = self
+            .codebook
+            .as_ref()
+            .map(|codebook| codebook.table(query))
+            .transpose()?;
         let mut session = ReadSession::new(self);
-        let search = greedy_search(&mut session, ordinals, query, entry, list_size, metric)?;
+        let search = greedy_search(
+            &mut session,
+            ordinals,
+            query,
+            entry,
+            list_size,
+            metric,
+            table.as_ref(),
+        )?;
         Ok(ReadResult {
             candidates: search.candidates.into_iter().collect(),
             sector_reads: session.sector_reads,
@@ -142,6 +166,11 @@ impl FieldReader {
                 sector_reads: 0,
             });
         };
+        let table = self
+            .codebook
+            .as_ref()
+            .map(|codebook| codebook.table(query))
+            .transpose()?;
         let mut session = ReadSession::new(self);
         let search = greedy_search(
             &mut session,
@@ -150,6 +179,7 @@ impl FieldReader {
             entry,
             traversal_limit.min(self.node_count).max(1),
             metric,
+            table.as_ref(),
         )?;
         let mut scored = Vec::new();
         for ordinal in search
@@ -159,7 +189,7 @@ impl FieldReader {
             .filter(|ordinal| allowed.contains(*ordinal) && !excluded.contains(*ordinal))
             .collect::<BTreeSet<_>>()
         {
-            let score = score_dense(query, &session.node(ordinal)?.vector, metric);
+            let score = score_node(session.node(ordinal)?, query, metric, table.as_ref())?;
             scored.push(ScoredOrdinal { ordinal, score });
         }
         sort_scored(&mut scored, ordinals);
@@ -275,15 +305,34 @@ impl<'a> ReadSession<'a> {
             .filter(|degree| *degree <= self.reader.max_degree)
             .ok_or_else(|| Error::internal("DiskANN node degree is invalid"))?;
         let mut cursor = 16_usize;
-        let mut vector = Vec::with_capacity(self.reader.dimension);
-        for _ in 0..self.reader.dimension {
-            let value = read_u32(record, cursor)
-                .map(f32::from_bits)
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| Error::internal("DiskANN node vector is invalid"))?;
-            vector.push(value);
-            cursor = cursor.saturating_add(std::mem::size_of::<f32>());
-        }
+        let (vector, code) = if let Some(codebook) = &self.reader.codebook {
+            let end = cursor
+                .checked_add(codebook.chunk_count())
+                .ok_or_else(|| Error::resource_exhausted("DiskANN PQ code boundary overflow"))?;
+            let code = record
+                .get(cursor..end)
+                .ok_or_else(|| Error::internal("DiskANN PQ code is truncated"))?
+                .to_vec();
+            if code
+                .iter()
+                .any(|centroid| usize::from(*centroid) >= codebook.centroid_count())
+            {
+                return Err(Error::internal("DiskANN PQ code is invalid"));
+            }
+            cursor = end;
+            (Vec::new(), code)
+        } else {
+            let mut vector = Vec::with_capacity(self.reader.dimension);
+            for _ in 0..self.reader.dimension {
+                let value = read_u32(record, cursor)
+                    .map(f32::from_bits)
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| Error::internal("DiskANN node vector is invalid"))?;
+                vector.push(value);
+                cursor = cursor.saturating_add(std::mem::size_of::<f32>());
+            }
+            (vector, Vec::new())
+        };
         let mut neighbors = Vec::with_capacity(degree);
         for slot in 0..self.reader.max_degree {
             let neighbor = read_u64(record, cursor)
@@ -305,7 +354,11 @@ impl<'a> ReadSession<'a> {
         {
             return Err(Error::internal("DiskANN node record is not canonical"));
         }
-        Ok(DiskNode { vector, neighbors })
+        Ok(DiskNode {
+            vector,
+            code,
+            neighbors,
+        })
     }
 }
 
@@ -316,9 +369,10 @@ fn greedy_search(
     entry: u64,
     list_size: usize,
     metric: MetricType,
+    table: Option<&AdcTable>,
 ) -> Result<GraphSearch> {
     let limit = list_size.max(1);
-    let entry_score = score_dense(query, &session.node(entry)?.vector, metric);
+    let entry_score = score_node(session.node(entry)?, query, metric, table)?;
     let mut pool = vec![ScoredOrdinal {
         ordinal: entry,
         score: entry_score,
@@ -345,7 +399,7 @@ fn greedy_search(
             {
                 continue;
             }
-            let score = score_dense(query, &session.node(neighbor)?.vector, metric);
+            let score = score_node(session.node(neighbor)?, query, metric, table)?;
             pool.push(ScoredOrdinal {
                 ordinal: neighbor,
                 score,
@@ -362,6 +416,22 @@ fn greedy_search(
             .collect(),
         visited: visited_order,
     })
+}
+
+fn score_node(
+    node: &DiskNode,
+    query: &[f32],
+    metric: MetricType,
+    table: Option<&AdcTable>,
+) -> Result<f64> {
+    table.map_or_else(
+        || Ok(score_dense(query, &node.vector, metric)),
+        |table| {
+            table
+                .score(&node.code)
+                .ok_or_else(|| Error::internal("DiskANN PQ code does not match its ADC table"))
+        },
+    )
 }
 
 fn sort_scored(values: &mut [ScoredOrdinal], ordinals: &OrdinalTable) {

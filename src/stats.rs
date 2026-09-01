@@ -26,11 +26,11 @@ pub struct StatsSnapshot {
     pub fts_query_count: u64,
     pub fts_index_query_count: u64,
     pub ann_query_count: u64,
-    /// Successful ANN queries whose immutable Vamana base was traversed from
-    /// the native sector sidecar instead of the in-memory graph.
+    /// Successful ANN queries whose immutable Vamana/DiskANN base was traversed
+    /// from the native sector sidecar instead of the in-memory graph.
     #[serde(default)]
     pub diskann_query_count: u64,
-    /// Native sidecar sectors loaded by successful on-demand Vamana queries.
+    /// Native sidecar sectors loaded by successful positioned graph queries.
     #[serde(default)]
     pub diskann_sector_read_count: u64,
     pub exact_query_count: u64,
