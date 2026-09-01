@@ -26,6 +26,11 @@ struct ScoredCandidate<'a> {
     doc: &'a Doc,
 }
 
+enum ResolvedQueryVector {
+    Dense(Vec<f64>),
+    Sparse(BTreeMap<u32, f64>),
+}
+
 struct TopKCollector<'a> {
     limit: usize,
     candidates: BinaryHeap<ScoredCandidate<'a>>,
@@ -262,26 +267,7 @@ fn execute_vector(
     filter: Option<&FilterExpr>,
     topk: usize,
 ) -> Result<Vec<ScoredDoc>> {
-    let dense_query = if let Some(vector) = &query.vector {
-        Some(vector.iter().map(|value| f64::from(*value)).collect())
-    } else if let Some(id) = &query.id {
-        docs.get(id)
-            .and_then(|doc| doc.vector(&query.field_name))
-            .and_then(VectorValue::to_dense_f64)
-    } else {
-        None
-    };
-    let sparse_query: Option<BTreeMap<u32, f64>> = query.sparse_vector.as_ref().map(|values| {
-        values
-            .iter()
-            .map(|(index, value)| (*index, f64::from(*value)))
-            .collect()
-    });
-    if dense_query.is_none() && sparse_query.is_none() {
-        return Err(Error::invalid_argument(
-            "query requires a dense vector, sparse vector, or source id",
-        ));
-    }
+    let query_vector = resolve_query_vector(docs, query)?;
     let radius = query.params.get("radius").and_then(Value::as_f64);
     let mut result = TopKCollector::new(topk);
     if let Some(candidate_ids) = candidate_ids {
@@ -292,8 +278,7 @@ fn execute_vector(
                     doc,
                     query,
                     metric,
-                    dense_query.as_deref(),
-                    sparse_query.as_ref(),
+                    &query_vector,
                     radius,
                     filter,
                 )?;
@@ -306,8 +291,7 @@ fn execute_vector(
                 doc,
                 query,
                 metric,
-                dense_query.as_deref(),
-                sparse_query.as_ref(),
+                &query_vector,
                 radius,
                 filter,
             )?;
@@ -316,14 +300,51 @@ fn execute_vector(
     result.into_scored_docs()
 }
 
+fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<ResolvedQueryVector> {
+    if let Some(vector) = &query.vector {
+        return Ok(ResolvedQueryVector::Dense(
+            vector.iter().map(|value| f64::from(*value)).collect(),
+        ));
+    }
+    if let Some(values) = &query.sparse_vector {
+        return Ok(ResolvedQueryVector::Sparse(
+            values
+                .iter()
+                .map(|(index, value)| (*index, f64::from(*value)))
+                .collect(),
+        ));
+    }
+    let id = query.id.as_deref().ok_or_else(|| {
+        Error::invalid_argument("query requires a dense vector, sparse vector, or source id")
+    })?;
+    let source = docs
+        .get(id)
+        .ok_or_else(|| Error::not_found(format!("source document '{id}' not found")))?;
+    let vector = source.vector(&query.field_name).ok_or_else(|| {
+        Error::failed_precondition(format!(
+            "source document '{id}' has no vector in field '{}'",
+            query.field_name
+        ))
+    })?;
+    if let Some(vector) = vector.to_dense_f64() {
+        return Ok(ResolvedQueryVector::Dense(vector));
+    }
+    if let Some(vector) = vector.to_sparse_f64() {
+        return Ok(ResolvedQueryVector::Sparse(vector));
+    }
+    Err(Error::failed_precondition(format!(
+        "source document '{id}' has no searchable numeric vector in field '{}'",
+        query.field_name
+    )))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn score_vector_document<'a>(
     result: &mut TopKCollector<'a>,
     doc: &'a Doc,
     query: &SearchQuery,
     metric: MetricType,
-    dense_query: Option<&[f64]>,
-    sparse_query: Option<&BTreeMap<u32, f64>>,
+    query_vector: &ResolvedQueryVector,
     radius: Option<f64>,
     filter: Option<&FilterExpr>,
 ) -> Result<()> {
@@ -333,16 +354,19 @@ fn score_vector_document<'a>(
     let Some(vector) = doc.vector(&query.field_name) else {
         return Ok(());
     };
-    let score = if let Some(dense) = dense_query {
-        let Some(score) = dense_score(dense, vector, metric) else {
-            return Ok(());
-        };
-        score
-    } else {
-        let Some(stored) = vector.to_sparse_f64() else {
-            return Ok(());
-        };
-        sparse_query.map_or(0.0, |candidate| sparse_score(candidate, &stored, metric))
+    let score = match query_vector {
+        ResolvedQueryVector::Dense(query) => {
+            let Some(score) = dense_score(query, vector, metric) else {
+                return Ok(());
+            };
+            score
+        }
+        ResolvedQueryVector::Sparse(query) => {
+            let Some(stored) = vector.to_sparse_f64() else {
+                return Ok(());
+            };
+            sparse_score(query, &stored, metric)
+        }
     };
     if radius.is_some_and(|radius| {
         if metric == MetricType::L2 {

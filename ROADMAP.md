@@ -24,6 +24,9 @@ and binary payloads now have
 strict physical-type validation and lossless persistence; dense and sparse
 numeric vectors share exact L2/IP/cosine/MIPS-L2 scoring with `f64`
 intermediates and are ranked before the public score is narrowed to `f32`.
+Both dense and sparse numeric queries can resolve that authoritative payload
+from a source document ID; missing documents and missing source vectors have
+distinct typed errors.
 Independent differential fixtures now cover deterministic dense/sparse scores,
 filters, radius/top-k ordering, and scan BM25 corpus statistics. A fixed-seed
 256-document corpus adds 100 dense metric/filter combinations and 24
@@ -95,7 +98,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 211 passing unit/integration tests plus four doctests;
+all-feature baseline has 213 passing unit/integration tests plus four doctests;
 default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -149,12 +152,17 @@ and direct file-backed mmap remain future work.
 - Every supported type has positive and negative tests, including dimension,
   nullability, duplicate-name, and overflow cases.
 
-**Evidence landed on 2026-08-30**
+**Evidence landed through 2026-09-01**
 
 - Completed: dense query dimension errors for every current numeric vector
   type and L2/IP/cosine/MIPS-L2 metric; route/type checks for dense, sparse,
-  scalar, and FTS fields; explicit unsupported errors for binary search and
-  sparse source-ID search.
+  scalar, and FTS fields; binary search remains explicitly unsupported.
+- Completed: dense and sparse numeric source-ID queries resolve the stored
+  authoritative vector before exact scoring. FP16/FP32 sparse fixtures cover
+  all four metrics, filters, vector projection, flush/reopen, and optional
+  Tokio execution against the explicit-payload oracle. Missing source
+  documents return `NotFound`; an absent sparse source vector returns
+  `FailedPrecondition`; empty or NUL-bearing source IDs are rejected.
 - Completed: schema-aware JSON adapter coercion for every supported scalar and
   non-binary array type, with incompatible and binary values rejected before
   WAL append. Recovered documents use the same normalization and validation.

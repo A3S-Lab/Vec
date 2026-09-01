@@ -30,6 +30,15 @@ pub(super) fn validate_query_contract<'a>(
             "query must select exactly one FTS, dense, sparse, or source-id route",
         ));
     }
+    if query
+        .id
+        .as_deref()
+        .is_some_and(|id| id.is_empty() || id.contains('\0'))
+    {
+        return Err(Error::invalid_argument(
+            "query source id must be non-empty and contain no NUL byte",
+        ));
+    }
     validate_query_parameters(&field, query)?;
 
     if query.fts.is_some() {
@@ -58,11 +67,6 @@ pub(super) fn validate_query_contract<'a>(
 
     validate_dense_payload(&field, query)?;
     validate_sparse_payload(&field, query)?;
-    if query.id.is_some() && field.data_type.is_sparse_vector() {
-        return Err(Error::not_supported(
-            "source-id queries for sparse vector fields are not implemented",
-        ));
-    }
     if let Some(radius) = query.params.get("radius") {
         let radius = radius
             .as_f64()

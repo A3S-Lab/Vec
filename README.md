@@ -126,6 +126,9 @@ does not cancel its underlying query.
 
 - Dense FP16, FP32, FP64, INT4, INT8, INT16, Binary32, and Binary64 payloads.
 - Sparse FP16 and FP32 payloads.
+- Dense and sparse numeric queries accept either an explicit payload or a
+  source document ID. Source-ID queries use the same exact scoring, filtering,
+  radius, projection, persistence, and optional Tokio execution paths.
 - Exact L2, inner product, cosine, and MIPS-L2 scoring with `f64`
   intermediates.
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking.
@@ -338,6 +341,7 @@ per-handle cache-hit/query/candidate plus DiskANN backend/sector-read telemetry.
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
+| Dense/sparse source-ID query | Implemented; missing sources return `NotFound` and missing sparse payloads return `FailedPrecondition` |
 | DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |

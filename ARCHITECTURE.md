@@ -653,6 +653,12 @@ Request
   → expose the checked `f32` score after deterministic exact ordering
 ```
 
+For a source-ID vector route, the captured document snapshot supplies the
+authoritative dense or sparse numeric payload before scoring. A missing source
+document is `NotFound`; a source that lacks the selected sparse vector is a
+`FailedPrecondition`. Resolution therefore observes the same immutable
+generation as candidate planning, filtering, and exact refinement.
+
 Malformed filters, unsupported parameter combinations, dimension mismatches,
 and stale generations are explicit errors or safe fallback decisions. A query
 never starts a network request, child process, or implicit model download.

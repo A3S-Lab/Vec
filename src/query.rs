@@ -304,8 +304,10 @@ impl SearchQuery {
     }
     pub fn by_id(field_name: &str, id: &str, topk: i32) -> Result<Self> {
         validate_query_header(field_name, topk)?;
-        if id.is_empty() {
-            return Err(Error::invalid_argument("query id must not be empty"));
+        if id.is_empty() || id.contains('\0') {
+            return Err(Error::invalid_argument(
+                "query id must be non-empty and contain no NUL byte",
+            ));
         }
         Ok(Self {
             field_name: field_name.to_string(),
