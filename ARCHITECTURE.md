@@ -77,6 +77,7 @@ crates/vec/
 │   │   ├── diskann.rs         # native sector-aligned Vamana sidecar codec
 │   │   ├── diskann/
 │   │   │   ├── codec.rs       # bounded little-endian format primitives
+│   │   │   ├── reader.rs      # request-local positioned sector traversal
 │   │   │   └── tests.rs       # packing, corruption, and large-record fixtures
 │   │   ├── fts.rs             # term-frequency postings + BM25 statistics
 │   │   ├── fts/
@@ -91,7 +92,8 @@ crates/vec/
 │   │   ├── ordinals.rs        # shared persistent ID/ordinal generation
 │   │   ├── quantization.rs    # index-only FP16/INT8/packed-INT4 codecs
 │   │   ├── rebuild.rs         # targeted generation rebuild coordination
-│   │   └── scalar.rs          # persistent dictionaries + Roaring postings
+│   │   ├── scalar.rs          # persistent dictionaries + Roaring postings
+│   │   └── vector_query.rs     # ANN base/overlay candidate traversal
 │   ├── iterator.rs            # isolated document iterators
 │   ├── stats.rs               # counters, index status, and health
 │   ├── embedding.rs           # caller-owned dense/sparse embedding traits
@@ -128,9 +130,9 @@ crates/vec/
 The checked-in `index/` module owns real HNSW/IVF/Vamana candidate generation,
 scalar posting dictionaries, indexed BM25 term-frequency postings, and their
 revision-aware selection contract. It also owns the native sector-aligned
-Vamana recovery codec and its fallback, corruption, and persistence evidence.
-On-demand disk traversal is still gated separately; exact wrappers with
-approximate names are not kept as placeholders.
+Vamana codec and positioned query reader plus its fallback, corruption, and
+persistence evidence. Exact wrappers with approximate names are not kept as
+placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
@@ -263,7 +265,7 @@ the OR/AND analyzed-term default operator, ordered lowercase/ASCII-folding/
 Snowball-stemmer filters, and structured boolean/phrase expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-On-demand/mmap DiskANN query traversal, RaBitQ/PQ,
+DiskANN mmap/async acceleration, RaBitQ/PQ,
 wildcard/fielded/boosted/fuzzy/range FTS syntax, and
 tokenizer extras without an execution consumer return `NotSupported` before
 mutation. Unknown
@@ -400,6 +402,17 @@ is safe to identify. Cache persistence errors cannot turn an already committed
 document transaction into an apparent failure. Public telemetry reports the
 per-handle open result through `index_cache_hit`.
 
+After full sidecar validation, each restored Vamana field receives a shared
+immutable positioned reader. Packed records load one 4 KiB sector; oversized
+records load their whole-sector stride. A query caches loaded extents and
+decoded nodes only for that request, so repeated graph edges do not repeat I/O.
+Unix uses `FileExt::read_at`, Windows uses `seek_read`, and the portable fallback
+uses a cloned handle plus seek. Incremental delta/tombstone generations retain
+the base reader through `Arc`; a rebuilt base deliberately has no reader until
+its newly persisted sidecar is validated on reopen. A query-time short read or
+invalid record falls back to the in-memory graph. `diskann_query_count` and
+`diskann_sector_read_count` report only successful positioned traversals.
+
 `rebuild_index(field)` clones the current registry, rebuilds only the named
 HNSW, IVF, Vamana, scalar, or FTS generation against the shared ordinal table,
 and
@@ -445,7 +458,7 @@ The target and fallback implementations are:
 | HNSW | Hierarchical graph + eligible-result heap + bounded delta/tombstones | Flat re-rank/filter fallback |
 | IVF | Lloyd centroids + ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
 | L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
-| DiskANN query reader | Future mmap/on-demand sector traversal | In-memory Vamana + flat re-rank |
+| DiskANN query reader | Request-local positioned sector/node traversal after cache reopen | In-memory Vamana + flat re-rank |
 | PQ | Per-subspace codebooks and ADC | Full-vector re-rank |
 | RaBitQ | Binary/scalar codes and refinement | Full-vector re-rank |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
@@ -459,7 +472,7 @@ number is repeated. Any mismatch makes open ignore the cache rather than
 return unverifiable results.
 
 At the current baseline, Flat executes the exact oracle directly. HNSW, IVF,
-and in-memory L2 Vamana select candidates only when the immutable registry
+and L2 Vamana select candidates only when the immutable registry
 entry matches the captured collection revision and metric; otherwise planning
 falls back to Flat. Each
 revision shares a complete base with older readers and owns a bounded overlay;
@@ -467,9 +480,9 @@ base tombstones are filtered with a bitmap, delta vectors are scored without
 materializing a decoded vector, and merged candidates remain ordinals while
 retaining the configured ANN candidate limit. An exhaustive `ef`, `nprobe`, or
 `list_size` returns every live indexed identifier across both layers, and exact
-re-ranking then matches Flat ordering and scores. The native DiskANN sidecar is
-currently a recovery-validated mirror; query traversal deliberately remains in
-memory until the on-demand reader has recall and platform evidence.
+re-ranking then matches Flat ordering and scores. A freshly built Vamana base
+traverses in memory; a cache-restored base uses the native sidecar's positioned
+reader for bounded traversal and fails closed to that same memory graph.
 Descriptors for compressed index families remain serializable for adapters but
 cannot attach to a schema. Scalar generations use the same source-revision
 check. Equality,

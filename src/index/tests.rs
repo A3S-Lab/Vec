@@ -215,7 +215,7 @@ fn incremental_generation_shares_base_and_shadows_updates_and_deletes() {
         .expect("candidate selection must succeed")
         .expect("ANN generation must be selected");
     assert_eq!(
-        candidates.ids().collect::<BTreeSet<_>>(),
+        candidates.selection.ids().collect::<BTreeSet<_>>(),
         BTreeSet::from(["base-a", "delta-c"])
     );
     let stat = &next.stats(&schema)[0];
@@ -256,7 +256,10 @@ fn incremental_equal_scores_keep_primary_key_order_across_ordinals() {
         .candidates(&next_docs, 2, &query, None)
         .expect("candidate selection must succeed")
         .expect("ANN generation must be selected");
-    assert_eq!(candidates.ids().collect::<Vec<_>>(), vec!["a-delta"]);
+    assert_eq!(
+        candidates.selection.ids().collect::<Vec<_>>(),
+        vec!["a-delta"]
+    );
 }
 
 #[test]
@@ -311,7 +314,7 @@ fn ordinal_compaction_rebuilds_ann_membership_without_filter_drift() {
             .candidates(&next_docs, 2, &query, Some(&allowed))
             .expect("candidate selection must succeed")
             .expect("ANN generation must remain usable");
-        assert!(candidates.count() >= 5);
-        assert!(candidates.ids().all(|id| allowed.contains(id)));
+        assert!(candidates.selection.count() >= 5);
+        assert!(candidates.selection.ids().all(|id| allowed.contains(id)));
     }
 }

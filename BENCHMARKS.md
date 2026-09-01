@@ -32,21 +32,27 @@ ANN vectors, ordinal slot membership, graph edges, centroids, and postings. It
 excludes allocator/container overhead plus authoritative document storage; it
 is not process RSS or a heap-profiler measurement.
 
-The first in-memory Vamana baseline was recorded on 2026-09-01 on Windows
+The positioned-reader Vamana baseline was recorded on 2026-09-01 on Windows
 x86_64 with an Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. It
 uses the same deterministic vectors, query count, rounds, and percentile
 methodology. Vamana currently validates L2 only, so its reference is a separate
-exact L2 run:
+exact L2 run. The positioned row closes and reopens the collection read-only,
+asserts a validated cache hit, performs one untimed warmup, and then traverses
+the A3S-native sidecar. Open-time full-file validation is excluded; operating-
+system page-cache effects are not controlled.
 
-| Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Exact | L2 | 1.0000 | 139.93 | 133.20 | 265.80 | 299.10 | n/a |
-| Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 323.75 | 316.90 | 357.50 | 480.30 | 681,828 |
+| Mode | Metric | Recall@10 | Median round (µs/query) | p50 (µs) | p95 (µs) | p99 (µs) | Estimated payload (bytes) | 4 KiB sectors/query |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Exact | L2 | 1.0000 | 191.97 | 138.30 | 316.80 | 370.40 | n/a | 0.00 |
+| In-memory Vamana (`R=32`, build list 96, alpha 1.2, query list 64) | L2 | 1.0000 | 415.76 | 347.20 | 604.00 | 650.90 | 681,828 | 0.00 |
+| Positioned Vamana after reopen (same parameters) | L2 | 1.0000 | 1,765.98 | 1,675.70 | 2,304.30 | 2,476.30 | 681,828 | 138.04 |
 
-This is a functional recall/latency baseline, not a speedup claim. At 2,000
-vectors the current graph traversal costs more than the bounded exact L2 scan;
-the native sector-aligned recovery layout is now implemented, but on-demand
-disk traversal and compression remain open and therefore have no latency claim.
+This is correctness and I/O-volume evidence, not a speedup claim. At 2,000
+vectors, in-memory graph traversal is slower than the bounded exact L2 scan,
+and positioned traversal is another 4.25 times slower than the in-memory row.
+Each query owns a bounded extent/node cache, so repeated graph edges within one
+query do not repeat file reads. Cross-query caching is left to the operating
+system. PQ/ADC, RaBitQ, mmap, and asynchronous I/O remain open optimizations.
 
 Immediately before the exact executor replaced full result materialization and
 sorting with a deterministic bounded top-k heap, the same exact fixture produced
@@ -231,8 +237,9 @@ non-authoritative and bound to the format, schema, revision, and exact manifest
 snapshot/checkpoint/committed-WAL identity. Exact format-2/3 fixtures, older
 version bytes, and missing, stale, corrupt, oversized, or structurally invalid
 files all fall back to rebuilding from documents; a read-only open never writes
-or repairs them. Query traversal remains in memory, so prior query measurements
-are unchanged and no disk-I/O speedup is claimed.
+or repairs them. This reopen fixture does not issue queries. Cache-restored
+Vamana generations now use positioned sidecar traversal; its separate recall,
+latency, and sector-volume evidence appears above.
 
 The same benchmark then opens the all-index fixture for writes and measures one
 derived-index rebuild per call. ANN and full rebuilds refresh the cache after

@@ -29,6 +29,8 @@ fn schema() -> CollectionSchema {
 }
 
 fn vamana_schema() -> CollectionSchema {
+    let language =
+        FieldSchema::new("language", DataType::String, false, 0).expect("field must be valid");
     let mut embedding =
         FieldSchema::new("embedding", DataType::VectorFp32, false, 2).expect("field must be valid");
     embedding
@@ -37,6 +39,7 @@ fn vamana_schema() -> CollectionSchema {
         )
         .expect("Vamana index must be valid");
     CollectionSchema::builder("vamana-cache-contract")
+        .add_field(language)
         .add_field(embedding)
         .build()
         .expect("schema must be valid")
@@ -95,11 +98,15 @@ fn exhaustive_query(coordinate: f32, topk: i32, count: usize) -> SearchQuery {
 }
 
 fn exhaustive_vamana_query(coordinate: f32, topk: i32, count: usize) -> SearchQuery {
+    vamana_query(coordinate, topk, count)
+}
+
+fn vamana_query(coordinate: f32, topk: i32, list_size: usize) -> SearchQuery {
     let mut query = SearchQuery::new("embedding", &[coordinate, coordinate % 7.0], topk)
         .expect("query must be valid");
     query
         .set_diskann_params(DiskannQueryParams::new(
-            i32::try_from(count).expect("fixture count fits i32"),
+            i32::try_from(list_size).expect("fixture list size fits i32"),
         ))
         .expect("Vamana controls must be valid");
     query
@@ -127,9 +134,14 @@ fn create_fixture(path: &Path, count: usize) -> Vec<(String, u32)> {
     )
     .expect("collection must be created");
     let docs = documents(count);
-    collection
+    let inserted = collection
         .insert(&docs.iter().collect::<Vec<_>>())
         .expect("documents must be inserted");
+    assert_eq!(
+        inserted.success_count,
+        u64::try_from(count).expect("fixture count fits u64")
+    );
+    assert_eq!(inserted.error_count, 0);
     let expected = ranking(
         &collection,
         &exhaustive_query(
@@ -407,12 +419,17 @@ fn cached_delta_and_tombstones_preserve_incremental_ann_results() {
     );
     let replacement = document("doc-000", 10_000.0, "rust");
     let late = document("late", 9_999.0, "rust");
-    collection
+    let upserted = collection
         .upsert(&[&replacement, &late])
         .expect("delta vectors must publish");
-    collection
+    assert_eq!(upserted.success_count, 2);
+    assert_eq!(upserted.error_count, 0);
+    let deleted = collection
         .delete(&["doc-001"])
         .expect("base vector must be tombstoned");
+    assert_eq!(deleted.success_count, 1);
+    assert_eq!(deleted.error_count, 0);
+    assert_eq!(collection.count().expect("count must succeed"), 128);
     collection.close().expect("collection must close");
 
     let reopened = open_read_only(&path);
@@ -446,22 +463,29 @@ fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
     )
     .expect("collection must be created");
     let docs = documents(128);
-    collection
+    let inserted = collection
         .insert(&docs.iter().collect::<Vec<_>>())
         .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 128);
+    assert_eq!(inserted.error_count, 0);
     collection
         .rebuild_index("embedding")
         .expect("Vamana index must rebuild");
 
     let replacement = document("doc-000", 10_000.0, "rust");
     let late = document("late", 9_999.0, "rust");
-    collection
+    let upserted = collection
         .upsert(&[&replacement, &late])
         .expect("delta vectors must publish");
-    collection
+    assert_eq!(upserted.success_count, 2);
+    assert_eq!(upserted.error_count, 0);
+    let deleted = collection
         .delete(&["doc-001"])
         .expect("base vector must be tombstoned");
-    let query = exhaustive_vamana_query(10_000.0, 8, 129);
+    assert_eq!(deleted.success_count, 1);
+    assert_eq!(deleted.error_count, 0);
+    assert_eq!(collection.count().expect("count must succeed"), 128);
+    let query = vamana_query(10_000.0, 8, 64);
     let expected = ranking(&collection, &query);
     collection.close().expect("collection must close");
 
@@ -470,11 +494,23 @@ fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
     assert_eq!(diskann.len() % DISKANN_SECTOR_BYTES, 0);
 
     let reopened = open_read_only(&path);
+    assert_eq!(reopened.count().expect("count must succeed"), 128);
     let stats = reopened.stats().expect("stats must succeed");
     assert!(stats.index_cache_hit);
     assert_eq!(stats.indexes.len(), 1);
     assert_eq!(stats.indexes[0].index_type, IndexType::Vamana);
+    let before = reopened.stats_snapshot().expect("stats must succeed");
     assert_eq!(ranking(&reopened, &query), expected);
+    let after = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(after.diskann_query_count - before.diskann_query_count, 1);
+    let sector_reads = after.diskann_sector_read_count - before.diskann_sector_read_count;
+    assert!(sector_reads > 0);
+    assert!(
+        sector_reads
+            < u64::try_from(diskann.len() / DISKANN_SECTOR_BYTES)
+                .expect("fixture sector count fits u64"),
+        "one query must not read the complete sidecar"
+    );
     assert!(reopened
         .fetch(&["doc-001"])
         .expect("fetch must succeed")
@@ -492,9 +528,11 @@ fn missing_or_corrupt_vamana_sidecar_falls_back_then_refreshes_writable() {
     )
     .expect("collection must be created");
     let docs = documents(128);
-    collection
+    let inserted = collection
         .insert(&docs.iter().collect::<Vec<_>>())
         .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 128);
+    assert_eq!(inserted.error_count, 0);
     let query = exhaustive_vamana_query(127.0, 8, 128);
     let expected = ranking(&collection, &query);
     collection.close().expect("collection must close");
@@ -547,4 +585,178 @@ fn missing_or_corrupt_vamana_sidecar_falls_back_then_refreshes_writable() {
     let cached = open_read_only(&path);
     assert!(cached.stats().expect("stats must succeed").index_cache_hit);
     assert_eq!(ranking(&cached, &query), expected);
+}
+
+#[test]
+fn diskann_reader_matches_in_memory_vamana_across_bounded_queries() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana-reader-parity");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &vamana_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(192);
+    let inserted = collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 192);
+    assert_eq!(inserted.error_count, 0);
+    collection
+        .rebuild_index("embedding")
+        .expect("Vamana index must rebuild");
+
+    let queries = [
+        vamana_query(0.0, 8, 16),
+        vamana_query(63.5, 12, 32),
+        vamana_query(191.0, 8, 64),
+    ];
+    let expected: Vec<_> = queries
+        .iter()
+        .map(|query| ranking(&collection, query))
+        .collect();
+    collection.close().expect("collection must close");
+
+    let reopened = open_read_only(&path);
+    assert!(
+        reopened
+            .stats()
+            .expect("stats must succeed")
+            .index_cache_hit
+    );
+    let before = reopened.stats_snapshot().expect("stats must succeed");
+    for (query, expected) in queries.iter().zip(&expected) {
+        assert_eq!(ranking(&reopened, query), *expected);
+    }
+    let after = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after.diskann_query_count - before.diskann_query_count,
+        u64::try_from(queries.len()).expect("query count fits u64")
+    );
+    assert!(after.diskann_sector_read_count > before.diskann_sector_read_count);
+}
+
+#[test]
+fn query_time_diskann_read_failure_falls_back_to_memory() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana-query-fallback");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &vamana_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(128);
+    let inserted = collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 128);
+    assert_eq!(inserted.error_count, 0);
+    collection
+        .rebuild_index("embedding")
+        .expect("Vamana index must rebuild");
+    let query = vamana_query(127.0, 8, 32);
+    let expected = ranking(&collection, &query);
+    collection.close().expect("collection must close");
+
+    let reopened = open_read_only(&path);
+    assert!(
+        reopened
+            .stats()
+            .expect("stats must succeed")
+            .index_cache_hit
+    );
+    let sidecar = fs::OpenOptions::new()
+        .write(true)
+        .open(diskann_path(&path))
+        .expect("sidecar must open for the fault fixture");
+    sidecar
+        .set_len(u64::try_from(DISKANN_SECTOR_BYTES).expect("sector size fits u64"))
+        .expect("sidecar must truncate for the fault fixture");
+
+    let before = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&reopened, &query), expected);
+    let after = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(after.diskann_query_count, before.diskann_query_count);
+    assert_eq!(
+        after.diskann_sector_read_count,
+        before.diskann_sector_read_count
+    );
+    assert_eq!(after.ann_query_count - before.ann_query_count, 1);
+}
+
+#[test]
+fn diskann_reader_survives_overlays_and_is_invalidated_by_rebuilds() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana-reader-lifecycle");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &vamana_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(128);
+    let inserted = collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    assert_eq!(inserted.success_count, 128);
+    assert_eq!(inserted.error_count, 0);
+    collection
+        .rebuild_index("embedding")
+        .expect("Vamana index must rebuild");
+    collection.close().expect("collection must close");
+
+    let reopened = Collection::open(path.to_str().expect("UTF-8 path"), None)
+        .expect("collection must reopen writable");
+    assert!(
+        reopened
+            .stats()
+            .expect("stats must succeed")
+            .index_cache_hit
+    );
+    let query = vamana_query(10_000.0, 8, 64);
+    let before_base = reopened.stats_snapshot().expect("stats must succeed");
+    let _base = ranking(&reopened, &query);
+    let after_base = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after_base.diskann_query_count - before_base.diskann_query_count,
+        1
+    );
+
+    let late = document("late", 10_000.0, "rust");
+    let upserted = reopened.upsert(&[&late]).expect("overlay must publish");
+    assert_eq!(upserted.success_count, 1);
+    assert_eq!(upserted.error_count, 0);
+    let exhaustive = exhaustive_vamana_query(10_000.0, 8, 129);
+    let expected = ranking(&reopened, &exhaustive);
+    let before_overlay = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&reopened, &query), expected);
+    let after_overlay = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after_overlay.diskann_query_count - before_overlay.diskann_query_count,
+        1
+    );
+
+    reopened
+        .rebuild_index("embedding")
+        .expect("Vamana index must rebuild");
+    let before_rebuild = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&reopened, &query), expected);
+    let after_rebuild = reopened.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after_rebuild.diskann_query_count, before_rebuild.diskann_query_count,
+        "a freshly rebuilt in-memory generation must not retain the old file reader"
+    );
+    reopened.close().expect("collection must close");
+
+    let cached = open_read_only(&path);
+    assert!(cached.stats().expect("stats must succeed").index_cache_hit);
+    let before_reopen = cached.stats_snapshot().expect("stats must succeed");
+    assert_eq!(ranking(&cached, &query), expected);
+    let after_reopen = cached.stats_snapshot().expect("stats must succeed");
+    assert_eq!(
+        after_reopen.diskann_query_count - before_reopen.diskann_query_count,
+        1
+    );
 }

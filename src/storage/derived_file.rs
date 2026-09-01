@@ -5,14 +5,42 @@ use crate::error::{Error, Result};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) fn read(
+#[derive(Clone, Debug)]
+pub(crate) struct PositionedFile {
+    file: Arc<File>,
+    length: u64,
+    label: String,
+}
+
+impl PositionedFile {
+    pub(crate) fn len(&self) -> u64 {
+        self.length
+    }
+
+    pub(crate) fn read_exact_at(&self, offset: u64, bytes: &mut [u8]) -> Result<()> {
+        read_exact_at(&self.file, offset, bytes)
+            .map_err(|error| Error::internal(format!("read {}: {error}", self.label)))
+    }
+
+    pub(crate) fn read_all(&self) -> Result<Vec<u8>> {
+        let length = usize::try_from(self.length).map_err(|_| {
+            Error::resource_exhausted(format!("{} is too large for this platform", self.label))
+        })?;
+        let mut bytes = vec![0_u8; length];
+        self.read_exact_at(0, &mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+pub(super) fn open(
     root: &Path,
     relative_path: &Path,
     maximum_bytes: u64,
     label: &str,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<PositionedFile>> {
     let path = root.join(relative_path);
     let file = match File::open(&path) {
         Ok(file) => file,
@@ -28,13 +56,22 @@ pub(super) fn read(
             "{label} exceeds the {maximum_bytes}-byte recovery limit"
         )));
     }
-    let length = usize::try_from(length).map_err(|_| {
-        Error::resource_exhausted(format!("{label} is too large for this platform"))
-    })?;
-    let mut bytes = vec![0_u8; length];
-    read_exact_at(&file, 0, &mut bytes)
-        .map_err(|error| Error::internal(format!("read {label}: {error}")))?;
-    Ok(Some(bytes))
+    Ok(Some(PositionedFile {
+        file: Arc::new(file),
+        length,
+        label: label.to_string(),
+    }))
+}
+
+pub(super) fn read(
+    root: &Path,
+    relative_path: &Path,
+    maximum_bytes: u64,
+    label: &str,
+) -> Result<Option<Vec<u8>>> {
+    open(root, relative_path, maximum_bytes, label)?
+        .map(|file| file.read_all())
+        .transpose()
 }
 
 pub(super) fn write(

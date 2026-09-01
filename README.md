@@ -6,8 +6,8 @@
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
-The project is an active prototype. HNSW, IVF, L2 Vamana with a native
-sector-aligned recovery sidecar, scalar inverted indexes, and FTS are live;
+The project is an active prototype. HNSW, IVF, L2 Vamana with native
+sector-aligned positioned traversal, scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough.
 
@@ -18,7 +18,7 @@ stale, or not selective enough.
 
 | Need | Current implementation |
 | --- | --- |
-| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, in-memory L2 Vamana, and exact re-ranking |
+| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, in-memory/positioned L2 Vamana, and exact re-ranking |
 | Workspace text search | BM25, Unicode n-grams, boolean groups, exact phrases, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
 | Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana sector sidecar |
@@ -102,17 +102,22 @@ fn main() -> Result<()> {
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking.
 - Deterministic two-pass L2 Vamana construction, bounded `list_size` search,
   incremental overlays, and exact full-vector re-ranking.
-- Native 4 KiB-sector Vamana recovery files with fixed records, CRC validation,
-  bounded positioned reads, and failure-closed cache recovery.
+- Native 4 KiB-sector Vamana files with fixed records, CRC validation, bounded
+  positioned query reads, and failure-closed in-memory fallback.
 - Index-only FP16, symmetric INT8, and symmetric INT4 quantization.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
 
-Vamana currently accepts unquantized L2 vectors. Query traversal still uses
-the immutable in-memory graph. Each base is also mirrored to an A3S-native,
-sector-aligned file for reopen validation; that file is not the Microsoft
-DiskANN C++ format and is not yet queried through mmap or on-demand reads. The
-DiskANN-compatible query control name is shared with that future reader:
+Vamana currently accepts unquantized L2 vectors. A freshly built or rebuilt
+generation traverses its immutable in-memory graph. After a validated cache
+reopen, bounded queries instead load only the required fixed-record sectors
+through positioned file reads and retain a request-local sector/node cache.
+Incremental overlays share that reader; a full rebuild invalidates it until the
+next validated reopen. A short read or malformed record falls back to the
+equivalent in-memory graph, and authoritative vectors still perform final
+re-ranking. The file is an A3S-native format, not the Microsoft DiskANN C++
+format; mmap and asynchronous I/O remain optional future accelerators. The
+DiskANN-compatible query control name selects the bounded list size:
 
 ```rust
 use a3s_vec::{DiskannQueryParams, IndexParams, MetricType, Result, SearchQuery};
@@ -226,20 +231,20 @@ is ignored and rebuilt from recovered documents; read-only opens never repair
 it.
 
 The public API supports read-only handles, configurable durability, explicit
-`flush`, targeted `rebuild_index`, whole-registry `optimize`, and
-per-handle cache-hit/query/candidate telemetry.
+`flush`, targeted `rebuild_index`, whole-registry `optimize`, and per-handle
+cache-hit/query/candidate plus DiskANN sector-read telemetry.
 
 ## Current boundaries
 
 | Area | Status |
 | --- | --- |
 | Flat, HNSW, IVF | Implemented |
-| L2 Vamana traversal and incremental overlays | Implemented in memory |
-| Sector-aligned native Vamana recovery file | Implemented |
+| L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned sidecar reads after reopen |
+| Sector-aligned native Vamana file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/range syntax | Not implemented |
-| mmap/on-demand DiskANN query reader | Not implemented |
+| On-demand DiskANN query reader | Implemented with portable positioned reads; mmap/async acceleration remains roadmap |
 | PQ and standalone RaBitQ families | Roadmap |
 | Binary vector query execution | Not implemented |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |

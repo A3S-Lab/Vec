@@ -213,10 +213,10 @@ impl Collection {
         }
         let docs = recovered_docs;
         let cached_indexes = storage.read_index_cache().ok().flatten().and_then(|bytes| {
-            let diskann_bytes = storage.read_diskann_file().ok().flatten();
+            let diskann_file = storage.open_diskann_file().ok().flatten();
             IndexRegistry::restore_cache(
                 &bytes,
-                diskann_bytes.as_deref(),
+                diskann_file,
                 &schema,
                 &docs,
                 revision,
@@ -412,6 +412,10 @@ impl Collection {
             fts_query_count: registry.fts_query_count.load(AtomicOrdering::Relaxed),
             fts_index_query_count: registry.fts_index_query_count.load(AtomicOrdering::Relaxed),
             ann_query_count: registry.ann_query_count.load(AtomicOrdering::Relaxed),
+            diskann_query_count: registry.diskann_query_count.load(AtomicOrdering::Relaxed),
+            diskann_sector_read_count: registry
+                .diskann_sector_read_count
+                .load(AtomicOrdering::Relaxed),
             exact_query_count: registry.exact_query_count.load(AtomicOrdering::Relaxed),
             filtered_query_count: registry.filtered_query_count.load(AtomicOrdering::Relaxed),
             scalar_index_query_count: registry

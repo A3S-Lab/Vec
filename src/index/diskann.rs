@@ -5,14 +5,18 @@
 //! graph before a later disk reader makes it authoritative for search.
 
 mod codec;
+mod reader;
 
 use super::{IndexRegistry, VectorIndex, VectorIndexKind};
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
+use crate::storage::PositionedFile;
 use codec::{
     align_up, encoded_bytes_len, push_bytes, push_u32, push_u64, put_u32, put_u64, read_u32,
     read_u64, usize_to_u32, usize_to_u64, SliceReader,
 };
+pub(super) use reader::FieldReader;
+use std::sync::Arc;
 
 pub(super) const SECTOR_BYTES: usize = 4_096;
 pub(super) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -45,6 +49,18 @@ struct PreparedLayout<'a> {
     metadata_bytes: usize,
     data_offset: usize,
     total_bytes: usize,
+}
+
+struct ReaderSpec {
+    name: String,
+    dimension: usize,
+    max_degree: usize,
+    entry_ordinal: Option<u64>,
+    record_bytes: usize,
+    nodes_per_sector: usize,
+    sectors_per_node: usize,
+    data_offset: usize,
+    ordinals: Vec<u64>,
 }
 
 pub(super) fn encode(
@@ -211,6 +227,72 @@ pub(super) fn validates(
         }
     }
     reader.is_empty()
+}
+
+pub(super) fn attach(
+    file: Option<PositionedFile>,
+    registry: &mut IndexRegistry,
+    schema: &CollectionSchema,
+    source_revision: u64,
+    source_identity: &str,
+) -> bool {
+    let Ok(prepared) = prepare(registry, schema, source_identity) else {
+        return false;
+    };
+    if prepared.fields.is_empty() {
+        return true;
+    }
+    let Some(file) = file else {
+        return false;
+    };
+    let Ok(bytes) = file.read_all() else {
+        return false;
+    };
+    if !validates(
+        Some(&bytes),
+        registry,
+        schema,
+        source_revision,
+        source_identity,
+    ) {
+        return false;
+    }
+    let readers: Vec<ReaderSpec> = prepared
+        .fields
+        .iter()
+        .map(|field| ReaderSpec {
+            name: field.name.to_string(),
+            dimension: field.dimension,
+            max_degree: field.max_degree,
+            entry_ordinal: field.entry_ordinal,
+            record_bytes: field.record_bytes,
+            nodes_per_sector: field.nodes_per_sector,
+            sectors_per_node: field.sectors_per_node,
+            data_offset: field.data_offset,
+            ordinals: field.index.base.vectors.keys().collect(),
+        })
+        .collect();
+    drop(prepared);
+    for spec in readers {
+        let Ok(reader) = FieldReader::new(
+            file.clone(),
+            spec.dimension,
+            spec.max_degree,
+            spec.entry_ordinal,
+            spec.record_bytes,
+            spec.nodes_per_sector,
+            spec.sectors_per_node,
+            spec.data_offset,
+            spec.ordinals.into_iter(),
+        ) else {
+            return false;
+        };
+        let Some(index) = registry.indexes.get_mut(&spec.name) else {
+            return false;
+        };
+        Arc::make_mut(&mut index.base).diskann = Some(Arc::new(reader));
+    }
+    true
 }
 
 fn prepare<'a>(

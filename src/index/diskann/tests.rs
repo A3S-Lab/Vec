@@ -1,11 +1,14 @@
 use super::{
-    encode, prepare, put_u32, record_position, validates, CHECKSUM_OFFSET, FIXED_HEADER_BYTES,
-    SECTOR_BYTES,
+    attach, encode, prepare, put_u32, record_position, validates, CHECKSUM_OFFSET,
+    FIXED_HEADER_BYTES, SECTOR_BYTES,
 };
 use crate::doc::{Doc, DocumentMap};
-use crate::index::IndexRegistry;
+use crate::index::{IndexRegistry, VectorIndexKind};
+use crate::storage::StorageHandle;
 use crate::{CollectionSchema, DataType, FieldSchema, IndexParams, MetricType};
+use roaring::RoaringTreemap;
 use std::sync::Arc;
+use tempfile::tempdir;
 
 fn fixture(dimension: u32, count: u16) -> (CollectionSchema, DocumentMap, IndexRegistry) {
     let mut embedding = FieldSchema::new("embedding", DataType::VectorFp32, false, dimension)
@@ -111,4 +114,90 @@ fn oversized_records_start_on_sector_boundaries() {
         .expect("sidecar must encode")
         .expect("Vamana requires a sidecar");
     assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
+}
+
+#[test]
+fn positioned_reader_matches_the_memory_graph_for_packed_and_oversized_records() {
+    for (dimension, count, list_size) in [(2_u32, 64_u16, 16_usize), (1_024, 6, 3)] {
+        let (schema, _docs, registry) = fixture(dimension, count);
+        let bytes = encode(&registry, &schema, 7, "source")
+            .expect("sidecar must encode")
+            .expect("Vamana requires a sidecar");
+        let temporary = tempdir().expect("temporary directory must be available");
+        let storage = StorageHandle::create(temporary.path(), &schema, false)
+            .expect("storage must be created");
+        storage
+            .write_diskann_file(&bytes, false)
+            .expect("sidecar must be written");
+        let file = storage
+            .open_diskann_file()
+            .expect("sidecar must open")
+            .expect("sidecar must exist");
+        let mut attached = registry.clone();
+        assert!(attach(Some(file), &mut attached, &schema, 7, "source"));
+
+        let index = attached
+            .indexes
+            .get("embedding")
+            .expect("Vamana index must exist");
+        let VectorIndexKind::Vamana(vamana) = &index.base.kind else {
+            panic!("fixture must build Vamana");
+        };
+        let reader = index
+            .base
+            .diskann
+            .as_ref()
+            .expect("positioned reader must attach");
+        let query: Vec<f32> = (0..dimension)
+            .map(|coordinate| {
+                2.5 + f32::from(u16::try_from(coordinate).expect("fixture coordinate fits u16"))
+                    / 1_024.0
+            })
+            .collect();
+        let expected = vamana.candidates(
+            &index.base.vectors,
+            &attached.ordinals,
+            &query,
+            Some(list_size),
+            1,
+            MetricType::L2,
+        );
+        let actual = reader
+            .candidates(&query, list_size, MetricType::L2, &attached.ordinals)
+            .expect("positioned traversal must succeed");
+        assert_eq!(actual.candidates, expected, "dimension={dimension}");
+        assert!(actual.sector_reads > 0, "dimension={dimension}");
+
+        let allowed: RoaringTreemap = index
+            .base
+            .vectors
+            .keys()
+            .filter(|ordinal| ordinal % 2 == 0)
+            .collect();
+        let excluded = RoaringTreemap::new();
+        let result_limit = 3;
+        let expected = vamana.filtered_candidates(
+            &index.base.vectors,
+            &attached.ordinals,
+            &query,
+            result_limit,
+            list_size,
+            MetricType::L2,
+            &allowed,
+            &excluded,
+        );
+        let actual = reader
+            .filtered_candidates(
+                &query,
+                result_limit,
+                list_size,
+                MetricType::L2,
+                &allowed,
+                &excluded,
+                &attached.ordinals,
+            )
+            .expect("filtered positioned traversal must succeed");
+        assert_eq!(actual.candidates, expected, "dimension={dimension}");
+        assert!(actual.sector_reads > 0, "dimension={dimension}");
+    }
 }

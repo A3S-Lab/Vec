@@ -26,6 +26,13 @@ pub struct StatsSnapshot {
     pub fts_query_count: u64,
     pub fts_index_query_count: u64,
     pub ann_query_count: u64,
+    /// Successful ANN queries whose immutable Vamana base was traversed from
+    /// the native sector sidecar instead of the in-memory graph.
+    #[serde(default)]
+    pub diskann_query_count: u64,
+    /// Native sidecar sectors loaded by successful on-demand Vamana queries.
+    #[serde(default)]
+    pub diskann_sector_read_count: u64,
     pub exact_query_count: u64,
     pub filtered_query_count: u64,
     pub scalar_index_query_count: u64,
@@ -50,6 +57,8 @@ pub(crate) struct StatsRegistry {
     pub fts_query_count: AtomicU64,
     pub fts_index_query_count: AtomicU64,
     pub ann_query_count: AtomicU64,
+    pub diskann_query_count: AtomicU64,
+    pub diskann_sector_read_count: AtomicU64,
     pub exact_query_count: AtomicU64,
     pub filtered_query_count: AtomicU64,
     pub scalar_index_query_count: AtomicU64,
@@ -60,6 +69,8 @@ pub(crate) struct StatsRegistry {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct QueryObservation {
     pub kind: QueryKind,
+    pub diskann: bool,
+    pub diskann_sector_reads: u64,
     pub filtered: bool,
     pub index_usage: IndexUsage,
     pub radius: bool,
@@ -112,6 +123,11 @@ impl StatsRegistry {
         }
         if matches!(observation.kind, QueryKind::Ann | QueryKind::AnnFts) {
             self.ann_query_count.fetch_add(1, Ordering::Relaxed);
+        }
+        if observation.diskann {
+            self.diskann_query_count.fetch_add(1, Ordering::Relaxed);
+            self.diskann_sector_read_count
+                .fetch_add(observation.diskann_sector_reads, Ordering::Relaxed);
         }
         self.exact_query_count.fetch_add(1, Ordering::Relaxed);
         if observation.filtered {

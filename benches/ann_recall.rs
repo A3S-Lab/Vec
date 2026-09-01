@@ -1,10 +1,11 @@
 //! Reproducible ANN recall/latency fixture.
 
 use a3s_vec::{
-    Collection, CollectionSchema, DataType, DiskannQueryParams, Doc, FieldSchema, HnswQueryParams,
-    IndexParams, IvfQueryParams, MetricType, SearchQuery,
+    Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
+    FieldSchema, HnswQueryParams, IndexParams, IvfQueryParams, MetricType, SearchQuery,
 };
 use std::hint::black_box;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -20,6 +21,19 @@ struct Measurement {
     p95: Duration,
     p99: Duration,
     rankings: Vec<Vec<String>>,
+}
+
+struct BenchmarkReport {
+    exact: Measurement,
+    hnsw: Measurement,
+    hnsw_payload: u64,
+    ivf: Measurement,
+    ivf_payload: u64,
+    exact_l2: Measurement,
+    vamana: Measurement,
+    diskann: Measurement,
+    vamana_payload: u64,
+    sectors_per_query: f64,
 }
 
 fn vector_for(index: usize) -> Vec<f32> {
@@ -125,6 +139,10 @@ fn micros(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000_000.0
 }
 
+fn count_to_f64_checked(value: u64) -> f64 {
+    f64::from(u32::try_from(value).expect("benchmark count fits u32"))
+}
+
 fn estimated_payload_bytes(collection: &Collection) -> u64 {
     collection
         .stats_snapshot()
@@ -160,8 +178,105 @@ fn run_vamana_fixture(
     (exact, vamana, estimated_payload_bytes(collection))
 }
 
+fn run_positioned_fixture(path: &Path, queries: &[Vec<f32>]) -> (Measurement, f64) {
+    let mut read_only = CollectionOptions::new().expect("options must be valid");
+    read_only
+        .set_read_only(true)
+        .expect("read-only option must be valid");
+    let collection = Collection::open(
+        path.to_str().expect("benchmark path must be UTF-8"),
+        Some(&read_only),
+    )
+    .expect("collection must reopen from its derived cache");
+    assert!(
+        collection
+            .stats()
+            .expect("statistics must be available")
+            .index_cache_hit,
+        "positioned traversal requires a validated Vamana cache hit"
+    );
+    let before = collection
+        .stats_snapshot()
+        .expect("statistics must be available");
+    let measurement = run_queries(&collection, queries, |query| {
+        query
+            .set_diskann_params(DiskannQueryParams::new(64))
+            .expect("Vamana controls must be valid");
+    });
+    let after = collection
+        .stats_snapshot()
+        .expect("statistics must be available");
+    let query_count = after.diskann_query_count - before.diskann_query_count;
+    let expected_queries = u64::try_from(ROUNDS.saturating_mul(QUERIES).saturating_add(1))
+        .expect("benchmark query count fits u64");
+    assert_eq!(query_count, expected_queries);
+    let sector_count = after.diskann_sector_read_count - before.diskann_sector_read_count;
+    (
+        measurement,
+        count_to_f64_checked(sector_count) / count_to_f64_checked(query_count),
+    )
+}
+
+fn print_report(report: &BenchmarkReport) {
+    println!(
+        "mode,metric,documents,dimensions,queries,rounds,recall_at_10,median_round_us,p50_us,p95_us,p99_us,estimated_payload_bytes,sectors_per_query"
+    );
+    println!(
+        "exact,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0,0.00",
+        micros_per_query(report.exact.median_round),
+        micros(report.exact.p50),
+        micros(report.exact.p95),
+        micros(report.exact.p99),
+    );
+    println!(
+        "hnsw_ef64,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0.00",
+        recall(&report.exact.rankings, &report.hnsw.rankings),
+        micros_per_query(report.hnsw.median_round),
+        micros(report.hnsw.p50),
+        micros(report.hnsw.p95),
+        micros(report.hnsw.p99),
+        report.hnsw_payload,
+    );
+    println!(
+        "ivf_nprobe8,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0.00",
+        recall(&report.exact.rankings, &report.ivf.rankings),
+        micros_per_query(report.ivf.median_round),
+        micros(report.ivf.p50),
+        micros(report.ivf.p95),
+        micros(report.ivf.p99),
+        report.ivf_payload,
+    );
+    println!(
+        "exact,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0,0.00",
+        micros_per_query(report.exact_l2.median_round),
+        micros(report.exact_l2.p50),
+        micros(report.exact_l2.p95),
+        micros(report.exact_l2.p99),
+    );
+    println!(
+        "vamana_memory_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},0.00",
+        recall(&report.exact_l2.rankings, &report.vamana.rankings),
+        micros_per_query(report.vamana.median_round),
+        micros(report.vamana.p50),
+        micros(report.vamana.p95),
+        micros(report.vamana.p99),
+        report.vamana_payload,
+    );
+    println!(
+        "vamana_positioned_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{},{:.2}",
+        recall(&report.exact_l2.rankings, &report.diskann.rankings),
+        micros_per_query(report.diskann.median_round),
+        micros(report.diskann.p50),
+        micros(report.diskann.p95),
+        micros(report.diskann.p99),
+        report.vamana_payload,
+        report.sectors_per_query,
+    );
+}
+
 fn main() {
     let temporary = tempdir().expect("temporary directory must be available");
+    let collection_path = temporary.path().join("collection");
     let dimension = u32::try_from(DIMENSIONS).expect("dimension fits u32");
     let schema = CollectionSchema::builder("ann-benchmark")
         .add_field(
@@ -171,9 +286,7 @@ fn main() {
         .build()
         .expect("schema must be valid");
     let collection = Collection::create(
-        temporary
-            .path()
-            .join("collection")
+        collection_path
             .to_str()
             .expect("benchmark path must be UTF-8"),
         &schema,
@@ -222,46 +335,18 @@ fn main() {
     let ivf_payload = estimated_payload_bytes(&collection);
 
     let (exact_l2, vamana, vamana_payload) = run_vamana_fixture(&collection, &queries);
-
-    println!(
-        "mode,metric,documents,dimensions,queries,rounds,recall_at_10,median_round_us,p50_us,p95_us,p99_us,estimated_payload_bytes"
-    );
-    println!(
-        "exact,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0",
-        micros_per_query(exact.median_round),
-        micros(exact.p50),
-        micros(exact.p95),
-        micros(exact.p99),
-    );
-    println!(
-        "hnsw_ef64,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{hnsw_payload}",
-        recall(&exact.rankings, &hnsw.rankings),
-        micros_per_query(hnsw.median_round),
-        micros(hnsw.p50),
-        micros(hnsw.p95),
-        micros(hnsw.p99),
-    );
-    println!(
-        "ivf_nprobe8,cosine,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{ivf_payload}",
-        recall(&exact.rankings, &ivf.rankings),
-        micros_per_query(ivf.median_round),
-        micros(ivf.p50),
-        micros(ivf.p95),
-        micros(ivf.p99),
-    );
-    println!(
-        "exact,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},1.0000,{:.2},{:.2},{:.2},{:.2},0",
-        micros_per_query(exact_l2.median_round),
-        micros(exact_l2.p50),
-        micros(exact_l2.p95),
-        micros(exact_l2.p99),
-    );
-    println!(
-        "vamana_list64,l2,{DOCUMENTS},{DIMENSIONS},{QUERIES},{ROUNDS},{:.4},{:.2},{:.2},{:.2},{:.2},{vamana_payload}",
-        recall(&exact_l2.rankings, &vamana.rankings),
-        micros_per_query(vamana.median_round),
-        micros(vamana.p50),
-        micros(vamana.p95),
-        micros(vamana.p99),
-    );
+    collection.close().expect("collection must close");
+    let (diskann, sectors_per_query) = run_positioned_fixture(&collection_path, &queries);
+    print_report(&BenchmarkReport {
+        exact,
+        hnsw,
+        hnsw_payload,
+        ivf,
+        ivf_payload,
+        exact_l2,
+        vamana,
+        diskann,
+        vamana_payload,
+        sectors_per_query,
+    });
 }

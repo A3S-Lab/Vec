@@ -7,6 +7,7 @@ use super::{encode_vector, IndexRegistry, VectorIndex, VectorIndexKind};
 use crate::doc::DocumentMap;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
+use crate::storage::PositionedFile;
 use crate::types::IndexType;
 use bincode::Options;
 use roaring::RoaringTreemap;
@@ -91,7 +92,7 @@ fn encode_payload(payload: &CachePayload) -> Result<Vec<u8>> {
 
 pub(super) fn restore(
     bytes: &[u8],
-    diskann_bytes: Option<&[u8]>,
+    diskann_file: Option<PositionedFile>,
     schema: &CollectionSchema,
     docs: &DocumentMap,
     source_revision: u64,
@@ -125,9 +126,10 @@ pub(super) fn restore(
         scalar_indexes: payload.scalar_indexes,
         fts_indexes: payload.fts_indexes,
     };
-    super::diskann::validates(
-        diskann_bytes,
-        &registry,
+    let mut registry = registry;
+    super::diskann::attach(
+        diskann_file,
+        &mut registry,
         schema,
         source_revision,
         source_identity,

@@ -41,7 +41,8 @@ and array type, and numeric scalar/array conversion is checked at both extrema
 and beyond each representable boundary. Future index/query/schema tuning now
 fails explicitly unless it has an execution consumer; Flat and unindexed scan
 FTS telemetry do not claim approximate or physical-index execution. HNSW, IVF,
-in-memory L2 Vamana, and FTS are live derived indexes with dedicated telemetry.
+L2 Vamana with in-memory or positioned sidecar traversal, and FTS are live
+derived indexes with dedicated telemetry.
 Document generations
 share unchanged `Arc<Doc>` values through a persistent ordered tree, so ordinary
 writes copy only an O(log N) tree path. Indexed mutations share an immutable ANN
@@ -91,7 +92,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 171 passing unit/integration tests plus four
+all-feature baseline has 175 passing unit/integration tests plus four
 compile-fail doctests; default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -111,8 +112,9 @@ both fixed-seed mutation fuzzing and a libFuzzer/AddressSanitizer smoke target
 exercise recovery. The actual macOS 12 Intel runtime smoke remains external
 runner work. HNSW/IVF/Vamana schema and query controls execute against
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
-immutable generations. Native sector-aligned Vamana recovery files are live;
-compressed and on-demand/mmap query readers remain contracts only.
+immutable generations. Native sector-aligned Vamana files and bounded
+positioned query traversal are live; compression and mmap/async acceleration
+remain future work.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -558,15 +560,22 @@ remains open.
   default-feature crate also cross-checks the Unix `read_at` branch for the
   installed Linux x86_64 and macOS arm64 targets; the Intel macOS 12 runtime
   gate remains external.
-- Completed: the fixed 2,000-vector benchmark now includes an L2 Vamana
-  `list_size=64` row. On the 2026-09-01 Windows fixture it produced recall@10
-  1.0000; at this small scale its 323.75 microsecond median remained slower than
-  the 139.93 microsecond exact L2 path, so no speedup is claimed.
-- Remaining: mmap/on-demand DiskANN query traversal, PQ/ADC, optional RaBitQ,
-  and the Linux/macOS Intel I/O portability gate. Query execution intentionally
-  remains on the in-memory Vamana graph, so this storage slice makes no latency
-  or memory-reduction claim. Non-L2 Vamana remains explicit `NotSupported` until a
-  correct metric transform is implemented.
+- Completed: a validated cache reopen attaches one immutable positioned reader
+  per Vamana field. Bounded queries load packed 4 KiB sectors or multi-sector
+  node strides into a request-local extent/node cache, while incremental
+  overlays retain the reader and complete rebuilds invalidate it until reopen.
+  A query-time short read or malformed record falls back to the equivalent
+  in-memory graph. Packed/oversized, filtered/unfiltered parity, corruption,
+  overlay, rebuild, and telemetry fixtures cover the contract.
+- Completed: the fixed 2,000-vector benchmark includes exact L2, in-memory
+  Vamana, and cache-reopened positioned Vamana at `list_size=64`. On the
+  2026-09-01 Windows fixture all three produced recall@10 1.0000. Positioned
+  traversal loaded 138.04 sectors/query and measured 1,765.98 microseconds at
+  the median versus 415.76 microseconds in memory and 191.97 microseconds for
+  exact L2, so no speedup is claimed.
+- Remaining: PQ/ADC, optional RaBitQ, optional mmap/async I/O acceleration, and
+  the Linux/macOS Intel runtime portability gate. Non-L2 Vamana remains
+  explicit `NotSupported` until a correct metric transform is implemented.
 
 ## Phase 7 — Advanced collection API
 

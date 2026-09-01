@@ -19,6 +19,7 @@ use manifest::Manifest;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub(crate) use derived_file::PositionedFile;
 pub use wal::WalOperation;
 
 /// Open storage state. The lock is held for the lifetime of the collection.
@@ -249,8 +250,8 @@ impl StorageHandle {
         index_cache::write(&self.root, bytes, sync)
     }
 
-    pub(crate) fn read_diskann_file(&self) -> Result<Option<Vec<u8>>> {
-        diskann_file::read(&self.root)
+    pub(crate) fn open_diskann_file(&self) -> Result<Option<PositionedFile>> {
+        diskann_file::open(&self.root)
     }
 
     pub(crate) fn write_diskann_file(&self, bytes: &[u8], sync: bool) -> Result<()> {

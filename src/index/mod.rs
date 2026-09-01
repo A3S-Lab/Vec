@@ -11,6 +11,7 @@ mod quantization;
 mod rebuild;
 mod scalar;
 mod vamana;
+mod vector_query;
 
 use crate::doc::{DocumentMap, VectorValue};
 use crate::error::{Error, Result};
@@ -19,8 +20,8 @@ use crate::schema::{CollectionSchema, IndexParams};
 use crate::stats::IndexStat;
 use crate::types::{IndexType, MetricType};
 use fts::FtsIndexRegistry;
-use hnsw::{HnswFilter, HnswIndex};
-use ivf::{scaled_candidate_limit, IvfIndex};
+use hnsw::HnswIndex;
+use ivf::IvfIndex;
 use ordinal_map::OrdinalMap;
 pub(crate) use ordinals::OrdinalScores;
 use ordinals::{OrdinalSet, OrdinalTable};
@@ -64,6 +65,8 @@ struct VectorIndexBase {
     vectors: OrdinalMap<QuantizedVector>,
     vector_ordinals: RoaringTreemap,
     kind: VectorIndexKind,
+    #[serde(skip)]
+    diskann: Option<Arc<diskann::FieldReader>>,
 }
 
 struct AnnSearchContext<'a> {
@@ -93,8 +96,19 @@ pub(crate) struct CandidatePlan {
     pub selection: Option<CandidateSelection>,
     pub fts_scores: Option<OrdinalScores>,
     pub used_ann: bool,
+    pub diskann_sector_reads: u64,
     pub used_scalar: bool,
     pub used_fts_index: bool,
+}
+
+struct AnnOrdinals {
+    ids: RoaringTreemap,
+    diskann_sector_reads: u64,
+}
+
+struct AnnCandidates {
+    selection: CandidateSelection,
+    diskann_sector_reads: u64,
 }
 
 impl CandidatePlan {
@@ -159,7 +173,7 @@ impl IndexRegistry {
 
     pub(crate) fn restore_cache(
         bytes: &[u8],
-        diskann_bytes: Option<&[u8]>,
+        diskann_file: Option<crate::storage::PositionedFile>,
         schema: &CollectionSchema,
         docs: &DocumentMap,
         source_revision: u64,
@@ -167,7 +181,7 @@ impl IndexRegistry {
     ) -> Option<Self> {
         cache::restore(
             bytes,
-            diskann_bytes,
+            diskann_file,
             schema,
             docs,
             source_revision,
@@ -312,7 +326,7 @@ impl IndexRegistry {
         revision: u64,
         query: &SearchQuery,
         allowed: Option<&OrdinalSet>,
-    ) -> Result<Option<CandidateSelection>> {
+    ) -> Result<Option<AnnCandidates>> {
         let Some(index) = self.indexes.get(&query.field_name) else {
             return Ok(None);
         };
@@ -339,8 +353,11 @@ impl IndexRegistry {
             |allowed| index.eligible_vector_count(allowed.bitmap()),
         );
         if eligible_count == 0 {
-            return Ok(Some(CandidateSelection {
-                ids: OrdinalSet::new(&self.ordinals, RoaringTreemap::new()),
+            return Ok(Some(AnnCandidates {
+                selection: CandidateSelection {
+                    ids: OrdinalSet::new(&self.ordinals, RoaringTreemap::new()),
+                },
+                diskann_sector_reads: 0,
             }));
         }
         let search = AnnSearchContext {
@@ -352,13 +369,26 @@ impl IndexRegistry {
             eligible_count,
             ordinals: &self.ordinals,
         };
-        let ids = match &index.base.kind {
-            VectorIndexKind::Hnsw(hnsw) => index.hnsw_candidates(hnsw, &search),
-            VectorIndexKind::Ivf(ivf) => index.ivf_candidates(ivf, &search),
+        let result = match &index.base.kind {
+            VectorIndexKind::Hnsw(hnsw) => {
+                index.hnsw_candidates(hnsw, &search).map(|ids| AnnOrdinals {
+                    ids,
+                    diskann_sector_reads: 0,
+                })
+            }
+            VectorIndexKind::Ivf(ivf) => {
+                index.ivf_candidates(ivf, &search).map(|ids| AnnOrdinals {
+                    ids,
+                    diskann_sector_reads: 0,
+                })
+            }
             VectorIndexKind::Vamana(vamana) => index.vamana_candidates(vamana, &search),
         };
-        Ok(ids.map(|ids| CandidateSelection {
-            ids: OrdinalSet::new(&self.ordinals, ids),
+        Ok(result.map(|result| AnnCandidates {
+            selection: CandidateSelection {
+                ids: OrdinalSet::new(&self.ordinals, result.ids),
+            },
+            diskann_sector_reads: result.diskann_sector_reads,
         }))
     }
 
@@ -417,6 +447,7 @@ impl IndexRegistry {
                 selection: None,
                 fts_scores: Some(fts_scores),
                 used_ann: false,
+                diskann_sector_reads: 0,
                 used_scalar,
                 used_fts_index: true,
             });
@@ -427,6 +458,7 @@ impl IndexRegistry {
             }),
             fts_scores: None,
             used_ann: false,
+            diskann_sector_reads: 0,
             used_scalar,
             used_fts_index: false,
         })
@@ -449,10 +481,12 @@ impl IndexRegistry {
         let Some(mut scalar) = scalar else {
             let ann = self.candidates(docs, source_revision, query, None)?;
             let used_ann = ann.is_some();
+            let diskann_sector_reads = ann.as_ref().map_or(0, |ann| ann.diskann_sector_reads);
             return Ok(CandidatePlan {
-                selection: ann,
+                selection: ann.map(|ann| ann.selection),
                 fts_scores: None,
                 used_ann,
+                diskann_sector_reads,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -469,6 +503,7 @@ impl IndexRegistry {
                 }),
                 fts_scores: None,
                 used_ann: false,
+                diskann_sector_reads: 0,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -492,6 +527,7 @@ impl IndexRegistry {
                 }),
                 fts_scores: None,
                 used_ann: false,
+                diskann_sector_reads: 0,
                 used_scalar,
                 used_fts_index: false,
             });
@@ -503,14 +539,16 @@ impl IndexRegistry {
                 }),
                 fts_scores: None,
                 used_ann: false,
+                diskann_sector_reads: 0,
                 used_scalar,
                 used_fts_index: false,
             });
         };
         Ok(CandidatePlan {
-            selection: Some(ann),
+            selection: Some(ann.selection),
             fts_scores: None,
             used_ann: true,
+            diskann_sector_reads: ann.diskann_sector_reads,
             used_scalar,
             used_fts_index: false,
         })
@@ -608,145 +646,6 @@ impl VectorIndex {
                 .intersection_len(allowed)
                 .saturating_sub(self.tombstones.intersection_len(allowed)),
         )
-    }
-
-    fn hnsw_candidates(
-        &self,
-        hnsw: &HnswIndex,
-        search: &AnnSearchContext<'_>,
-    ) -> Option<RoaringTreemap> {
-        let requested_ef = optional_positive_query_parameter(search.query, "ef");
-        let limit = hnsw.candidate_limit(requested_ef, search.topk, search.eligible_count);
-        let base = if let Some(allowed) = search.allowed {
-            let base_eligible_count = self.base_eligible_vector_count(allowed);
-            let traversal_limit =
-                proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
-            if traversal_limit >= search.eligible_count {
-                return None;
-            }
-            hnsw.filtered_candidates(
-                &self.base.vectors,
-                search.ordinals,
-                search.vector,
-                limit,
-                traversal_limit,
-                search.metric,
-                HnswFilter {
-                    allowed,
-                    excluded: &self.tombstones,
-                    eligible_count: base_eligible_count,
-                },
-            )
-        } else {
-            let base_ef = limit
-                .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
-                .min(self.base.vectors.len());
-            hnsw.candidates(
-                &self.base.vectors,
-                search.ordinals,
-                search.vector,
-                Some(base_ef),
-                search.topk,
-                search.metric,
-            )
-        };
-        let merged = self.merge_candidates(
-            base,
-            search.vector,
-            Some(limit),
-            search.metric,
-            search.allowed,
-            search.ordinals,
-        );
-        candidate_set_is_sufficient(&merged, search).then_some(merged)
-    }
-
-    fn ivf_candidates(
-        &self,
-        ivf: &IvfIndex,
-        search: &AnnSearchContext<'_>,
-    ) -> Option<RoaringTreemap> {
-        let requested_nprobe = optional_positive_query_parameter(search.query, "nprobe");
-        let base = search.allowed.map_or_else(
-            || ivf.candidates(search.vector, requested_nprobe),
-            |allowed| {
-                ivf.filtered_candidates(
-                    search.vector,
-                    requested_nprobe,
-                    search.topk,
-                    allowed,
-                    &self.tombstones,
-                )
-            },
-        );
-        let merged = self.merge_candidates(
-            base,
-            search.vector,
-            None,
-            search.metric,
-            search.allowed,
-            search.ordinals,
-        );
-        let Some(scale_factor) = optional_f32_query_parameter(search.query, "scale_factor") else {
-            return candidate_set_is_sufficient(&merged, search).then_some(merged);
-        };
-        let limit = scaled_candidate_limit(search.topk, scale_factor, search.eligible_count);
-        let limited = self.limit_candidates(
-            &merged,
-            search.vector,
-            limit,
-            search.metric,
-            search.ordinals,
-        );
-        candidate_set_is_sufficient(&limited, search).then_some(limited)
-    }
-
-    fn vamana_candidates(
-        &self,
-        vamana: &VamanaIndex,
-        search: &AnnSearchContext<'_>,
-    ) -> Option<RoaringTreemap> {
-        let requested_list_size = optional_positive_query_parameter(search.query, "list_size");
-        let limit = vamana.candidate_limit(requested_list_size, search.topk, search.eligible_count);
-        let base = if let Some(allowed) = search.allowed {
-            let base_eligible_count = self.base_eligible_vector_count(allowed);
-            let traversal_limit =
-                proportional_candidate_limit(limit, self.base.vectors.len(), base_eligible_count);
-            if traversal_limit >= search.eligible_count {
-                return None;
-            }
-            vamana.filtered_candidates(
-                &self.base.vectors,
-                search.ordinals,
-                search.vector,
-                limit,
-                traversal_limit,
-                search.metric,
-                allowed,
-                &self.tombstones,
-            )
-        } else {
-            let base_list_size = limit
-                .saturating_add(bitmap_count_to_usize(self.tombstones.len()))
-                .min(self.base.vectors.len());
-            vamana.candidates(
-                &self.base.vectors,
-                search.ordinals,
-                search.vector,
-                Some(base_list_size),
-                search.topk,
-                search.metric,
-            )
-        };
-        let merged = self.merge_candidates(
-            base,
-            search.vector,
-            Some(limit),
-            search.metric,
-            search.allowed,
-            search.ordinals,
-        );
-        candidate_set_is_sufficient(&merged, search).then_some(merged)
     }
 
     fn overlay_len(&self) -> usize {
@@ -891,6 +790,7 @@ fn build_vector_index(
             vectors,
             vector_ordinals,
             kind,
+            diskann: None,
         }),
         delta: BTreeMap::new(),
         delta_ordinals: RoaringTreemap::new(),

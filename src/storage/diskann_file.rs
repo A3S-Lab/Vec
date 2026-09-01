@@ -1,13 +1,13 @@
 //! Atomic storage for the optional native `DiskANN` sector sidecar.
 
-use super::derived_file;
+use super::derived_file::{self, PositionedFile};
 use crate::error::Result;
 use std::path::{Path, PathBuf};
 
 const MAX_DISKANN_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
-pub(super) fn read(root: &Path) -> Result<Option<Vec<u8>>> {
-    derived_file::read(
+pub(super) fn open(root: &Path) -> Result<Option<PositionedFile>> {
+    derived_file::open(
         root,
         &relative_path(),
         MAX_DISKANN_FILE_BYTES,

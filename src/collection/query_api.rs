@@ -43,6 +43,8 @@ impl Collection {
             } else {
                 QueryKind::Exact
             },
+            diskann: plan.diskann_sector_reads > 0,
+            diskann_sector_reads: plan.diskann_sector_reads,
             filtered: query
                 .filter
                 .as_ref()
@@ -64,6 +66,8 @@ impl Collection {
         let snapshot = self.snapshot_state()?;
         let mut branches: Vec<Vec<Doc>> = Vec::with_capacity(query.queries.len());
         let mut used_ann = false;
+        let mut used_diskann = false;
+        let mut diskann_sector_reads = 0_u64;
         let mut used_scalar = false;
         let mut used_fts_index = false;
         let mut candidates = 0_u64;
@@ -82,6 +86,8 @@ impl Collection {
                 filter.as_ref(),
             )?;
             used_ann |= plan.used_ann;
+            used_diskann |= plan.diskann_sector_reads > 0;
+            diskann_sector_reads = diskann_sector_reads.saturating_add(plan.diskann_sector_reads);
             used_scalar |= plan.used_scalar;
             used_fts_index |= plan.used_fts_index;
             candidates = candidates.saturating_add(plan.candidate_count(snapshot.docs.len()));
@@ -141,6 +147,8 @@ impl Collection {
                 (false, true) => QueryKind::Fts,
                 (false, false) => QueryKind::Exact,
             },
+            diskann: used_diskann,
+            diskann_sector_reads,
             filtered: query.filter.is_some(),
             index_usage: IndexUsage::new(used_scalar, used_fts_index),
             radius: false,
