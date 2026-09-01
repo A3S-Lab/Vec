@@ -26,6 +26,8 @@ project-owned gates for:
 - `group_by.rs`: grouped top-k search and output projection;
 - `schema_iteration.rs`: isolated iteration plus add, rename, alter, drop,
   flush, and reopen.
+- `maintenance_health.rs`: explicitly owned background optimization/checkpoint
+  scheduling plus collection and worker health assessment.
 
 Run all gates from the crate root:
 
@@ -34,4 +36,5 @@ cargo run --locked --example crud_operations
 cargo run --locked --example retrieval_workflows
 cargo run --locked --example group_by
 cargo run --locked --example schema_iteration
+cargo run --locked --example maintenance_health
 ```

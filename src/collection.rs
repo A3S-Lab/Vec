@@ -3,6 +3,7 @@
 mod checkpoint;
 mod configuration;
 mod index_api;
+mod maintenance;
 mod query_api;
 mod query_contract;
 mod query_engine;
@@ -16,12 +17,16 @@ use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, ErrorCode, Result};
 use crate::index::IndexRegistry;
 use crate::schema::{AddColumnOption, AlterColumnOption, CollectionSchema, FieldSchema};
-pub use crate::stats::IndexStat;
-use crate::stats::{StatsRegistry, StatsSnapshot};
+use crate::stats::{assess_collection_health, CollectionHealthInput, StatsRegistry, StatsSnapshot};
+pub use crate::stats::{CollectionHealth, CollectionHealthStatus, IndexStat};
 use crate::storage::{StorageHandle, WalOperation};
 use crate::types::IndexType;
 use checkpoint::{commit_prepared_schema_change, maybe_checkpoint, persist_index_cache};
 use configuration::options_config;
+pub use maintenance::{
+    CollectionMaintenanceHealth, CollectionMaintenanceOptions, CollectionMaintenancePhase,
+    CollectionMaintenanceRuntime,
+};
 use query_engine::{matches_filter, parse_filter_expression};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
@@ -153,6 +158,7 @@ struct CollectionInner {
     storage: Mutex<StorageHandle>,
     writer: Mutex<()>,
     closed: AtomicBool,
+    maintenance_claimed: AtomicBool,
 }
 
 /// Cheap, cloneable, thread-safe handle to one collection.
@@ -189,6 +195,7 @@ impl Collection {
                 storage: Mutex::new(storage),
                 writer: Mutex::new(()),
                 closed: AtomicBool::new(false),
+                maintenance_claimed: AtomicBool::new(false),
             }),
         })
     }
@@ -275,6 +282,7 @@ impl Collection {
                 storage: Mutex::new(storage),
                 writer: Mutex::new(()),
                 closed: AtomicBool::new(false),
+                maintenance_claimed: AtomicBool::new(false),
             }),
         })
     }
@@ -363,6 +371,30 @@ impl Collection {
 
     pub fn stats(&self) -> Result<CollectionStats> {
         self.ensure_open()?;
+        self.collect_stats().map(|(stats, _)| stats)
+    }
+
+    /// Assesses authoritative revision agreement and derived-index readiness.
+    ///
+    /// A pending WAL is reported but remains healthy because interval/manual
+    /// durability intentionally permits checkpoint lag. Unlike other data
+    /// methods, health remains observable after the shared handle is closed.
+    pub fn health(&self) -> Result<CollectionHealth> {
+        let (stats, storage_revision) = self.collect_stats()?;
+        Ok(assess_collection_health(CollectionHealthInput {
+            is_open: self.is_open(),
+            revision: stats.revision,
+            storage_revision,
+            doc_count: stats.doc_count,
+            indexes: &stats.indexes,
+            read_only: stats.read_only,
+            wal_ops_since_checkpoint: stats.wal_ops_since_checkpoint,
+            wal_bytes_since_checkpoint: stats.wal_bytes_since_checkpoint,
+            maintenance_active: self.inner.maintenance_claimed.load(AtomicOrdering::Acquire),
+        }))
+    }
+
+    fn collect_stats(&self) -> Result<(CollectionStats, u64)> {
         let state = self
             .inner
             .state
@@ -403,18 +435,21 @@ impl Collection {
                 }),
         );
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(CollectionStats {
-            doc_count: state.docs.len() as u64,
-            indexes,
-            revision: state.revision,
-            index_cache_hit: state.index_cache_hit,
-            io_backend: state.config.io_backend,
-            read_only: state.options.read_only,
-            wal_active_seq: storage.manifest.wal_active_seq,
-            wal_checkpoint_seq: storage.manifest.wal_checkpoint_seq,
-            wal_ops_since_checkpoint: storage.manifest.wal_ops_since_checkpoint,
-            wal_bytes_since_checkpoint: storage.manifest.wal_bytes_since_checkpoint,
-        })
+        Ok((
+            CollectionStats {
+                doc_count: state.docs.len() as u64,
+                indexes,
+                revision: state.revision,
+                index_cache_hit: state.index_cache_hit,
+                io_backend: state.config.io_backend,
+                read_only: state.options.read_only,
+                wal_active_seq: storage.manifest.wal_active_seq,
+                wal_checkpoint_seq: storage.manifest.wal_checkpoint_seq,
+                wal_ops_since_checkpoint: storage.manifest.wal_ops_since_checkpoint,
+                wal_bytes_since_checkpoint: storage.manifest.wal_bytes_since_checkpoint,
+            },
+            storage.manifest.revision,
+        ))
     }
 
     pub fn stats_snapshot(&self) -> Result<StatsSnapshot> {

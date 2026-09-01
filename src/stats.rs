@@ -60,6 +60,135 @@ pub struct StatsSnapshot {
     pub wal_bytes_since_checkpoint: u64,
 }
 
+/// Readiness assessment for one collection handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionHealthStatus {
+    /// The authoritative and derived generations agree and every configured
+    /// index is complete.
+    Healthy,
+    /// Authoritative storage is usable, but at least one derived index is
+    /// incomplete, missing, or stale.
+    Degraded,
+    /// The in-memory and durable authoritative revisions disagree.
+    Unhealthy,
+    /// The shared collection handle has been closed.
+    Closed,
+}
+
+/// Machine-readable collection readiness and checkpoint-lag snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionHealth {
+    pub status: CollectionHealthStatus,
+    pub revision: u64,
+    pub storage_revision: u64,
+    pub doc_count: u64,
+    pub index_count: usize,
+    pub ready_index_count: usize,
+    pub read_only: bool,
+    /// WAL work awaiting an authoritative snapshot checkpoint. Pending WAL is
+    /// normal for interval/manual durability and does not by itself degrade
+    /// readiness.
+    pub checkpoint_pending: bool,
+    pub wal_ops_since_checkpoint: u64,
+    pub wal_bytes_since_checkpoint: u64,
+    /// Whether an explicitly owned background maintenance runtime currently
+    /// holds this collection's single scheduler claim.
+    pub maintenance_active: bool,
+    /// Stable, actionable explanations for non-healthy states.
+    pub reasons: Vec<String>,
+}
+
+impl CollectionHealth {
+    /// Returns true only while the collection is open and fully ready.
+    pub fn is_healthy(&self) -> bool {
+        self.status == CollectionHealthStatus::Healthy
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CollectionHealthInput<'a> {
+    pub is_open: bool,
+    pub revision: u64,
+    pub storage_revision: u64,
+    pub doc_count: u64,
+    pub indexes: &'a [IndexStat],
+    pub read_only: bool,
+    pub wal_ops_since_checkpoint: u64,
+    pub wal_bytes_since_checkpoint: u64,
+    pub maintenance_active: bool,
+}
+
+pub(crate) fn assess_collection_health(input: CollectionHealthInput<'_>) -> CollectionHealth {
+    let ready_index_count = input
+        .indexes
+        .iter()
+        .filter(|index| {
+            index.state == "ready"
+                && is_complete(index.completeness)
+                && index.source_revision == input.revision
+        })
+        .count();
+    let mut reasons = Vec::new();
+    let status = if input.is_open {
+        let mut status = CollectionHealthStatus::Healthy;
+        if input.storage_revision != input.revision {
+            reasons.push(format!(
+                "storage revision {} does not match collection revision {}",
+                input.storage_revision, input.revision
+            ));
+            status = CollectionHealthStatus::Unhealthy;
+        }
+        for index in input.indexes {
+            if index.state != "ready" {
+                reasons.push(format!(
+                    "index '{}' is in '{}' state",
+                    index.name, index.state
+                ));
+            } else if !is_complete(index.completeness) {
+                reasons.push(format!(
+                    "index '{}' completeness is {}",
+                    index.name, index.completeness
+                ));
+            } else if index.source_revision != input.revision {
+                reasons.push(format!(
+                    "index '{}' source revision {} does not match collection revision {}",
+                    index.name, index.source_revision, input.revision
+                ));
+            } else {
+                continue;
+            }
+            if status == CollectionHealthStatus::Healthy {
+                status = CollectionHealthStatus::Degraded;
+            }
+        }
+        status
+    } else {
+        reasons.push("collection is closed".to_string());
+        CollectionHealthStatus::Closed
+    };
+
+    CollectionHealth {
+        status,
+        revision: input.revision,
+        storage_revision: input.storage_revision,
+        doc_count: input.doc_count,
+        index_count: input.indexes.len(),
+        ready_index_count,
+        read_only: input.read_only,
+        checkpoint_pending: input.wal_ops_since_checkpoint > 0
+            || input.wal_bytes_since_checkpoint > 0,
+        wal_ops_since_checkpoint: input.wal_ops_since_checkpoint,
+        wal_bytes_since_checkpoint: input.wal_bytes_since_checkpoint,
+        maintenance_active: input.maintenance_active,
+        reasons,
+    }
+}
+
+fn is_complete(completeness: f32) -> bool {
+    (completeness - 1.0).abs() <= f32::EPSILON
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct StatsRegistry {
     pub query_count: AtomicU64,
@@ -156,5 +285,77 @@ impl StatsRegistry {
         }
         self.candidates_scanned
             .fetch_add(observation.candidates, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::IndexType;
+
+    fn index(source_revision: u64, completeness: f32, state: &str) -> IndexStat {
+        IndexStat {
+            name: "embedding".to_string(),
+            index_type: IndexType::Hnsw,
+            completeness,
+            source_revision,
+            document_count: 2,
+            estimated_payload_bytes: Some(128),
+            state: state.to_string(),
+        }
+    }
+
+    fn assess(indexes: &[IndexStat], storage_revision: u64) -> CollectionHealth {
+        assess_collection_health(CollectionHealthInput {
+            is_open: true,
+            revision: 7,
+            storage_revision,
+            doc_count: 2,
+            indexes,
+            read_only: false,
+            wal_ops_since_checkpoint: 0,
+            wal_bytes_since_checkpoint: 0,
+            maintenance_active: false,
+        })
+    }
+
+    #[test]
+    fn stale_or_non_finite_index_completeness_is_degraded() {
+        let stale = assess(&[index(6, 1.0, "ready")], 7);
+        assert_eq!(stale.status, CollectionHealthStatus::Degraded);
+        assert_eq!(stale.ready_index_count, 0);
+        assert!(stale.reasons[0].contains("source revision 6"));
+
+        let incomplete = assess(&[index(7, f32::NAN, "ready")], 7);
+        assert_eq!(incomplete.status, CollectionHealthStatus::Degraded);
+        assert_eq!(incomplete.ready_index_count, 0);
+        assert!(incomplete.reasons[0].contains("completeness"));
+    }
+
+    #[test]
+    fn authoritative_revision_disagreement_is_unhealthy() {
+        let health = assess(&[index(7, 1.0, "ready")], 6);
+        assert_eq!(health.status, CollectionHealthStatus::Unhealthy);
+        assert_eq!(health.ready_index_count, 1);
+        assert!(health.reasons[0].contains("storage revision 6"));
+    }
+
+    #[test]
+    fn closed_status_is_explicit_even_for_a_consistent_snapshot() {
+        let ready = [index(7, 1.0, "ready")];
+        let health = assess_collection_health(CollectionHealthInput {
+            is_open: false,
+            revision: 7,
+            storage_revision: 7,
+            doc_count: 2,
+            indexes: &ready,
+            read_only: false,
+            wal_ops_since_checkpoint: 0,
+            wal_bytes_since_checkpoint: 0,
+            maintenance_active: false,
+        });
+        assert_eq!(health.status, CollectionHealthStatus::Closed);
+        assert_eq!(health.ready_index_count, 1);
+        assert!(!health.is_healthy());
     }
 }

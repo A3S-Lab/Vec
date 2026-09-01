@@ -686,10 +686,17 @@ execution are implemented.
 - Completed: collection and per-index statistics, ready/missing completeness,
   query telemetry, automatic bounded ordinal/index-delta compaction, and
   caller-owned dense/sparse embedding and query-executor traits are live.
-- Remaining: background maintenance scheduling and an explicit public health
-  assessment. The pinned upstream Rust SDK does not yet publish standalone
-  FTS/hybrid, group-by, or schema-evolution examples, so those project-owned
-  gates cannot honestly claim namespace-only upstream provenance yet.
+- Completed: an explicitly owned standard-thread runtime schedules full
+  derived-registry rebuild plus same-revision checkpoints, skips already
+  maintained revisions, coalesces immediate triggers, records bounded worker
+  diagnostics, rejects duplicate/read-only ownership, and joins on close or
+  drop. Public collection health distinguishes healthy, degraded, unhealthy,
+  and closed state from normal WAL checkpoint lag by checking authoritative
+  revision agreement and every index generation.
+- Remaining exit-gate provenance: the pinned upstream Rust SDK does not yet
+  publish standalone FTS/hybrid, group-by, or schema-evolution examples, so
+  those project-owned gates cannot honestly claim namespace-only upstream
+  provenance yet.
 
 **Exit gate**
 

@@ -352,6 +352,42 @@ The public API supports read-only handles, configurable durability and sidecar
 I/O, explicit `flush`, targeted `rebuild_index`, whole-registry `optimize`, and
 per-handle cache-hit/query/candidate plus DiskANN backend/sector-read telemetry.
 
+## Health and background maintenance
+
+`Collection::health` reports an explicit `healthy`, `degraded`, `unhealthy`,
+or `closed` state. It checks the in-memory revision against the committed
+storage revision and requires every configured derived index to be ready,
+complete, and sourced from that revision. WAL operations waiting for a
+checkpoint are reported separately because they are normal under interval or
+manual durability and do not make an otherwise recoverable collection
+unhealthy.
+
+Collection construction never starts a hidden thread. A writable collection
+can opt into one explicitly owned standard-thread scheduler:
+
+```rust,no_run
+use a3s_vec::{Collection, CollectionMaintenanceOptions};
+use std::time::Duration;
+
+fn start(collection: &Collection) -> a3s_vec::Result<()> {
+    let options = CollectionMaintenanceOptions::new()
+        .try_with_interval(Duration::from_secs(60))?;
+    let maintenance = collection.start_maintenance(options)?;
+    maintenance.trigger()?;
+    let health = maintenance.health();
+    assert!(health.worker_alive);
+    maintenance.close()?;
+    Ok(())
+}
+```
+
+Each due revision rebuilds the complete derived registry and checkpoints the
+same authoritative generation while the writer gate is held; readers continue
+using the previous immutable indexes during construction. Unchanged revisions
+are skipped. Only one runtime may own a collection schedule, read-only handles
+reject it, and `close` or `Drop` wakes and joins the worker before releasing
+that ownership claim.
+
 ## Current boundaries
 
 | Area | Status |
@@ -365,6 +401,7 @@ per-handle cache-hit/query/candidate plus DiskANN backend/sector-read telemetry.
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
 | Dense/sparse source-ID query | Implemented; missing sources return `NotFound` and missing sparse payloads return `FailedPrecondition` |
+| Collection health and background maintenance | Implemented with explicit ownership, bounded schedules, revision-aware skips, worker diagnostics, and joined shutdown |
 | DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |

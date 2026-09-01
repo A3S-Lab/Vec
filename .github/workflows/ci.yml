@@ -33,6 +33,7 @@ jobs:
           cargo +stable run --locked --example retrieval_workflows
           cargo +stable run --locked --example group_by
           cargo +stable run --locked --example schema_iteration
+          cargo +stable run --locked --example maintenance_health
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings

@@ -157,6 +157,11 @@ algorithm dependency is also private: it may implement internal filtering,
 tokenization, or document conversion, but its modules and types are not
 re-exported as part of the A3S contract.
 
+The module inventory above is extended by `collection/maintenance.rs`, which
+owns the explicit scheduler lifecycle, and `tests/maintenance_health.rs`,
+which covers its public ownership, concurrency, readiness, and shutdown
+contracts.
+
 ## 3. Runtime ownership and concurrency
 
 `Collection` is a cheap, cloneable handle around an `Arc<CollectionInner>`:
@@ -257,6 +262,24 @@ index update observe only complete old or new generations; and scalar readers
 racing whole-corpus posting updates always receive one complete bitmap/document
 revision. An equivalent FTS fixture verifies that term postings, BM25 corpus
 statistics, and documents also publish as one generation.
+
+Background maintenance is explicit ownership rather than a constructor side
+effect. `Collection::start_maintenance` claims the collection's single
+standard-thread scheduler; the returned runtime must be retained and closed or
+dropped. A due pass holds the existing writer gate, builds a complete derived
+registry while queries keep the old immutable generation, publishes it once,
+then checkpoints that exact authoritative revision. Already maintained
+revisions are skipped. A condition-variable predicate makes immediate triggers
+and shutdown immune to early-notification races, and shutdown joins the worker
+before releasing the ownership claim. Read-only handles cannot start the
+runtime.
+
+`Collection::health` is independent of scheduler ownership. It compares the
+published and durable authoritative revisions, assesses each index's state,
+completeness, and source revision, and exposes checkpoint lag without treating
+valid manual/interval WAL accumulation as a readiness failure. The maintenance
+runtime separately exposes bounded worker progress, failure, and lifecycle
+diagnostics.
 
 No async runtime is required by the core API. With the `async` feature,
 `query_async`, `multi_query_async`, and `group_by_async` use `spawn_blocking`
@@ -673,7 +696,8 @@ The Rust API provides the zvec concepts below without requiring zvec's C API:
 - documents: typed setters/getters, sparse vectors, nulls, field projection;
 - collection DML: insert, update, upsert, delete, delete-by-filter, fetch;
 - DQL: vector, sparse, FTS, hybrid, multi-query, group-by, and iterators;
-- index management: create/drop/optimize and index statistics;
+- index management: create/drop/optimize, index statistics, explicit
+  background maintenance, and health assessment;
 - durability: create/open, flush, WAL recovery, read-only mode, and locking;
 - reranking: weighted and reciprocal-rank fusion with score normalization;
 - caller-owned embedding traits for applications that want text-to-vector

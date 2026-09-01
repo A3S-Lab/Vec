@@ -20,8 +20,11 @@
 //! uses deterministic PQ training, ADC graph traversal, and a typed choice of
 //! positioned reads or a validated immutable anonymous mmap snapshot. With the
 //! `async` feature, query, multi-query, and group-by entry points run that same
-//! work on Tokio's blocking pool. Native async file reads and direct file-backed
-//! mmap remain explicit future optimizations.
+//! work on Tokio's blocking pool. Writable collections can also opt into one
+//! explicitly owned standard-thread maintenance scheduler, while public health
+//! snapshots distinguish authoritative revision failures from derived-index
+//! degradation and normal WAL checkpoint lag. Native async file reads and
+//! direct file-backed mmap remain explicit future optimizations.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
@@ -46,7 +49,9 @@ mod text;
 mod types;
 
 pub use collection::{
-    Collection, CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,
+    Collection, CollectionHealth, CollectionHealthStatus, CollectionMaintenanceHealth,
+    CollectionMaintenanceOptions, CollectionMaintenancePhase, CollectionMaintenanceRuntime,
+    CollectionOptions, CollectionStats, DocWriteResult, IndexStat, WriteResult,
 };
 pub use config::{
     check_version, default_config, initialize, is_initialized, shutdown, version, version_major,
@@ -73,10 +78,10 @@ pub use types::{DataType, DocOperator, IndexType, MetricType, QuantizeType};
 /// Convenient import for the common collection workflow.
 pub mod prelude {
     pub use crate::{
-        initialize, is_initialized, version, Collection, CollectionOptions, CollectionSchema,
-        ConfigBuilder, DataType, Doc, DocIterator, Error, ErrorCode, FieldSchema, IndexParams,
-        IoBackend, MetricType, MultiQuery, QuantizeType, Result, SearchQuery, VectorSchema,
-        WriteResult,
+        initialize, is_initialized, version, Collection, CollectionMaintenanceOptions,
+        CollectionOptions, CollectionSchema, ConfigBuilder, DataType, Doc, DocIterator, Error,
+        ErrorCode, FieldSchema, IndexParams, IoBackend, MetricType, MultiQuery, QuantizeType,
+        Result, SearchQuery, VectorSchema, WriteResult,
     };
 }
 
