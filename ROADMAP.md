@@ -670,6 +670,27 @@ execution are implemented.
 - Background compaction, index progress, collection statistics, and health.
 - Caller-owned dense/sparse embedding traits and an optional query executor.
 
+**Progress**
+
+- Completed: `examples/upstream/crud_operations.rs` is pinned to
+  `zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` and differs only
+  by the mechanical `zvec_rust` to `a3s_vec` namespace replacement. A wrapper
+  applies only upstream-style lint allowances; it builds and runs in CI. Its
+  two incomplete replacement upserts are retained as an auditable upstream
+  fixture defect; both official zvec and A3S correctly reject the missing
+  required `id` field.
+- Completed: asserted executable gates cover vector and FTS search, RRF and
+  weighted hybrid fusion with normalization, group-by top-k, snapshot-isolated
+  iteration, add/rename/alter/drop schema evolution, flush, and reopen. CI
+  executes every gate rather than treating compilation as sufficient.
+- Completed: collection and per-index statistics, ready/missing completeness,
+  query telemetry, automatic bounded ordinal/index-delta compaction, and
+  caller-owned dense/sparse embedding and query-executor traits are live.
+- Remaining: background maintenance scheduling and an explicit public health
+  assessment. The pinned upstream Rust SDK does not yet publish standalone
+  FTS/hybrid, group-by, or schema-evolution examples, so those project-owned
+  gates cannot honestly claim namespace-only upstream provenance yet.
+
 **Exit gate**
 
 - zvec-style Rust examples for CRUD, vector/FTS/hybrid search, multi-query,

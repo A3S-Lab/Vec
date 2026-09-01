@@ -679,6 +679,17 @@ The Rust API provides the zvec concepts below without requiring zvec's C API:
 - caller-owned embedding traits for applications that want text-to-vector
   execution in Rust.
 
+Executable compatibility evidence lives under `examples/`. The pinned
+`examples/upstream/crud_operations.rs` source is the upstream `zvec_rust`
+fixture with only its crate namespace replaced; a top-level executable wrapper
+adds narrowly scoped lint allowances. Project-owned asserted binaries cover
+the advanced routes that the pinned upstream revision does not ship as
+examples: vector/FTS hybrid fusion, group-by, iterator isolation, and schema
+evolution through reopen. CI runs these binaries; compiling examples alone is
+not treated as behavioral evidence. The upstream CRUD fixture intentionally
+retains its incomplete replacement-upsert inputs, which both engines reject
+under their shared non-null schema contract.
+
 The crate does not promise ABI compatibility with the C API or source
 compatibility with Python-only extension classes. Those are separate adapters
 and are intentionally outside this project. It likewise does not expose the

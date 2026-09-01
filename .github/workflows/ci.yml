@@ -27,6 +27,12 @@ jobs:
         run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
       - name: Test all features
         run: cargo +stable test --locked --all-features
+      - name: Run executable compatibility examples
+        run: |
+          cargo +stable run --locked --example crud_operations
+          cargo +stable run --locked --example retrieval_workflows
+          cargo +stable run --locked --example group_by
+          cargo +stable run --locked --example schema_iteration
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -44,6 +50,8 @@ jobs:
         run: cargo +1.75.0 test --locked
       - name: Test Tokio async query feature
         run: cargo +1.75.0 test --locked --features async
+      - name: Check compatibility examples
+        run: cargo +1.75.0 check --locked --features async --examples
 
   recovery-fuzz:
     name: Recovery fuzz smoke

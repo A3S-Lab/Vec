@@ -120,6 +120,29 @@ feature is an executor-safety boundary, not a latency claim. Tokio cannot
 cancel `spawn_blocking` work after it starts, so dropping one of these futures
 does not cancel its underlying query.
 
+## Executable compatibility examples
+
+The [`examples`](examples/README.md) directory is part of the regression
+surface. `examples/upstream/crud_operations.rs` tracks
+`zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` with only the
+crate namespace changed; its executable wrapper adds only local lint
+allowances. Asserted project-owned binaries cover vector/FTS and hybrid
+retrieval, grouped top-k, isolated iteration, and durable schema evolution. CI
+runs every binary instead of only checking that it compiles:
+
+```text
+cargo run --locked --example crud_operations
+cargo run --locked --example retrieval_workflows
+cargo run --locked --example group_by
+cargo run --locked --example schema_iteration
+```
+
+The pinned upstream CRUD fixture contains two incomplete replacement upserts;
+both official zvec and `a3s-vec` reject them because the required `id` field is
+absent. This known upstream fixture defect is preserved so the namespace-only
+claim remains auditable. The asserted A3S-owned examples fail on any incorrect
+result.
+
 ## Retrieval capabilities
 
 ### Vectors and indexes
