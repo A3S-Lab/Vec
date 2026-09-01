@@ -163,9 +163,7 @@ impl RabitqQuantizer {
             && self.codes.validates(vectors.slot_count())
             && self.codes.keys().eq(vectors.keys())
             && self.codes.values().all(|code| {
-                usize::try_from(code.center)
-                    .ok()
-                    .is_some_and(|center| center < self.centroids.len())
+                usize::try_from(code.center).is_ok_and(|center| center < self.centroids.len())
                     && code.packed.len()
                         == packed_bytes(self.rotation.padded_dimension(), total_bits)
                     && code.scale.is_finite()
