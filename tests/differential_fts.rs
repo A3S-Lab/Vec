@@ -183,7 +183,7 @@ fn scan_bm25_preserves_a_subunit_average_document_length() {
 }
 
 #[test]
-fn structured_fts_executes_supported_syntax_and_rejects_the_remaining_forms() {
+fn structured_fts_executes_supported_syntax_and_rejects_symbolic_boolean_aliases() {
     let temporary = tempdir().expect("temporary directory must be available");
     let collection = Collection::create(
         temporary
@@ -212,7 +212,17 @@ fn structured_fts_executes_supported_syntax_and_rejects_the_remaining_forms() {
         .expect("a whitespace-separated query string must execute");
     assert_eq!(simple_result[0].get_pk(), Some("doc"));
 
-    for expression in ["rust AND vector", "\"rust vector\"", "+rust"] {
+    for expression in [
+        "rust AND vector",
+        "\"rust vector\"",
+        "+rust",
+        "rust*",
+        "body:rust",
+        "rust^2",
+        "rust~1",
+        "[rust TO vector]",
+        "\"rust database\"~1",
+    ] {
         let mut fts = Fts::new().expect("FTS payload must be created");
         fts.set_query_string(expression)
             .expect("syntactic query string must be accepted");
@@ -223,14 +233,14 @@ fn structured_fts_executes_supported_syntax_and_rejects_the_remaining_forms() {
         assert_eq!(result[0].get_pk(), Some("doc"), "{expression}");
     }
 
-    for expression in ["rust*", "rust && vector", "rust^2", "[alpha TO omega]"] {
+    for expression in ["rust && vector", "rust || vector"] {
         let mut fts = Fts::new().expect("FTS payload must be created");
         fts.set_query_string(expression)
             .expect("syntactic query string must be accepted");
         let query = SearchQuery::fts("body", &fts, 10).expect("FTS query must be valid");
         let error = collection
             .query(&query)
-            .expect_err("unsupported advanced syntax must fail");
+            .expect_err("unsupported symbolic boolean syntax must fail");
         assert_eq!(error.code, ErrorCode::NotSupported, "{expression}");
     }
 }

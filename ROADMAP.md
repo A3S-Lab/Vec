@@ -28,9 +28,9 @@ Independent differential fixtures now cover deterministic dense/sparse scores,
 filters, radius/top-k ordering, and scan BM25 corpus statistics. A fixed-seed
 256-document corpus adds 100 dense metric/filter combinations and 24
 BM25/filter combinations, including a flush/reopen boundary. Structured FTS
-now executes explicit boolean groups, required/prohibited clauses, and exact
-phrases; wildcard, fielded, boosted, fuzzy, and range syntax still fails
-explicitly instead of being approximated. Concurrent public-API
+now executes explicit boolean groups, required/prohibited clauses, wildcard
+and fuzzy terms, field qualifiers, finite boosts, lexical ranges, and exact or
+ordered-proximity phrases with shared index/scan semantics. Concurrent public-API
 fixtures prove serialized disjoint updates, revision-pinned iterators, and
 atomic multi-document publication to readers. The external algorithm kernel
 is private and has a negative compile-time API fixture. Inert process/
@@ -94,7 +94,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 196 passing unit/integration tests plus four
+all-feature baseline has 205 passing unit/integration tests plus four
 compile-fail doctests; default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -387,10 +387,10 @@ are live; mmap/async acceleration remains future work.
 
 ## Phase 5 — Structured and full-text retrieval
 
-**Status:** scalar indexing, bitmap prefiltering, indexed BM25, Unicode n-gram
-tokenization, ordered token filters, and structured boolean/phrase execution
-are implemented. Wildcard, fielded, boosted, fuzzy, and range FTS syntax
-remains open.
+**Status:** complete. Scalar indexing, bitmap prefiltering, indexed BM25,
+Unicode n-gram tokenization, ordered token filters, and structured boolean,
+wildcard, field-qualified, boosted, fuzzy, range, and phrase-proximity
+execution are implemented.
 
 **Deliverables**
 
@@ -520,10 +520,17 @@ remains open.
   coverage. In a 25,000-document benchmark, the selective phrase and required+
   optional cases each scored one candidate instead of 25,000; broad phrase and
   boolean-NOT cases selected the scan fallback.
-- Remaining: wildcard terms, field-qualified terms, boosts, fuzzy/proximity
-  suffixes, and FTS range syntax. Positional postings remain an optional future
-  optimization; exact phrase semantics currently retokenize the candidate
-  documents.
+- Completed: wildcard `*`/`?` patterns, same-field qualifiers, finite boosts,
+  transposition-aware fuzzy distances 1 and 2, independently inclusive lexical
+  term ranges, and ordered phrase slop from 0 through 1,024 expand and evaluate
+  through one AST on both index and scan paths. Differential fixtures compare
+  IDs and public score bits across mutation and cache reopen boundaries. Broad
+  dynamic leaves still use the cost-aware exact scan fallback. Positional
+  postings remain an optional performance optimization; phrase proximity
+  currently retokenizes only candidate documents. In the 25,000-document
+  benchmark, wildcard and exact-range queries scored one candidate, fuzzy
+  distance 1 scored 36, and ordered proximity scored one; every result and
+  public score bit matched the scan control.
 
 ## Phase 6 — DiskANN family and compression
 

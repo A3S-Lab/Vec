@@ -139,7 +139,7 @@ fn micros_per_query(duration: Duration) -> f64 {
 }
 
 fn main() {
-    let documents = positive_env("A3S_VEC_STRUCTURED_FTS_DOCUMENTS", DEFAULT_DOCUMENTS).max(2);
+    let documents = positive_env("A3S_VEC_STRUCTURED_FTS_DOCUMENTS", DEFAULT_DOCUMENTS).max(12);
     let rounds = positive_env("A3S_VEC_STRUCTURED_FTS_ROUNDS", DEFAULT_ROUNDS);
     let temporary = tempdir().expect("temporary directory must be available");
     let indexed = Collection::create(
@@ -170,6 +170,10 @@ fn main() {
         .rev()
         .find(|index| index % 5 != 0 && index % 11 != 0)
         .expect("positive document count must provide a selective fixture");
+    let proximity_unique = (0..documents)
+        .rev()
+        .find(|index| index % 5 == 0 && index % 11 != 0)
+        .expect("positive document count must provide a proximity fixture");
 
     println!("case,mode,documents,candidates_per_query,micros_per_query");
     for (name, expression) in [
@@ -180,6 +184,16 @@ fn main() {
         (
             "selective_required_optional",
             format!("+resolvesymbol{unique} workspace"),
+        ),
+        ("selective_wildcard", format!("resolvesymbol{unique}*")),
+        ("selective_fuzzy", format!("resolvesymbol{unique}~1")),
+        (
+            "selective_range",
+            format!("[resolvesymbol{unique} TO resolvesymbol{unique}]"),
+        ),
+        (
+            "selective_proximity",
+            format!("resolvesymbol{proximity_unique} AND \"vector database\"~1"),
         ),
         ("common_phrase", "\"vector database\"".to_string()),
         (

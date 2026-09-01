@@ -20,7 +20,7 @@ stale, or not selective enough.
 | Need | Current implementation |
 | --- | --- |
 | Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, HNSW/IVF RaBitQ, L2 Vamana, PQ/ADC DiskANN, and exact re-ranking |
-| Workspace text search | BM25, Unicode n-grams, boolean groups, exact phrases, and token filters |
+| Workspace text search | BM25, Unicode n-grams, boolean groups, wildcard/fuzzy/range terms, ordered phrase proximity, boosts, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
 | Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana/DiskANN sector sidecar |
 | Predictable failure | Typed validation errors and exact fallbacks instead of silent approximation |
@@ -38,18 +38,22 @@ machine produced:
 
 | Query | Planner path | Candidates/query | Latency/query |
 | --- | --- | ---: | ---: |
-| Selective phrase | Indexed | 1 | 3.50 µs |
-| Selective phrase baseline | Scan | 25,000 | 13.22 ms |
-| Selective required + optional | Indexed | 1 | 1.88 µs |
-| Selective required + optional baseline | Scan | 25,000 | 13.47 ms |
-| Common phrase | Automatic scan fallback | 25,000 | 13.52 ms |
-| Broad boolean + NOT | Automatic scan fallback | 25,000 | 14.70 ms |
+| Selective phrase | Indexed | 1 | 7.38 µs |
+| Selective required + optional | Indexed | 1 | 4.62 µs |
+| Selective wildcard | Indexed | 1 | 26.55 ms |
+| Selective fuzzy | Indexed | 36 | 33.81 ms |
+| Selective exact range | Indexed | 1 | 429.62 µs |
+| Selective proximity | Indexed | 1 | 7.62 µs |
+| Explicit scan controls | Scan | 25,000 | 38.07–98.36 ms |
+| Common phrase | Automatic scan fallback | 25,000 | 40.81 ms |
+| Broad boolean + NOT | Automatic scan fallback | 25,000 | 43.19 ms |
 
-The selective cases reduce scored candidates by 25,000×. Broad structured
-queries deliberately switch to the exact scan path when candidate-set work is
-unlikely to pay for itself. These are local regression measurements—not a
-cross-project zvec benchmark. Full methodology and repeated observations live
-in [BENCHMARKS.md](BENCHMARKS.md).
+Five selective cases reduce scored candidates by 25,000×; fuzzy expansion
+reduces them from 25,000 to 36. Wildcard and fuzzy queries include a vocabulary
+expansion pass, while broad structured queries deliberately switch to the exact
+scan path when candidate-set work is unlikely to pay for itself. These are
+local regression measurements—not a cross-project zvec benchmark. Full
+methodology and repeated observations live in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Quick start
 
@@ -170,7 +174,7 @@ and filter configuration.
 | --- | --- |
 | Tokenizer | `standard`, `whitespace`, Unicode `ngram`, optional `jieba` / `jieba_accurate` |
 | Token filter | `lowercase`, `ascii_folding`, `stemmer` |
-| Query syntax | `AND`, `OR`, `NOT`, parentheses, `+` required, `-` prohibited, escaped characters, exact quoted phrases |
+| Query syntax | `AND`, `OR`, `NOT`, parentheses, `+` required, `-` prohibited, escapes, `*` / `?` wildcards, same-field qualifiers, `^` boosts, fuzzy terms, ordered phrase slop, and term ranges |
 | Default operator | `OR` for compatibility, or explicit `AND` |
 
 Omitting `filters` selects `lowercase`. Passing an explicit empty slice keeps
@@ -215,13 +219,24 @@ fn identifier_index() -> Result<IndexParams> {
 
 For selective identifier/path queries, `default_operator=AND` starts from the
 shortest posting. Structured expressions build exact boolean candidate sets;
-phrases verify token adjacency only for candidates. The planner falls back to
+phrases verify ordered proximity only for candidates. The planner falls back to
 scan execution for broad expressions and keeps indexed refinement when a scalar
 prefilter is available.
 
-Wildcard terms, field-qualified terms, boosts, fuzzy/proximity suffixes, and
-range syntax currently return `NotSupported` rather than changing query
-meaning.
+Wildcard (`rust*`, `r?sty`), fuzzy (`rust~1` or `rust~2`), and range
+(`[alpha TO omega]`, `{alpha TO omega}`) leaves expand once against the analyzed
+term vocabulary. `*` is an unbounded range endpoint. Fuzzy terms, range bounds,
+and wildcard literal fragments must each analyze to one term, and range
+comparison is over the resulting lexicographic term order. A qualifier such as
+`body:rust` must name the field already selected by `SearchQuery::fts`;
+cross-field execution is rejected. Boosts are finite values in
+`(0, 1_000_000]`.
+
+Quoted phrases accept an explicit slop from 0 through 1,024, for example
+`"vector engine"~2`. Slop counts the total intervening tokens while preserving
+term order; it does not enable transpositions. Both indexed and scan execution
+use these same expansion, BM25, and proximity rules. Symbolic `&&` and `||`
+aliases remain explicitly unsupported.
 
 ## How execution stays exact
 
@@ -279,7 +294,7 @@ cache-hit/query/candidate plus DiskANN sector-read telemetry.
 | Sector-aligned native Vamana/DiskANN file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
-| FTS wildcard/field/boost/fuzzy/range syntax | Not implemented |
+| FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
 | On-demand DiskANN query reader | Implemented with portable positioned reads; mmap/async acceleration remains roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
 | Binary vector query execution | Not implemented |

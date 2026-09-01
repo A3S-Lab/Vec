@@ -656,21 +656,33 @@ consecutive default runs produced:
 
 | Query | Planner path | Candidates/query | Planner µs/query | Explicit scan µs/query |
 | --- | --- | ---: | ---: | ---: |
-| Selective unique term + phrase | Indexed | 1 | 3.50 | 13,218.88 |
-| Selective required + optional | Indexed | 1 | 1.88 | 13,472.00 |
-| Common phrase | Planner scan | 25,000 | 13,519.25 | 13,600.25 |
-| Broad boolean + NOT | Planner scan | 25,000 | 14,697.00 | 14,661.12 |
+| Selective unique term + phrase | Indexed | 1 | 7.38 | 38,066.38 |
+| Selective required + optional | Indexed | 1 | 4.62 | 38,372.50 |
+| Selective wildcard | Indexed | 1 | 26,548.00 | 77,713.00 |
+| Selective fuzzy distance 1 | Indexed | 36 | 33,811.00 | 98,363.38 |
+| Selective exact range | Indexed | 1 | 429.62 | 50,439.12 |
+| Selective ordered proximity | Indexed | 1 | 7.62 | 38,810.25 |
+| Common phrase | Planner scan | 25,000 | 40,806.12 | 41,376.62 |
+| Broad boolean + NOT | Planner scan | 25,000 | 43,191.25 | 42,977.25 |
 
-The two selective expressions reduced scored candidates 25,000 times and were
-3,777 and 7,166 times faster than their scan controls in this observation. The
-first run measured 3.75/15,257.00 and 2.25/15,275.12 microseconds for those
-pairs, preserving the same candidate counts. Phrase verification does not yet
-store token positions, so broad phrases can make indexed retokenization more
-expensive than a sequential scan. The planner therefore selects scan when a
-phrase estimate reaches half the corpus, or another structured estimate reaches
-three quarters, unless a scalar bitmap already narrows the eligible documents.
-Across both runs, the two automatic-fallback rows stayed within 0.6 percent of
-their explicit scan controls.
+The five one-candidate expressions reduced scored candidates 25,000 times and
+were 117.4 to 8,305.7 times faster than their scan controls for term/phrase,
+required/optional, range, and proximity execution. Wildcard expansion was 2.93
+times faster than scan while still scoring one document. Fuzzy distance 1
+expanded to 36 concrete terms and was 2.91 times faster than scoring the full
+corpus. Dynamic wildcard/fuzzy latency includes one analyzed-vocabulary scan;
+the concrete term set is then shared by candidate construction and BM25.
+
+The first run preserved the same plans and candidate counts. Its indexed/scan
+pairs were 7.38/40,620.12, 4.62/38,979.88,
+26,611.75/74,287.62, 31,729.75/93,866.88, 313.25/49,048.38, and
+9.88/37,019.62 microseconds in the table's selective row order. Phrase
+verification does not yet store token positions, so broad phrases can make
+indexed retokenization more expensive than a sequential scan. The planner
+therefore selects scan when a phrase estimate reaches half the corpus, or
+another structured estimate reaches three quarters, unless a scalar bitmap
+already narrows the eligible documents. Telemetry confirms that both broad rows
+selected the same exact scan path as their controls.
 
 A representative cross-project benchmark suite, larger corpora, sustained
 mixed read/write workloads, allocator-aware memory accounting, and concurrent

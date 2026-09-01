@@ -6,7 +6,10 @@ use crate::error::{Error, Result};
 use crate::index::{CandidateSelection, OrdinalScores};
 use crate::query::{FtsDefaultOperator, SearchQuery};
 use crate::schema::{CollectionSchema, IndexParams};
-use crate::text::{bm25_term_score, parse_fts_query, text_value, FtsEvalContext, Tokenizer};
+use crate::text::{
+    bm25_term_score, contains_ordered_phrase, parse_fts_query, text_value, FtsEvalContext,
+    Tokenizer,
+};
 use crate::types::MetricType;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -421,7 +424,7 @@ fn execute_fts(
         return result.into_scored_docs();
     }
     let tokenizer = Tokenizer::from_index_params(index_params)?;
-    let parsed = parse_fts_query(query, &tokenizer)?;
+    let mut parsed = parse_fts_query(query, &tokenizer)?;
     let corpus: Vec<(&Doc, Vec<String>)> = docs
         .values()
         .filter_map(|doc| {
@@ -431,6 +434,11 @@ fn execute_fts(
     if corpus.is_empty() {
         return Ok(Vec::new());
     }
+    parsed.expand_terms(
+        corpus
+            .iter()
+            .flat_map(|(_, tokens)| tokens.iter().map(String::as_str)),
+    );
     let document_count = count_to_f64(corpus.len());
     let average_length = corpus
         .iter()
@@ -491,13 +499,8 @@ impl FtsEvalContext for ScanFtsEvalContext<'_> {
         self.tokens.iter().any(|token| token == term)
     }
 
-    fn contains_phrase(&mut self, terms: &[String]) -> bool {
-        !terms.is_empty()
-            && terms.len() <= self.tokens.len()
-            && self
-                .tokens
-                .windows(terms.len())
-                .any(|window| window == terms)
+    fn contains_phrase(&mut self, terms: &[String], slop: u32) -> bool {
+        contains_ordered_phrase(self.tokens, terms, slop)
     }
 
     fn term_score(&mut self, term: &str) -> f64 {

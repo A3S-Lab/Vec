@@ -1,7 +1,7 @@
 //! Indexed document evaluation for structured full-text expressions.
 
 use super::{count_to_f64, FtsIndex};
-use crate::text::{bm25_term_score, FtsEvalContext};
+use crate::text::{bm25_term_score, contains_ordered_phrase, FtsEvalContext};
 
 pub(super) struct IndexedEvalContext<'a> {
     index: &'a FtsIndex,
@@ -40,13 +40,13 @@ impl FtsEvalContext for IndexedEvalContext<'_> {
             .is_some()
     }
 
-    fn contains_phrase(&mut self, terms: &[String]) -> bool {
+    fn contains_phrase(&mut self, terms: &[String], slop: u32) -> bool {
         if self.tokens.is_none() {
             self.tokens = Some(self.index.tokenizer.tokenize(self.text));
         }
         self.tokens
             .as_ref()
-            .is_some_and(|tokens| contains_phrase(tokens, terms))
+            .is_some_and(|tokens| contains_ordered_phrase(tokens, terms, slop))
     }
 
     fn term_score(&mut self, term: &str) -> f64 {
@@ -64,10 +64,4 @@ impl FtsEvalContext for IndexedEvalContext<'_> {
             self.average_length,
         )
     }
-}
-
-fn contains_phrase(tokens: &[String], phrase: &[String]) -> bool {
-    !phrase.is_empty()
-        && phrase.len() <= tokens.len()
-        && tokens.windows(phrase.len()).any(|window| window == phrase)
 }

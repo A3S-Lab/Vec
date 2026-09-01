@@ -59,7 +59,8 @@ crates/vec/
 │   ├── text.rs                # tokenizer/query/BM25 shared primitives
 │   ├── text/
 │   │   ├── filters.rs         # ordered lowercase/folding/stemmer pipeline
-│   │   └── query_expression.rs # structured boolean/phrase parser + evaluator
+│   │   ├── query_expression.rs # structured query AST, expansion, and evaluator
+│   │   └── query_expression/  # lexer, parser, token matchers, and tests
 │   ├── multi_query.rs         # routes and RRF/weighted fusion
 │   ├── collection.rs          # lifecycle and write transaction coordinator
 │   ├── collection/
@@ -84,6 +85,7 @@ crates/vec/
 │   │   ├── fts.rs             # term-frequency postings + BM25 statistics
 │   │   ├── fts/
 │   │   │   ├── document_lengths.rs # persistent direct-address lengths
+│   │   │   ├── expression.rs       # structured-expression candidate planner
 │   │   │   ├── posting_list.rs     # contiguous ordinal posting + delta
 │   │   │   └── term_dictionary.rs  # contiguous term dictionary + delta
 │   │   ├── hnsw.rs            # deterministic hierarchical graph
@@ -127,6 +129,7 @@ crates/vec/
     ├── filtered_ann.rs        # filtered completeness/lifecycle/concurrency
     ├── fts_filters.rs         # filter semantics, validation, cache lifecycle
     ├── fts_indexes.rs         # BM25 differential, lifecycle, concurrency
+    ├── fts_advanced_query_syntax.rs # wildcard/fuzzy/range/proximity differential
     ├── fts_query_syntax.rs    # boolean/phrase index-versus-scan differential
     ├── index_cache.rs         # hit/stale/corrupt/read-only cache lifecycle
     ├── ngram_fts.rs           # Unicode n-gram config, mutation, cache reopen
@@ -220,10 +223,13 @@ span is at most eight times that estimate; smaller or sparse intersections use
 an ordered map. Flat analyzed-term AND queries start with the shortest posting,
 intersect the remaining unique terms, and preserve repeated-term BM25
 weighting; OR remains the default. Structured `query_string` expressions are
-parsed once into an AND-before-OR tree with required/prohibited modifiers and
-exact phrase leaves. The indexed planner chooses the smallest required subtree
-as its driver, verifies remaining posting membership by ordinal, and retokenizes
-only phrase candidates to prove adjacency. Without a scalar prefilter, an
+parsed once into an AND-before-OR tree with required/prohibited modifiers,
+boosts, exact or ordered-proximity phrases, and analyzer-aware wildcard, fuzzy,
+and range leaves. Dynamic leaves expand once against the revision-matched index
+dictionary or scan-corpus vocabulary, after which both paths score the same
+concrete terms. The indexed planner chooses the smallest required subtree as
+its driver, verifies remaining posting membership by ordinal, and retokenizes
+only phrase candidates to prove ordered proximity. Without a scalar prefilter, an
 estimated phrase candidate set covering at least half the corpus—or another
 structured candidate set covering at least three quarters—uses the scan oracle
 instead of paying broad bitmap/refinement overhead. Complete scalar and FTS
@@ -270,16 +276,16 @@ codebooks and select ADC traversal, while zero keeps full-vector traversal.
 HNSW and IVF own optional FP16/INT8/INT4 index quantization. Their dedicated
 RaBitQ families own deterministic center training, one-to-nine-bit compact
 codes, HNSW `ef`, IVF `nprobe`, and bounded exact refinement; every ANN path
-uses exact re-ranking. FTS
-owns standard, whitespace, n-gram, and optional Jieba tokenizers, persistent
+uses exact re-ranking. FTS owns standard, whitespace, n-gram, and optional
+Jieba tokenizers, persistent
 term-frequency postings, document lengths, exact `f64` BM25 corpus statistics,
 the OR/AND analyzed-term default operator, ordered lowercase/ASCII-folding/
-Snowball-stemmer filters, and structured boolean/phrase expressions. Scalar
+Snowball-stemmer filters, and structured boolean, field-qualified, wildcard,
+boosted, fuzzy, range, and phrase-proximity expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-DiskANN mmap/async acceleration,
-wildcard/fielded/boosted/fuzzy/range FTS syntax, and
-tokenizer extras without an execution consumer return `NotSupported` before
+DiskANN mmap/async acceleration and tokenizer extras without an execution
+consumer return `NotSupported` before
 mutation. Unknown
 deserialized keys return `InvalidArgument`. Non-zero segment sizing and
 add/alter concurrency return `NotSupported`. Ready ANN, scalar, and FTS
@@ -483,7 +489,7 @@ The target and fallback implementations are:
 | DiskANN query reader | Request-local positioned full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
 | HNSW/IVF RaBitQ | Fixed-seed signed Hadamard rotation + compact 1-to-9-bit residual codes + unbiased traversal/refinement estimator | Full-vector re-rank/filter fallback |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
-| FTS | Contiguous term/posting/length bases + persistent deltas; Unicode tokenizers/filters, structured boolean/phrase AST, BM25 | Exact token scan fallback |
+| FTS | Contiguous term/posting/length bases + persistent deltas; Unicode tokenizers/filters, advanced structured AST, BM25 | Exact token scan fallback with shared expansion/proximity semantics |
 
 The current optional on-disk derived-index cache includes the source data
 revision, schema digest, index parameters, shared ordinals, and a format
@@ -591,12 +597,15 @@ fallback and index both compute corpus statistics only over
 documents that contain the queried text field, including zero-token strings,
 and produce the same `f64` BM25 score. Simple token expressions keep specialized
 single, conjunction, sparse, and dense score paths. Structured `query_string`
-supports AND/OR/NOT, parentheses, required/prohibited modifiers, escapes, and
-exact phrases. Candidate construction is exact for boolean semantics; phrase
-postings form a conservative intersection and only those documents are
-retokenized for adjacency verification. Broad structured expressions switch to
-the same scan evaluator when indexed refinement is estimated to cost more.
-Wildcard, fielded, boosted, fuzzy/proximity, and range syntax fails with
+supports AND/OR/NOT, parentheses, required/prohibited modifiers, escapes,
+same-field qualifiers, finite boosts, `*`/`?` wildcards, transposition-aware
+fuzzy distances 1 and 2, independently inclusive lexical term ranges, and
+ordered phrase slop through 1,024. Dynamic leaves expand against one analyzed
+vocabulary before document evaluation. Candidate construction is exact for
+boolean semantics; phrase postings form a conservative intersection and only
+those documents are retokenized for ordered proximity verification. Broad
+structured expressions switch to the same scan evaluator when indexed
+refinement is estimated to cost more. Symbolic `&&` and `||` aliases remain
 `NotSupported`; selecting both `match_string` and `query_string` is invalid and
 ambiguous.
 

@@ -9,8 +9,7 @@ fn schema(name: &str, indexed: bool) -> CollectionSchema {
         FieldSchema::new("body", DataType::String, false, 0).expect("body field must be valid");
     if indexed {
         body.set_index_params(
-            &IndexParams::fts(Some("whitespace"), None, None)
-                .expect("FTS descriptor must be valid"),
+            &IndexParams::fts(Some("standard"), None, None).expect("FTS descriptor must be valid"),
         )
         .expect("FTS index must be valid");
     }
@@ -333,13 +332,7 @@ fn unsupported_or_malformed_structured_syntax_fails_explicitly() {
     .expect("collection must be created");
     insert_fixture(&collection);
 
-    for expression in [
-        "rust*",
-        "body:rust",
-        "rust^2",
-        "[alpha TO omega]",
-        "rust && vector",
-    ] {
+    for expression in ["rust && vector", "rust || vector"] {
         let mut fts = Fts::new().expect("FTS payload must be valid");
         fts.set_query_string(expression)
             .expect("query string setter must accept opaque text");
@@ -355,6 +348,17 @@ fn unsupported_or_malformed_structured_syntax_fails_explicitly() {
         "rust AND",
         "(rust OR vector",
         "\"vector database",
+        "other:rust",
+        "body:",
+        "rust^0",
+        "rust^-1",
+        "rust^nan",
+        "rust~3",
+        "rust~0",
+        "rust*~1",
+        "\"vector engine\"~-1",
+        "[alpha omega]",
+        "[alpha TO omega",
     ] {
         let mut fts = Fts::new().expect("FTS payload must be valid");
         fts.set_query_string(expression)

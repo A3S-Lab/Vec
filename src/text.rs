@@ -4,7 +4,8 @@ mod filters;
 mod query_expression;
 
 pub(crate) use query_expression::{
-    parse_fts_query, FtsEvalContext, FtsExpr, FtsExprKind, FtsModifier, ParsedFtsQuery,
+    contains_ordered_phrase, parse_fts_query, FtsEvalContext, FtsExpr, FtsExprKind, FtsModifier,
+    ParsedFtsQuery,
 };
 
 use crate::doc::{Doc, FieldValue};

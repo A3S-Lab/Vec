@@ -15,9 +15,10 @@
 //! FP16/INT8/INT4 scalar quantization. Revisioned scalar and full-text indexes
 //! accelerate structured and lexical retrieval, including Unicode n-grams,
 //! ordered token filters, boolean groups, required/prohibited clauses, and
-//! exact phrases. `DiskANN` uses deterministic PQ training, ADC graph traversal,
-//! and on-demand positioned reads; mmap/async acceleration, `RaBitQ`, and
-//! wildcard/fielded/boosted FTS syntax remain explicit future work.
+//! wildcard/fuzzy/range terms, boosts, and ordered phrase proximity. HNSW and
+//! IVF also provide multi-bit `RaBitQ` families with exact re-ranking. `DiskANN`
+//! uses deterministic PQ training, ADC graph traversal, and on-demand
+//! positioned reads; mmap/async acceleration remains explicit future work.
 //!
 //! The external algorithm kernel is an implementation detail and is not part
 //! of the stable A3S API:
