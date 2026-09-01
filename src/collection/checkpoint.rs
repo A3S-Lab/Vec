@@ -71,7 +71,16 @@ pub(super) fn persist_index_cache(
     if !indexes.has_cacheable_indexes() {
         return;
     }
-    let Ok(bytes) = indexes.cache_bytes(schema, revision, &storage.index_cache_identity()) else {
+    let identity = storage.index_cache_identity();
+    let Ok(diskann_bytes) = indexes.diskann_bytes(schema, revision, &identity) else {
+        return;
+    };
+    if let Some(diskann_bytes) = diskann_bytes {
+        if storage.write_diskann_file(&diskann_bytes, sync).is_err() {
+            return;
+        }
+    }
+    let Ok(bytes) = indexes.cache_bytes(schema, revision, &identity) else {
         return;
     };
     let _cache_result = storage.write_index_cache(&bytes, sync);

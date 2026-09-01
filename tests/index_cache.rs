@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 const CACHE_PATH: &str = "indexes/index-cache.bin";
+const DISKANN_PATH: &str = "indexes/diskann-graph.bin";
+const DISKANN_SECTOR_BYTES: usize = 4_096;
 
 fn schema() -> CollectionSchema {
     let mut language =
@@ -144,6 +146,10 @@ fn cache_path(root: &Path) -> PathBuf {
     root.join(CACHE_PATH)
 }
 
+fn diskann_path(root: &Path) -> PathBuf {
+    root.join(DISKANN_PATH)
+}
+
 fn scalar_fts_schema() -> CollectionSchema {
     let mut language =
         FieldSchema::new("language", DataType::String, false, 0).expect("field must be valid");
@@ -273,6 +279,10 @@ fn valid_cache_restores_ann_and_preserves_results_without_read_only_writes() {
     let path = temporary.path().join("collection");
     let expected = create_fixture(&path, 128);
     let before = fs::read(cache_path(&path)).expect("index cache must exist after close");
+    assert!(
+        !diskann_path(&path).exists(),
+        "non-Vamana indexes must not require a DiskANN sidecar"
+    );
 
     let reopened = open_read_only(&path);
     assert!(
@@ -455,6 +465,10 @@ fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
     let expected = ranking(&collection, &query);
     collection.close().expect("collection must close");
 
+    let diskann = fs::read(diskann_path(&path)).expect("DiskANN sidecar must exist after close");
+    assert!(!diskann.is_empty());
+    assert_eq!(diskann.len() % DISKANN_SECTOR_BYTES, 0);
+
     let reopened = open_read_only(&path);
     let stats = reopened.stats().expect("stats must succeed");
     assert!(stats.index_cache_hit);
@@ -465,4 +479,72 @@ fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
         .fetch(&["doc-001"])
         .expect("fetch must succeed")
         .is_empty());
+}
+
+#[test]
+fn missing_or_corrupt_vamana_sidecar_falls_back_then_refreshes_writable() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana-corruption");
+    let collection = Collection::create(
+        path.to_str().expect("collection path must be UTF-8"),
+        &vamana_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let docs = documents(128);
+    collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("documents must be inserted");
+    let query = exhaustive_vamana_query(127.0, 8, 128);
+    let expected = ranking(&collection, &query);
+    collection.close().expect("collection must close");
+
+    let path_to_sidecar = diskann_path(&path);
+    let valid = fs::read(&path_to_sidecar).expect("DiskANN sidecar must exist");
+    fs::remove_file(&path_to_sidecar).expect("sidecar must be removable");
+    let missing = open_read_only(&path);
+    assert!(!missing.stats().expect("stats must succeed").index_cache_hit);
+    assert_eq!(ranking(&missing, &query), expected);
+    missing.close().expect("collection must close");
+    assert!(
+        !path_to_sidecar.exists(),
+        "read-only fallback must not recreate a missing sidecar"
+    );
+
+    let mut corrupted = valid;
+    let last = corrupted.last_mut().expect("sidecar must not be empty");
+    *last ^= 0x5a;
+    fs::write(&path_to_sidecar, &corrupted).expect("corrupt sidecar fixture must write");
+
+    let read_only = open_read_only(&path);
+    assert!(
+        !read_only
+            .stats()
+            .expect("stats must succeed")
+            .index_cache_hit
+    );
+    assert_eq!(ranking(&read_only, &query), expected);
+    read_only.close().expect("collection must close");
+    assert_eq!(
+        fs::read(&path_to_sidecar).expect("corrupt sidecar must remain readable"),
+        corrupted
+    );
+
+    let writable = Collection::open(path.to_str().expect("UTF-8 path"), None)
+        .expect("collection must rebuild writable");
+    assert!(
+        !writable
+            .stats()
+            .expect("stats must succeed")
+            .index_cache_hit
+    );
+    assert_eq!(ranking(&writable, &query), expected);
+    writable.close().expect("collection must close");
+
+    let repaired = fs::read(&path_to_sidecar).expect("DiskANN sidecar must be refreshed");
+    assert_ne!(repaired, corrupted);
+    assert_eq!(repaired.len() % DISKANN_SECTOR_BYTES, 0);
+    let cached = open_read_only(&path);
+    assert!(cached.stats().expect("stats must succeed").index_cache_hit);
+    assert_eq!(ranking(&cached, &query), expected);
 }

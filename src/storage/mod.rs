@@ -1,5 +1,7 @@
 //! Persistence primitives used by the collection handle.
 
+mod derived_file;
+mod diskann_file;
 mod fault;
 mod index_cache;
 mod lock;
@@ -245,6 +247,19 @@ impl StorageHandle {
             ));
         }
         index_cache::write(&self.root, bytes, sync)
+    }
+
+    pub(crate) fn read_diskann_file(&self) -> Result<Option<Vec<u8>>> {
+        diskann_file::read(&self.root)
+    }
+
+    pub(crate) fn write_diskann_file(&self, bytes: &[u8], sync: bool) -> Result<()> {
+        if !self.lock.is_exclusive() {
+            return Err(Error::permission_denied(
+                "cannot write a DiskANN sidecar through a read-only handle",
+            ));
+        }
+        diskann_file::write(&self.root, bytes, sync)
     }
 
     pub(crate) fn index_cache_identity(&self) -> String {

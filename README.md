@@ -6,9 +6,10 @@
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
-The project is an active prototype. HNSW, IVF, in-memory L2 Vamana, scalar
-inverted indexes, and FTS are live; exact execution remains the correctness
-oracle whenever an index is missing, stale, or not selective enough.
+The project is an active prototype. HNSW, IVF, L2 Vamana with a native
+sector-aligned recovery sidecar, scalar inverted indexes, and FTS are live;
+exact execution remains the correctness oracle whenever an index is missing,
+stale, or not selective enough.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Reproducible benchmarks](BENCHMARKS.md)
@@ -20,7 +21,7 @@ oracle whenever an index is missing, stale, or not selective enough.
 | Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, in-memory L2 Vamana, and exact re-ranking |
 | Workspace text search | BM25, Unicode n-grams, boolean groups, exact phrases, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
-| Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, and a validated derived-index cache |
+| Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana sector sidecar |
 | Predictable failure | Typed validation errors and exact fallbacks instead of silent approximation |
 
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
@@ -101,12 +102,17 @@ fn main() -> Result<()> {
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking.
 - Deterministic two-pass L2 Vamana construction, bounded `list_size` search,
   incremental overlays, and exact full-vector re-ranking.
+- Native 4 KiB-sector Vamana recovery files with fixed records, CRC validation,
+  bounded positioned reads, and failure-closed cache recovery.
 - Index-only FP16, symmetric INT8, and symmetric INT4 quantization.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
 
-The in-memory Vamana slice currently accepts unquantized L2 vectors. The
-DiskANN-compatible query control name is shared with the future on-disk reader:
+Vamana currently accepts unquantized L2 vectors. Query traversal still uses
+the immutable in-memory graph. Each base is also mirrored to an A3S-native,
+sector-aligned file for reopen validation; that file is not the Microsoft
+DiskANN C++ format and is not yet queried through mmap or on-demand reads. The
+DiskANN-compatible query control name is shared with that future reader:
 
 ```rust
 use a3s_vec::{DiskannQueryParams, IndexParams, MetricType, Result, SearchQuery};
@@ -210,10 +216,14 @@ WAL boundary. Version-3 JSON snapshots remain readable and upgrade at the next
 writable checkpoint.
 
 ANN, scalar, FTS, and the shared ordinal table are persisted separately as a
-non-authoritative derived cache. Cache format 7 includes Vamana graphs plus
-parsed tokenizer and ordered filter state. A missing, stale, corrupt,
-structurally invalid, or pre-v7 cache is ignored and rebuilt from recovered
-documents; read-only opens never repair it.
+non-authoritative derived cache. Cache format 8 includes Vamana graphs plus
+parsed tokenizer and ordered filter state. A Vamana generation additionally
+requires `indexes/diskann-graph.bin`: an A3S-native 4 KiB-sector mirror bound to
+the same revision, schema digest, and manifest identity. Its header, metadata,
+padding, full vectors, graph edges, and CRC are validated before a cache hit.
+A missing, stale, corrupt, structurally invalid, or pre-v8 cache/sidecar pair
+is ignored and rebuilt from recovered documents; read-only opens never repair
+it.
 
 The public API supports read-only handles, configurable durability, explicit
 `flush`, targeted `rebuild_index`, whole-registry `optimize`, and
@@ -224,11 +234,12 @@ per-handle cache-hit/query/candidate telemetry.
 | Area | Status |
 | --- | --- |
 | Flat, HNSW, IVF | Implemented |
-| In-memory L2 Vamana | Implemented |
+| L2 Vamana traversal and incremental overlays | Implemented in memory |
+| Sector-aligned native Vamana recovery file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/range syntax | Not implemented |
-| Sector-aligned DiskANN files and mmap/pread readers | Not implemented |
+| mmap/on-demand DiskANN query reader | Not implemented |
 | PQ and standalone RaBitQ families | Roadmap |
 | Binary vector query execution | Not implemented |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |

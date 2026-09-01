@@ -213,8 +213,10 @@ impl Collection {
         }
         let docs = recovered_docs;
         let cached_indexes = storage.read_index_cache().ok().flatten().and_then(|bytes| {
+            let diskann_bytes = storage.read_diskann_file().ok().flatten();
             IndexRegistry::restore_cache(
                 &bytes,
+                diskann_bytes.as_deref(),
                 &schema,
                 &docs,
                 revision,

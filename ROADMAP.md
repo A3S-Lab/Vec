@@ -68,10 +68,11 @@ comparisons during result resolution. HNSW uses deterministic frontier/result
 heaps with primary keys borrowed only for equal-score ordering instead of
 repeated candidate-vector sorting. A versioned, checksummed, manifest-bound
 derived-index cache now restores the shared ordinal plus HNSW/IVF/Vamana,
-scalar, and FTS generations across process restarts. Cache format 7 records
+scalar, and FTS generations across process restarts. Cache format 8 records
 Vamana graph state, parsed tokenizer, and ordered filter state beside the
-contiguous FTS layouts; format-2/3/4/5/6, stale, or corrupt bytes fall back to
-document-derived rebuilds,
+contiguous FTS layouts. A Vamana cache hit also requires the matching native
+4 KiB-sector graph/vector sidecar; format-2/3/4/5/6/7, stale, missing, or
+corrupt bytes fall back to document-derived rebuilds,
 and read-only opens never repair the cache. Indexed BM25 scores now
 remain in the shared ordinal domain through document lookup, eliminating
 query-sized owned primary-key maps and duplicate candidate bitmaps. Exact vector, ANN re-rank,
@@ -90,7 +91,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 166 passing unit/integration tests plus four
+all-feature baseline has 171 passing unit/integration tests plus four
 compile-fail doctests; default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -110,8 +111,8 @@ both fixed-seed mutation fuzzing and a libFuzzer/AddressSanitizer smoke target
 exercise recovery. The actual macOS 12 Intel runtime smoke remains external
 runner work. HNSW/IVF/Vamana schema and query controls execute against
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
-immutable generations. Sector-aligned DiskANN files and compressed readers
-remain contracts only.
+immutable generations. Native sector-aligned Vamana recovery files are live;
+compressed and on-demand/mmap query readers remain contracts only.
 
 ## Phase 0 — Contract and compatibility baseline
 
@@ -321,7 +322,8 @@ remain contracts only.
   scalar, and FTS generations as optional derived state. Format 4 introduced
   the contiguous term/posting/document-length layouts, format 5 added parsed
   tokenizer state, format 6 added the ordered filter pipeline, and format 7
-  adds Vamana graph generations; exact legacy
+  added Vamana graph generations. Format 8 requires the matching native
+  sector-aligned Vamana sidecar; exact legacy
   format-2/3 fixtures and older version bytes are ignored safely. Reuse is
   gated by format, CRC, schema, revision,
   exact manifest/WAL/snapshot identity, structural/live-membership validation,
@@ -540,15 +542,30 @@ remains open.
   branches; candidates receive authoritative full-vector refinement.
 - Completed: immutable Vamana bases participate in incremental delta/tombstone
   overlays, scalar-filter planning, targeted rebuilds, telemetry, and validated
-  cache-format-7 reopen. Unit, exhaustive-oracle, bounded-candidate recall,
+  cache-format-8 reopen. Unit, exhaustive-oracle, bounded-candidate recall,
   mutation, rebuild, and cache-hit tests cover the slice.
+- Completed: every Vamana base is mirrored in the A3S-native
+  `indexes/diskann-graph.bin` format. Its versioned header and field metadata
+  bind the schema digest, revision, and manifest-derived source identity;
+  full-vector/neighbor records use fixed lengths, pack without crossing 4 KiB
+  sectors, and use whole-sector strides when a record is larger than one
+  sector. A CRC covers metadata, padding, and data. Recovery uses bounded
+  positional reads on Unix and Windows, validates canonical padding and graph
+  contents, and treats missing, truncated, corrupt, or mismatched bytes as a
+  cache miss. Read-only opens do not repair; writable opens atomically refresh
+  the sidecar before publishing cache format 8. Small- and multi-sector unit
+  fixtures plus public lifecycle tests cover those paths on Windows. The
+  default-feature crate also cross-checks the Unix `read_at` branch for the
+  installed Linux x86_64 and macOS arm64 targets; the Intel macOS 12 runtime
+  gate remains external.
 - Completed: the fixed 2,000-vector benchmark now includes an L2 Vamana
   `list_size=64` row. On the 2026-09-01 Windows fixture it produced recall@10
   1.0000; at this small scale its 323.75 microsecond median remained slower than
   the 139.93 microsecond exact L2 path, so no speedup is claimed.
-- Remaining: sector-aligned DiskANN files, checksummed corruption fixtures,
-  mmap/pread backends, PQ/ADC, optional RaBitQ, and the Linux/macOS Intel I/O
-  portability gate. Non-L2 Vamana remains explicit `NotSupported` until a
+- Remaining: mmap/on-demand DiskANN query traversal, PQ/ADC, optional RaBitQ,
+  and the Linux/macOS Intel I/O portability gate. Query execution intentionally
+  remains on the in-memory Vamana graph, so this storage slice makes no latency
+  or memory-reduction claim. Non-L2 Vamana remains explicit `NotSupported` until a
   correct metric transform is implemented.
 
 ## Phase 7 — Advanced collection API

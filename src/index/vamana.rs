@@ -35,6 +35,32 @@ struct GraphSearch {
 }
 
 impl VamanaIndex {
+    pub(super) fn nodes(&self) -> impl Iterator<Item = (u64, &[u64])> {
+        self.graph
+            .iter()
+            .map(|(ordinal, neighbors)| (ordinal, neighbors.as_slice()))
+    }
+
+    pub(super) fn neighbors(&self, ordinal: u64) -> Option<&[u64]> {
+        self.graph.get(ordinal).map(Vec::as_slice)
+    }
+
+    pub(super) fn entry_ordinal(&self) -> Option<u64> {
+        self.entry_ordinal
+    }
+
+    pub(super) fn default_list_size(&self) -> usize {
+        self.default_list_size
+    }
+
+    pub(super) fn max_degree(&self) -> usize {
+        self.max_degree
+    }
+
+    pub(super) fn alpha(&self) -> f64 {
+        self.alpha
+    }
+
     pub(super) fn build(
         vectors: &OrdinalMap<QuantizedVector>,
         ordinals: &OrdinalTable,

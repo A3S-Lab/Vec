@@ -74,6 +74,10 @@ crates/vec/
 │   ├── index/
 │   │   ├── mod.rs             # revision-tagged index registry and planner
 │   │   ├── cache.rs           # validated derived-index cache + restore gate
+│   │   ├── diskann.rs         # native sector-aligned Vamana sidecar codec
+│   │   ├── diskann/
+│   │   │   ├── codec.rs       # bounded little-endian format primitives
+│   │   │   └── tests.rs       # packing, corruption, and large-record fixtures
 │   │   ├── fts.rs             # term-frequency postings + BM25 statistics
 │   │   ├── fts/
 │   │   │   ├── document_lengths.rs # persistent direct-address lengths
@@ -99,6 +103,8 @@ crates/vec/
 │       ├── snapshot/
 │       │   └── codec.rs       # compact document/value wire representation
 │       ├── lock.rs            # single-writer/multi-reader lock
+│       ├── derived_file.rs     # bounded atomic + positioned artifact I/O
+│       ├── diskann_file.rs     # Vamana sector-sidecar storage
 │       ├── index_cache.rs      # bounded atomic derived-cache storage
 │       └── tests.rs           # storage-boundary fault simulations
 └── tests/
@@ -121,9 +127,10 @@ crates/vec/
 
 The checked-in `index/` module owns real HNSW/IVF/Vamana candidate generation,
 scalar posting dictionaries, indexed BM25 term-frequency postings, and their
-revision-aware selection contract. DiskANN disk layouts are added only when
-their phase gate has fallback, corruption, and persistence evidence; exact
-wrappers with approximate names are not kept as placeholders.
+revision-aware selection contract. It also owns the native sector-aligned
+Vamana recovery codec and its fallback, corruption, and persistence evidence.
+On-demand disk traversal is still gated separately; exact wrappers with
+approximate names are not kept as placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
@@ -256,8 +263,8 @@ the OR/AND analyzed-term default operator, ordered lowercase/ASCII-folding/
 Snowball-stemmer filters, and structured boolean/phrase expressions. Scalar
 inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
-Sector-aligned DiskANN files, RaBitQ/PQ, wildcard/fielded/boosted/fuzzy/range
-FTS syntax, and
+On-demand/mmap DiskANN query traversal, RaBitQ/PQ,
+wildcard/fielded/boosted/fuzzy/range FTS syntax, and
 tokenizer extras without an execution consumer return `NotSupported` before
 mutation. Unknown
 deserialized keys return `InvalidArgument`. Non-zero segment sizing and
@@ -317,7 +324,8 @@ exact refinement.
 ├── manifest.json                       # sole commit point
 ├── wal/wal-<sequence:020>.bin          # version + length + payload + CRC
 ├── segments/snapshot-<generation:020>.bin # bounded MessagePack authority
-└── indexes/index-cache.bin              # optional derived-index cache
+├── indexes/index-cache.bin              # optional derived-index cache
+└── indexes/diskann-graph.bin            # optional Vamana sector sidecar
 ```
 
 The format-4 manifest is the commit point. Each acknowledged mutation first
@@ -353,11 +361,11 @@ single replay transaction authoritative while the schema-change encoding is
 still a prototype; a more compact schema delta format may replace it only with
 equivalent recovery tests.
 
-`indexes/index-cache.bin` is never referenced by the manifest and is never a
-commit point. Cache format 7 stores the shared ordinal table plus HNSW/IVF/
-Vamana, scalar, FTS, parsed tokenizer, and ordered token-filter generations; the
-structurally different format-2/3/4/5/6 payloads are ignored and rebuilt rather
-than reinterpreted. The
+`indexes/index-cache.bin` and `indexes/diskann-graph.bin` are never referenced
+by the manifest and are never commit points. Cache format 8 stores the shared
+ordinal table plus HNSW/IVF/Vamana, scalar, FTS, parsed tokenizer, and ordered
+token-filter generations; the structurally different format-2/3/4/5/6/7
+payloads are ignored and rebuilt rather than reinterpreted. The
 cache has its own magic, format version, payload length, and CRC, with a 512
 MiB payload bound. Reuse
 additionally requires an exact schema digest, source revision, and storage
@@ -369,10 +377,23 @@ membership validation. Every active cached vector and scalar value must also
 equal the deterministic encoding of its authoritative recovered document
 before publication.
 
-A missing, unreadable, oversized, stale, corrupt, or invalid cache is a cache
-miss, not a collection-open failure. The registry is rebuilt from recovered
-documents; a writable handle then refreshes the cache best-effort through a
-temporary file and atomic rename, while a read-only handle never writes it.
+A cache containing Vamana additionally requires the A3S-native sector sidecar.
+The file starts with a versioned header and variable field metadata padded to a
+4 KiB boundary. Each fixed-length node record contains its `u64` ordinal,
+degree, decoded full-vector coordinates, and maximum-degree neighbor slots.
+Records no larger than a sector are packed without crossing sector boundaries;
+larger records start at a sector boundary and occupy a whole-sector stride.
+The header binds the source revision while metadata binds the schema digest and
+manifest-derived storage identity. One CRC covers metadata, canonical zero
+padding, and every field data sector. Recovery also compares every vector and
+edge with the already document-validated cache generation. This is a native
+A3S format, not the Microsoft DiskANN C++ format.
+
+A missing, unreadable, oversized, stale, corrupt, or invalid cache/required
+sidecar is a cache miss, not a collection-open failure. The registry is rebuilt
+from recovered documents; a writable handle then refreshes the sidecar first
+and the cache marker last, each best-effort through a temporary file and atomic
+rename, while a read-only handle never writes either artifact.
 Flush/close, interval checkpoints, schema or index lifecycle changes, and
 explicit rebuilds refresh the cache only after the authoritative storage state
 is safe to identify. Cache persistence errors cannot turn an already committed
@@ -423,8 +444,8 @@ The target and fallback implementations are:
 | Dense/sparse exact search | Flat scan | Always available |
 | HNSW | Hierarchical graph + eligible-result heap + bounded delta/tombstones | Flat re-rank/filter fallback |
 | IVF | Lloyd centroids + ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
-| In-memory L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones | Flat re-rank/filter fallback |
-| DiskANN disk layout | Sector-aligned graph, optional mmap/pread | Future delta + flat re-rank |
+| L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
+| DiskANN query reader | Future mmap/on-demand sector traversal | In-memory Vamana + flat re-rank |
 | PQ | Per-subspace codebooks and ADC | Full-vector re-rank |
 | RaBitQ | Binary/scalar codes and refinement | Full-vector re-rank |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
@@ -446,8 +467,10 @@ base tombstones are filtered with a bitmap, delta vectors are scored without
 materializing a decoded vector, and merged candidates remain ordinals while
 retaining the configured ANN candidate limit. An exhaustive `ef`, `nprobe`, or
 `list_size` returns every live indexed identifier across both layers, and exact
-re-ranking then matches Flat ordering and scores. Descriptors for DiskANN disk
-layouts and compressed index families remain serializable for adapters but
+re-ranking then matches Flat ordering and scores. The native DiskANN sidecar is
+currently a recovery-validated mirror; query traversal deliberately remains in
+memory until the on-demand reader has recall and platform evidence.
+Descriptors for compressed index families remain serializable for adapters but
 cannot attach to a schema. Scalar generations use the same source-revision
 check. Equality,
 range, `IN`, null, wildcard, prefix, and suffix leaves produce exact bitmaps;
@@ -563,9 +586,11 @@ force downstream callers to migrate unrelated types.
 ## 8. Platform policy
 
 The release matrix includes Linux x86_64/aarch64, Windows x86_64, and macOS
-arm64/x86_64 with a macOS deployment target of 12.0. Intel Monterey uses the
-portable scalar/AVX2 path, POSIX file locks, and `pread`/ordinary file reads;
-Linux-only `io_uring` is never a required dependency. CI must compile with
+arm64/x86_64 with a macOS deployment target of 12.0. Derived artifacts use
+cursor-independent positioned reads (`FileExt::read_at` on Unix and
+`FileExt::seek_read` on Windows) with a stable-Rust fallback elsewhere. Intel
+Monterey uses the portable scalar/AVX2 path and POSIX file locks; Linux-only
+`io_uring` is never a required dependency. CI must compile with
 default features and with all optional index/FTS features enabled.
 
 The default Cargo feature set is empty and its normal/build dependency graph

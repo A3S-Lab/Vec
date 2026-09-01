@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
-const CACHE_FORMAT_VERSION: u32 = 7;
+const CACHE_FORMAT_VERSION: u32 = 8;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
 const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -91,6 +91,7 @@ fn encode_payload(payload: &CachePayload) -> Result<Vec<u8>> {
 
 pub(super) fn restore(
     bytes: &[u8],
+    diskann_bytes: Option<&[u8]>,
     schema: &CollectionSchema,
     docs: &DocumentMap,
     source_revision: u64,
@@ -118,12 +119,20 @@ pub(super) fn restore(
     {
         return None;
     }
-    Some(IndexRegistry {
+    let registry = IndexRegistry {
         ordinals: payload.ordinals,
         indexes: payload.indexes,
         scalar_indexes: payload.scalar_indexes,
         fts_indexes: payload.fts_indexes,
-    })
+    };
+    super::diskann::validates(
+        diskann_bytes,
+        &registry,
+        schema,
+        source_revision,
+        source_identity,
+    )
+    .then_some(registry)
 }
 
 fn decode_payload(bytes: &[u8]) -> Option<CachePayload> {
@@ -488,18 +497,18 @@ mod tests {
             &payload.ordinals,
             &payload.indexes
         ));
-        assert!(restore(&bytes, &schema, &docs, 1, "fixture-source").is_some());
-        assert!(restore(&bytes, &schema, &docs, 1, "different-source").is_none());
+        assert!(restore(&bytes, None, &schema, &docs, 1, "fixture-source").is_some());
+        assert!(restore(&bytes, None, &schema, &docs, 1, "different-source").is_none());
 
         let mut obsolete = decode_payload(&bytes).expect("cache payload must decode");
         obsolete.format_version = CACHE_FORMAT_VERSION - 1;
         let obsolete = encode_payload(&obsolete).expect("obsolete fixture must encode");
-        assert!(restore(&obsolete, &schema, &docs, 1, "fixture-source").is_none());
+        assert!(restore(&obsolete, None, &schema, &docs, 1, "fixture-source").is_none());
         let legacy = legacy_v2_bytes(&registry, &schema, &docs);
         assert!(bytes.len() < legacy.len());
-        assert!(restore(&legacy, &schema, &docs, 1, "fixture-source").is_none());
+        assert!(restore(&legacy, None, &schema, &docs, 1, "fixture-source").is_none());
         let legacy = legacy_v3_bytes(&registry, &schema);
-        assert!(restore(&legacy, &schema, &docs, 1, "fixture-source").is_none());
+        assert!(restore(&legacy, None, &schema, &docs, 1, "fixture-source").is_none());
 
         let mut invalid = payload;
         let index = invalid
@@ -509,7 +518,7 @@ mod tests {
             .expect("fixture index must exist");
         std::sync::Arc::make_mut(&mut index.base).vectors.remove(0);
         let invalid = encode_payload(&invalid).expect("invalid fixture must encode");
-        assert!(restore(&invalid, &schema, &docs, 1, "fixture-source").is_none());
+        assert!(restore(&invalid, None, &schema, &docs, 1, "fixture-source").is_none());
     }
 
     #[test]
@@ -518,7 +527,7 @@ mod tests {
             IndexParams::ivf(MetricType::L2, 16, 5, false).expect("IVF params must be valid");
         let (schema, docs, registry) = fixture(&params);
         let bytes = encode(&registry, &schema, 1, "ivf-source").expect("cache must encode");
-        assert!(restore(&bytes, &schema, &docs, 1, "ivf-source").is_some());
+        assert!(restore(&bytes, None, &schema, &docs, 1, "ivf-source").is_some());
     }
 
     #[test]
@@ -543,6 +552,6 @@ mod tests {
         };
         values[0] = 1.0;
         let drifted = encode_payload(&payload).expect("drifted cache must encode");
-        assert!(restore(&drifted, &schema, &docs, 1, "fixture-source").is_none());
+        assert!(restore(&drifted, None, &schema, &docs, 1, "fixture-source").is_none());
     }
 }

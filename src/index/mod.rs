@@ -1,6 +1,7 @@
 //! Immutable, revision-tagged in-memory ANN index generations.
 
 mod cache;
+mod diskann;
 mod fts;
 mod hnsw;
 mod ivf;
@@ -158,12 +159,20 @@ impl IndexRegistry {
 
     pub(crate) fn restore_cache(
         bytes: &[u8],
+        diskann_bytes: Option<&[u8]>,
         schema: &CollectionSchema,
         docs: &DocumentMap,
         source_revision: u64,
         source_identity: &str,
     ) -> Option<Self> {
-        cache::restore(bytes, schema, docs, source_revision, source_identity)
+        cache::restore(
+            bytes,
+            diskann_bytes,
+            schema,
+            docs,
+            source_revision,
+            source_identity,
+        )
     }
 
     pub(crate) fn cache_bytes(
@@ -173,6 +182,15 @@ impl IndexRegistry {
         source_identity: &str,
     ) -> Result<Vec<u8>> {
         cache::encode(self, schema, source_revision, source_identity)
+    }
+
+    pub(crate) fn diskann_bytes(
+        &self,
+        schema: &CollectionSchema,
+        source_revision: u64,
+        source_identity: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        diskann::encode(self, schema, source_revision, source_identity)
     }
 
     pub(crate) fn has_cacheable_indexes(&self) -> bool {

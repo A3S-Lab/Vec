@@ -45,7 +45,8 @@ exact L2 run:
 
 This is a functional recall/latency baseline, not a speedup claim. At 2,000
 vectors the current graph traversal costs more than the bounded exact L2 scan;
-the DiskANN disk layout and compression work remains open.
+the native sector-aligned recovery layout is now implemented, but on-demand
+disk traversal and compression remain open and therefore have no latency claim.
 
 Immediately before the exact executor replaced full result materialization and
 sorting with a deterministic bounded top-k heap, the same exact fixture produced
@@ -222,13 +223,16 @@ its row, so its 0.4 percent difference is treated as measurement noise rather
 than a binary-decoding regression.
 
 A cache hit still performs snapshot/WAL recovery, document normalization and
-validation, cache decoding, and structural/content validation. Cache format 7
+validation, cache decoding, and structural/content validation. Cache format 8
 contains the shared ordinal table plus HNSW/IVF/Vamana, scalar, FTS, parsed
-tokenizer, and ordered token-filter generations. It is non-authoritative and is bound to the format,
-schema, revision, and exact manifest snapshot/checkpoint/committed-WAL
-identity. Exact format-2/3 fixtures, older version bytes, and missing, stale,
-corrupt, oversized, or structurally invalid files all fall back to rebuilding
-from documents; a read-only open never writes or repairs them.
+tokenizer, and ordered token-filter generations. A Vamana hit also validates
+the native 4 KiB-sector graph/vector sidecar. Both artifacts are
+non-authoritative and bound to the format, schema, revision, and exact manifest
+snapshot/checkpoint/committed-WAL identity. Exact format-2/3 fixtures, older
+version bytes, and missing, stale, corrupt, oversized, or structurally invalid
+files all fall back to rebuilding from documents; a read-only open never writes
+or repairs them. Query traversal remains in memory, so prior query measurements
+are unchanged and no disk-I/O speedup is claimed.
 
 The same benchmark then opens the all-index fixture for writes and measures one
 derived-index rebuild per call. ANN and full rebuilds refresh the cache after
