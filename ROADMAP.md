@@ -315,6 +315,12 @@ and direct file-backed mmap remain future work.
 - Completed: deterministic farthest-first IVF training consumes configurable
   iteration counts, stores centroids/postings, and probes with `nprobe`.
   Probing every actual centroid matches Flat exactly.
+- Completed on 2026-09-02: `use_soar=true` assigns each base vector to its
+  nearest primary centroid plus one deterministic secondary centroid minimizing
+  the SOAR residual objective with lambda one. Probe unions and filtered window
+  expansion count unique ordinals, cache validation requires exactly the
+  configured one-or-two assignments, and exhaustive search plus cache reopen
+  match the Flat oracle.
 - Completed: ANN vector maps, graph nodes/edges, IVF postings, tombstones, and
   candidate selections remain in the shared `u64` ordinal domain. A paired
   2,000-vector run reduced HNSW p50/p95/p99 by 13.9/16.6/13.1 percent and its
@@ -672,10 +678,12 @@ execution are implemented.
 
 **Progress**
 
-- Completed: `examples/upstream/crud_operations.rs` is pinned to
-  `zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` and differs only
-  by the mechanical `zvec_rust` to `a3s_vec` namespace replacement. A wrapper
-  applies only upstream-style lint allowances; it builds and runs in CI. Its
+- Completed: the pinned upstream CRUD, vector-search, and schema-builder
+  fixtures from
+  `zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` differ only by
+  the mechanical `zvec_rust` to `a3s_vec` namespace replacement. Wrappers
+  apply only upstream-style lint allowances; all three build and run in CI. The
+  schema fixture exercises the now-live IVF SOAR parameter. The CRUD fixture's
   two incomplete replacement upserts are retained as an auditable upstream
   fixture defect; both official zvec and A3S correctly reject the missing
   required `id` field.
@@ -694,9 +702,9 @@ execution are implemented.
   and closed state from normal WAL checkpoint lag by checking authoritative
   revision agreement and every index generation.
 - Remaining exit-gate provenance: the pinned upstream Rust SDK does not yet
-  publish standalone FTS/hybrid, group-by, or schema-evolution examples, so
-  those project-owned gates cannot honestly claim namespace-only upstream
-  provenance yet.
+  publish standalone FTS/hybrid, multi-query, group-by, iterator, or
+  schema-evolution examples, so those project-owned gates cannot honestly claim
+  namespace-only upstream provenance yet.
 
 **Exit gate**
 

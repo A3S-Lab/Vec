@@ -287,7 +287,10 @@ fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
             let Some(n_list) = positive_param(index, "n_list") else {
                 return false;
             };
-            ivf.validates(&index.base.vectors, dimension, n_list)
+            let Some(use_soar) = boolean_param(index, "use_soar") else {
+                return false;
+            };
+            ivf.validates(&index.base.vectors, dimension, n_list, use_soar)
         }
         VectorIndexKind::IvfRabitq(ivf) => validate_ivf_rabitq(index, ivf, dimension),
         VectorIndexKind::Diskann(diskann) => {
@@ -432,6 +435,14 @@ fn finite_param(index: &VectorIndex, name: &str) -> Option<f64> {
         .get(name)
         .and_then(serde_json::Value::as_f64)
         .filter(|value| value.is_finite())
+}
+
+fn boolean_param(index: &VectorIndex, name: &str) -> Option<bool> {
+    index
+        .params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_bool)
 }
 
 fn codec() -> impl Options {
@@ -651,12 +662,14 @@ mod tests {
     }
 
     #[test]
-    fn ivf_generation_round_trips_through_the_same_cache_contract() {
-        let params =
-            IndexParams::ivf(MetricType::L2, 16, 5, false).expect("IVF params must be valid");
-        let (schema, docs, registry) = fixture(&params);
-        let bytes = encode(&registry, &schema, 1, "ivf-source").expect("cache must encode");
-        assert!(restore_fixture(&bytes, &schema, &docs, "ivf-source").is_some());
+    fn ivf_and_soar_generations_round_trip_through_the_same_cache_contract() {
+        for use_soar in [false, true] {
+            let params = IndexParams::ivf(MetricType::L2, 16, 5, use_soar)
+                .expect("IVF params must be valid");
+            let (schema, docs, registry) = fixture(&params);
+            let bytes = encode(&registry, &schema, 1, "ivf-source").expect("cache must encode");
+            assert!(restore_fixture(&bytes, &schema, &docs, "ivf-source").is_some());
+        }
     }
 
     #[test]

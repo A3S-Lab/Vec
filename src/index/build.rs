@@ -73,6 +73,7 @@ fn build_kind(
             vectors,
             positive_parameter(params, "n_list")?,
             nonnegative_parameter(params, "n_iters")?,
+            boolean_parameter(params, "use_soar")?,
         ))),
         IndexType::IvfRabitq => Ok(VectorIndexKind::IvfRabitq(IvfRabitqIndex::build(
             vectors,
@@ -189,4 +190,12 @@ fn finite_parameter(params: &IndexParams, name: &str) -> Result<f64> {
         .ok_or_else(|| {
             Error::invalid_argument(format!("index parameter '{name}' must be a finite number"))
         })
+}
+
+fn boolean_parameter(params: &IndexParams, name: &str) -> Result<bool> {
+    params
+        .params
+        .get(name)
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| Error::invalid_argument(format!("index parameter '{name}' must be boolean")))
 }

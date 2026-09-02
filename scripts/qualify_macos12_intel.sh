@@ -38,6 +38,8 @@ cargo +stable clippy --locked --all-targets --all-features -- -D warnings
 cargo +stable test --locked
 cargo +stable test --locked --all-features
 cargo +stable run --locked --example crud_operations
+cargo +stable run --locked --example vector_search
+cargo +stable run --locked --example schema_builder
 cargo +stable run --locked --example retrieval_workflows
 cargo +stable run --locked --example group_by
 cargo +stable run --locked --example schema_iteration

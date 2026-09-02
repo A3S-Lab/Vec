@@ -346,7 +346,8 @@ publication and increments only a metadata counter.
 
 Index and query configuration follows the same rule. The exact executor owns
 Flat metrics and query `metric`/`radius`; HNSW owns `m`, `ef_construction`, and
-`ef`; IVF owns `n_list`, training iterations, `nprobe`, and candidate scaling;
+`ef`; IVF owns `n_list`, training iterations, optional SOAR dual assignment,
+`nprobe`, and candidate scaling;
 Vamana owns `max_degree`, build/search list sizes, alpha, and deterministic
 two-pass RobustPrune construction. DiskANN owns the same graph controls plus
 `pq_chunk_num`; positive chunk counts train generation-scoped product
@@ -575,7 +576,7 @@ The target and fallback implementations are:
 | --- | --- | --- |
 | Dense/sparse exact search | Flat scan | Always available |
 | HNSW | Hierarchical graph + eligible-result heap + bounded delta/tombstones | Flat re-rank/filter fallback |
-| IVF | Lloyd centroids + ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
+| IVF | Lloyd centroids + optional SOAR primary/secondary ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
 | L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
 | L2 DiskANN/PQ | Vamana graph + deterministic per-chunk codebooks/codes + ADC + bounded overlays | In-memory ADC + flat re-rank |
 | DiskANN query reader | Request-local positioned or immutable mmap-snapshot full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
@@ -613,6 +614,17 @@ range, `IN`, null, wildcard, prefix, and suffix leaves produce exact bitmaps;
 boolean planning may retain a conservative bitmap superset and the executor
 always checks the full filter AST. `NOT` complements only an exact subtree, so
 a partial index can reduce work but cannot remove an eligible document.
+With `use_soar=true`, IVF first assigns each base vector to its nearest Lloyd
+centroid, then selects one distinct secondary centroid by minimizing the
+[SOAR residual objective](https://proceedings.neurips.cc/paper_files/paper/2023/hash/0973524e02a712af33325d0688ae6f49-Abstract-Conference.html):
+squared secondary-residual length plus its squared projection onto the primary
+residual. The fixed lambda is one, matching the public boolean control. Stable
+centroid-index ties make construction reproducible. Posting unions deduplicate
+ordinals, filtered probe expansion measures the unique union, and cache
+validation requires exactly two assignments per vector whenever at least two
+centroids exist. With SOAR disabled, validation retains the disjoint
+single-assignment contract.
+
 The registry pairs each scalar bitmap with its immutable ordinal generation.
 Vector base/delta map keys, HNSW/Vamana/DiskANN graph nodes and edges, IVF postings,
 tombstones, and candidate selections use the same domain, making eligibility
@@ -749,13 +761,14 @@ The Rust API provides the zvec concepts below without requiring zvec's C API:
   execution in Rust.
 
 Executable compatibility evidence lives under `examples/`. The pinned
-`examples/upstream/crud_operations.rs` source is the upstream `zvec_rust`
-fixture with only its crate namespace replaced; a top-level executable wrapper
-adds narrowly scoped lint allowances. Project-owned asserted binaries cover
-the advanced routes that the pinned upstream revision does not ship as
-examples: vector/FTS hybrid fusion, group-by, iterator isolation, and schema
-evolution through reopen. CI runs these binaries; compiling examples alone is
-not treated as behavioral evidence. The upstream CRUD fixture intentionally
+upstream CRUD, vector-search, and schema-builder sources are the corresponding
+`zvec_rust` fixtures with only their crate namespace replaced; top-level
+executable wrappers add narrowly scoped lint allowances. The schema fixture
+also executes the IVF SOAR construction contract. Project-owned asserted
+binaries cover the advanced routes that the pinned upstream revision does not
+ship as examples: vector/FTS hybrid fusion, group-by, iterator isolation, and
+schema evolution through reopen. CI runs these binaries; compiling examples
+alone is not treated as behavioral evidence. The upstream CRUD fixture intentionally
 retains its incomplete replacement-upsert inputs, which both engines reject
 under their shared non-null schema contract.
 

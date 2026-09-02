@@ -6,7 +6,8 @@
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
-The project is an active prototype. HNSW, IVF, HNSW/IVF RaBitQ, L2 Vamana,
+The project is an active prototype. HNSW, IVF with optional SOAR assignment,
+HNSW/IVF RaBitQ, L2 Vamana,
 product-quantized L2 DiskANN with typed positioned or immutable mmap-snapshot traversal,
 scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
@@ -20,7 +21,7 @@ stale, or not selective enough.
 
 | Need | Current implementation |
 | --- | --- |
-| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF, HNSW/IVF RaBitQ, L2 Vamana, PQ/ADC DiskANN, and exact re-ranking |
+| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF/SOAR, HNSW/IVF RaBitQ, L2 Vamana, PQ/ADC DiskANN, and exact re-ranking |
 | Workspace text search | BM25, Unicode n-grams, boolean groups, wildcard/fuzzy/range terms, ordered phrase proximity, boosts, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
 | Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana/DiskANN sector sidecar |
@@ -136,18 +137,22 @@ does not cancel its underlying query.
 ## Executable compatibility examples
 
 The [`examples`](examples/README.md) directory is part of the regression
-surface. `examples/upstream/crud_operations.rs` tracks
+surface. The upstream CRUD, vector-search, and schema-builder fixtures track
 `zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` with only the
-crate namespace changed; its executable wrapper adds only local lint
+crate namespace changed; their executable wrappers add only local lint
 allowances. Asserted project-owned binaries cover vector/FTS and hybrid
-retrieval, grouped top-k, isolated iteration, and durable schema evolution. CI
-runs every binary instead of only checking that it compiles:
+retrieval, grouped top-k, isolated iteration, durable schema evolution, and
+maintenance health. CI runs every binary instead of only checking that it
+compiles:
 
 ```text
 cargo run --locked --example crud_operations
+cargo run --locked --example vector_search
+cargo run --locked --example schema_builder
 cargo run --locked --example retrieval_workflows
 cargo run --locked --example group_by
 cargo run --locked --example schema_iteration
+cargo run --locked --example maintenance_health
 ```
 
 The pinned upstream CRUD fixture contains two incomplete replacement upserts;
@@ -167,7 +172,9 @@ result.
   radius, projection, persistence, and optional Tokio execution paths.
 - Exact L2, inner product, cosine, and MIPS-L2 scoring with `f64`
   intermediates.
-- Native HNSW and IVF candidate generation with exact full-vector re-ranking.
+- Native HNSW and IVF candidate generation with exact full-vector re-ranking;
+  IVF optionally assigns every base vector to a primary centroid and one
+  orthogonality-aware SOAR secondary centroid.
 - Portable HNSW/IVF RaBitQ with deterministic random rotation, compact
   1-to-9-bit codes, bounded refinement, and exact full-vector re-ranking.
 - Deterministic two-pass L2 Vamana construction, bounded `list_size` search,
@@ -442,7 +449,7 @@ that ownership claim.
 
 | Area | Status |
 | --- | --- |
-| Flat, HNSW, IVF | Implemented |
+| Flat, HNSW, IVF/SOAR | Implemented; SOAR postings use deterministic primary-plus-secondary assignment and unique-candidate probing |
 | HNSW/IVF RaBitQ | Implemented for L2, inner product, and cosine with 1-to-9-bit codes and exact re-ranking |
 | L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
 | L2 DiskANN PQ/ADC and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot PQ-code reads after reopen |

@@ -137,11 +137,6 @@ fn validate_ivf_configuration(data_type: DataType, params: &IndexParams) -> Resu
             "IVF use_soar parameter must be boolean",
         ));
     }
-    if params.params["use_soar"] == serde_json::Value::Bool(true) {
-        return Err(Error::not_supported(
-            "IVF SOAR assignment is not implemented",
-        ));
-    }
     validate_redundant_quantize_parameter(params)
 }
 

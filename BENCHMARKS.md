@@ -16,6 +16,8 @@ top-10 queries for cosine exact/HNSW/IVF, HNSW/IVF RaBitQ, and L2
 exact/Vamana/DiskANN-PQ modes. One untimed warmup precedes each mode. `Median round` is the
 median of five timed rounds divided by 48; p50/p95/p99 use nearest-rank
 percentiles over all 240 individual queries. Index construction is excluded.
+The historical IVF rows use `use_soar=false`; they are not performance or
+recall measurements for the optional SOAR dual-assignment path.
 
 ```sh
 cargo bench --bench ann_recall

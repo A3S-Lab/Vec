@@ -322,6 +322,7 @@ fn live_ann_indexes_are_accepted_while_unused_build_parameters_fail_at_schema_bo
     for params in [
         IndexParams::hnsw(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf(MetricType::Cosine, 64, 10, false).expect("descriptor must be valid"),
+        IndexParams::ivf(MetricType::Cosine, 64, 10, true).expect("SOAR descriptor must be valid"),
         IndexParams::hnsw_rabitq(MetricType::Cosine, 16, 100).expect("descriptor must be valid"),
         IndexParams::ivf_rabitq(MetricType::Cosine, 64, 8, 1_000)
             .expect("descriptor must be valid"),

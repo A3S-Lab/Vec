@@ -121,6 +121,48 @@ fn ivf_exhaustive_search_matches_the_exact_oracle() {
 }
 
 #[test]
+fn ivf_soar_matches_the_exact_oracle_and_reopens_from_cache() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("ivf-soar");
+    let collection = Collection::create(path.to_str().expect("UTF-8 path"), &schema(), None)
+        .expect("collection must be created");
+    insert_docs(&collection, 96);
+
+    let mut query =
+        SearchQuery::new("embedding", &vector_for(37), 15).expect("query must be valid");
+    let exact = collection.query(&query).expect("exact query must succeed");
+    collection
+        .create_index(
+            "embedding",
+            &IndexParams::ivf(MetricType::Cosine, 12, 7, true)
+                .expect("IVF SOAR descriptor must be valid"),
+        )
+        .expect("IVF SOAR index creation must succeed");
+    query
+        .set_ivf_params(IvfQueryParams::new(12, true, 1.0))
+        .expect("IVF controls must be accepted");
+    let indexed = collection
+        .query(&query)
+        .expect("IVF SOAR query must succeed");
+    assert_same_ranking(&exact, &indexed);
+
+    collection.close().expect("collection must close");
+    let reopened =
+        Collection::open(path.to_str().expect("UTF-8 path"), None).expect("collection must reopen");
+    assert!(
+        reopened
+            .stats()
+            .expect("stats must be available")
+            .index_cache_hit
+    );
+    let restored = reopened
+        .query(&query)
+        .expect("restored IVF SOAR query must succeed");
+    assert_same_ranking(&indexed, &restored);
+    reopened.close().expect("reopened collection must close");
+}
+
+#[test]
 fn vamana_exhaustive_search_matches_the_exact_oracle() {
     let temporary = tempdir().expect("temporary directory must be available");
     let collection = Collection::create(
@@ -638,49 +680,45 @@ fn hnsw_rabitq_recall_fixture_uses_codes_and_a_bounded_candidate_set() {
 }
 
 #[test]
-fn ivf_recall_fixture_uses_a_bounded_candidate_set() {
-    let temporary = tempdir().expect("temporary directory must be available");
-    let collection = Collection::create(
-        temporary
-            .path()
-            .join("ivf-recall")
-            .to_str()
-            .expect("UTF-8 path"),
-        &schema(),
-        None,
-    )
-    .expect("collection must be created");
-    insert_docs(&collection, 256);
-    let mut query =
-        SearchQuery::new("embedding", &vector_for(177), 10).expect("query must be valid");
-    let exact = collection.query(&query).expect("exact query must succeed");
-    collection
-        .create_index(
-            "embedding",
-            &IndexParams::ivf(MetricType::Cosine, 16, 8, false)
-                .expect("IVF descriptor must be valid"),
-        )
-        .expect("IVF index must build");
-    query
-        .set_ivf_params(IvfQueryParams::new(4, true, 8.0))
-        .expect("IVF controls must be accepted");
-    let before = collection
-        .stats_snapshot()
-        .expect("stats snapshot must be available");
-    let approximate = collection.query(&query).expect("ANN query must succeed");
-    let after = collection
-        .stats_snapshot()
-        .expect("stats snapshot must be available");
+fn ivf_and_soar_recall_fixtures_use_unique_bounded_candidate_sets() {
+    for use_soar in [false, true] {
+        let temporary = tempdir().expect("temporary directory must be available");
+        let path = temporary.path().join(format!("ivf-recall-{use_soar}"));
+        let collection = Collection::create(path.to_str().expect("UTF-8 path"), &schema(), None)
+            .expect("collection must be created");
+        insert_docs(&collection, 256);
+        let mut query =
+            SearchQuery::new("embedding", &vector_for(177), 10).expect("query must be valid");
+        let exact = collection.query(&query).expect("exact query must succeed");
+        collection
+            .create_index(
+                "embedding",
+                &IndexParams::ivf(MetricType::Cosine, 16, 8, use_soar)
+                    .expect("IVF descriptor must be valid"),
+            )
+            .expect("IVF index must build");
+        query
+            .set_ivf_params(IvfQueryParams::new(4, true, 8.0))
+            .expect("IVF controls must be accepted");
+        let before = collection
+            .stats_snapshot()
+            .expect("stats snapshot must be available");
+        let approximate = collection.query(&query).expect("ANN query must succeed");
+        let after = collection
+            .stats_snapshot()
+            .expect("stats snapshot must be available");
 
-    let exact_ids = ids(&exact);
-    let hits = ids(&approximate)
-        .iter()
-        .filter(|id| exact_ids.contains(id))
-        .count();
-    assert!(hits >= 8, "recall@10 was only {hits}/10");
-    assert_eq!(after.ann_query_count - before.ann_query_count, 1);
-    assert!(after.candidates_scanned - before.candidates_scanned <= 80);
-    assert!(after.candidates_scanned - before.candidates_scanned < 256);
+        let exact_ids = ids(&exact);
+        let hits = ids(&approximate)
+            .iter()
+            .filter(|id| exact_ids.contains(id))
+            .count();
+        assert!(hits >= 8, "SOAR={use_soar} recall@10 was only {hits}/10");
+        assert_eq!(after.ann_query_count - before.ann_query_count, 1);
+        assert!(after.candidates_scanned - before.candidates_scanned <= 80);
+        assert!(after.candidates_scanned - before.candidates_scanned < 256);
+        collection.close().expect("collection must close");
+    }
 }
 
 #[test]

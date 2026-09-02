@@ -15,6 +15,7 @@ impl IvfIndex {
         vectors: &OrdinalMap<QuantizedVector>,
         n_list: usize,
         n_iters: usize,
+        use_soar: bool,
     ) -> Self {
         if vectors.is_empty() {
             return Self {
@@ -31,8 +32,14 @@ impl IvfIndex {
         let centroids = train_centroids(&decoded, count, iterations);
         let assignments = assign(&decoded, &centroids);
         let mut postings = vec![RoaringTreemap::new(); centroids.len()];
-        for ((ordinal, _), centroid) in decoded.iter().zip(assignments) {
-            postings[centroid].insert(*ordinal);
+        for ((ordinal, vector), primary) in decoded.iter().zip(assignments) {
+            postings[primary].insert(*ordinal);
+            if let Some(secondary) = use_soar
+                .then(|| soar_secondary(vector, primary, &centroids))
+                .flatten()
+            {
+                postings[secondary].insert(*ordinal);
+            }
         }
         Self {
             centroids,
@@ -69,28 +76,16 @@ impl IvfIndex {
         if self.centroids.is_empty() || allowed.is_empty() {
             return RoaringTreemap::new();
         }
-        let probes = self.ranked_probes(query);
-        let mut candidates_by_rank = Vec::with_capacity(probes.len());
-        for centroid in probes {
-            let mut candidates = &self.postings[centroid] & allowed;
-            candidates -= excluded;
-            candidates_by_rank.push(candidates);
-        }
-
-        let mut probe_count = self.probe_count(requested_nprobe);
-        let mut candidate_count = candidates_by_rank
-            .iter()
-            .take(probe_count)
-            .map(RoaringTreemap::len)
-            .sum::<u64>();
+        let initial_probe_count = self.probe_count(requested_nprobe);
         let minimum_candidates = u64::try_from(minimum_candidates).unwrap_or(u64::MAX);
-        while candidate_count < minimum_candidates && probe_count < candidates_by_rank.len() {
-            candidate_count = candidate_count.saturating_add(candidates_by_rank[probe_count].len());
-            probe_count += 1;
-        }
         let mut candidates = RoaringTreemap::new();
-        for bitmap in candidates_by_rank.into_iter().take(probe_count) {
-            candidates |= bitmap;
+        for (rank, centroid) in self.ranked_probes(query).into_iter().enumerate() {
+            if rank >= initial_probe_count && candidates.len() >= minimum_candidates {
+                break;
+            }
+            let mut posting_candidates = &self.postings[centroid] & allowed;
+            posting_candidates -= excluded;
+            candidates |= posting_candidates;
         }
         candidates
     }
@@ -142,6 +137,7 @@ impl IvfIndex {
         vectors: &OrdinalMap<QuantizedVector>,
         dimension: usize,
         n_list: usize,
+        use_soar: bool,
     ) -> bool {
         if vectors.is_empty() {
             return self.centroids.is_empty() && self.postings.is_empty();
@@ -155,14 +151,31 @@ impl IvfIndex {
         {
             return false;
         }
-        let mut assigned = RoaringTreemap::new();
+        let expected_assignments = u8::from(use_soar && expected_centroids > 1) + 1;
+        let mut assignments = vec![0_u8; vectors.slot_count()];
         for posting in &self.postings {
-            if posting.intersection_len(&assigned) != 0 {
-                return false;
+            for ordinal in posting {
+                let Ok(index) = usize::try_from(ordinal) else {
+                    return false;
+                };
+                let Some(count) = assignments.get_mut(index) else {
+                    return false;
+                };
+                if !vectors.contains_key(ordinal) {
+                    return false;
+                }
+                *count = count.saturating_add(1);
+                if *count > expected_assignments {
+                    return false;
+                }
             }
-            assigned |= posting;
         }
-        assigned.iter().eq(vectors.keys())
+        vectors.keys().all(|ordinal| {
+            usize::try_from(ordinal)
+                .ok()
+                .and_then(|index| assignments.get(index))
+                == Some(&expected_assignments)
+        })
     }
 }
 
@@ -232,6 +245,44 @@ fn assign(items: &[(u64, Vec<f32>)], centroids: &[Vec<f32>]) -> Vec<usize> {
                 .map_or(0, |(index, _)| index)
         })
         .collect()
+}
+
+fn soar_secondary(vector: &[f32], primary: usize, centroids: &[Vec<f32>]) -> Option<usize> {
+    let primary_centroid = centroids.get(primary)?;
+    centroids
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != primary)
+        .min_by(|left, right| {
+            soar_loss(vector, primary_centroid, left.1)
+                .total_cmp(&soar_loss(vector, primary_centroid, right.1))
+                .then_with(|| left.0.cmp(&right.0))
+        })
+        .map(|(index, _)| index)
+}
+
+/// SOAR's secondary-assignment objective with the paper's lambda of one:
+/// squared secondary residual plus its squared projection onto the primary
+/// residual. A zero primary residual has no defined direction and therefore no
+/// projection penalty.
+fn soar_loss(vector: &[f32], primary: &[f32], secondary: &[f32]) -> f64 {
+    if vector.len() != primary.len() || vector.len() != secondary.len() {
+        return f64::INFINITY;
+    }
+    let (mut primary_norm, mut secondary_norm, mut residual_dot) = (0.0, 0.0, 0.0);
+    for ((value, primary), secondary) in vector.iter().zip(primary).zip(secondary) {
+        let primary_residual = f64::from(*value) - f64::from(*primary);
+        let secondary_residual = f64::from(*value) - f64::from(*secondary);
+        primary_norm += primary_residual * primary_residual;
+        secondary_norm += secondary_residual * secondary_residual;
+        residual_dot += primary_residual * secondary_residual;
+    }
+    let projection_penalty = if primary_norm > 0.0 {
+        residual_dot * residual_dot / primary_norm
+    } else {
+        0.0
+    };
+    secondary_norm + projection_penalty
 }
 
 fn recompute(
@@ -306,7 +357,7 @@ fn f64_to_f32(value: f64) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::IvfIndex;
+    use super::{assign, soar_loss, IvfIndex};
     use crate::index::ordinal_map::OrdinalMap;
     use crate::index::quantization::QuantizedVector;
     use crate::types::QuantizeType;
@@ -334,8 +385,8 @@ mod tests {
     #[test]
     fn training_is_deterministic_and_exhaustive_probes_return_every_ordinal() {
         let vectors = vectors();
-        let first = IvfIndex::build(&vectors, 7, 5);
-        let second = IvfIndex::build(&vectors, 7, 5);
+        let first = IvfIndex::build(&vectors, 7, 5, false);
+        let second = IvfIndex::build(&vectors, 7, 5, false);
         assert_eq!(first.centroids, second.centroids);
         assert_eq!(first.postings, second.postings);
         assert_eq!(first.centroid_count(), 7);
@@ -346,11 +397,76 @@ mod tests {
     #[test]
     fn filtered_probe_window_expands_until_topk_is_available() {
         let vectors = vectors();
-        let index = IvfIndex::build(&vectors, 7, 5);
+        let index = IvfIndex::build(&vectors, 7, 5, false);
         let allowed: RoaringTreemap = (35_u64..50).collect();
         let candidates =
             index.filtered_candidates(&[0.0, 0.0], Some(1), 5, &allowed, &RoaringTreemap::new());
         assert!(candidates.len() >= 5);
         assert!(candidates.iter().all(|ordinal| allowed.contains(ordinal)));
+    }
+
+    #[test]
+    fn soar_assignments_are_deterministic_exhaustive_and_minimize_the_objective() {
+        let vectors = vectors();
+        let first = IvfIndex::build(&vectors, 7, 5, true);
+        let second = IvfIndex::build(&vectors, 7, 5, true);
+        assert_eq!(first.centroids, second.centroids);
+        assert_eq!(first.postings, second.postings);
+        assert!(first.validates(&vectors, 2, 7, true));
+        assert!(!first.validates(&vectors, 2, 7, false));
+
+        let decoded: Vec<_> = vectors
+            .iter()
+            .map(|(ordinal, vector)| (ordinal, vector.decode()))
+            .collect();
+        let primary_assignments = assign(&decoded, &first.centroids);
+        for ((ordinal, vector), primary) in decoded.iter().zip(primary_assignments) {
+            let assigned: Vec<_> = first
+                .postings
+                .iter()
+                .enumerate()
+                .filter_map(|(index, posting)| posting.contains(*ordinal).then_some(index))
+                .collect();
+            assert_eq!(assigned.len(), 2);
+            assert!(assigned.contains(&primary));
+            let secondary = assigned
+                .into_iter()
+                .find(|index| *index != primary)
+                .expect("SOAR must select a distinct secondary centroid");
+            let expected = first
+                .centroids
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != primary)
+                .min_by(|left, right| {
+                    soar_loss(vector, &first.centroids[primary], left.1)
+                        .total_cmp(&soar_loss(vector, &first.centroids[primary], right.1))
+                        .then_with(|| left.0.cmp(&right.0))
+                })
+                .map(|(index, _)| index)
+                .expect("fixture has multiple centroids");
+            assert_eq!(secondary, expected);
+        }
+
+        assert_eq!(
+            first.candidates(&[20.0, 0.0], Some(7)).len(),
+            vectors.len() as u64
+        );
+    }
+
+    #[test]
+    fn filtered_probe_expansion_counts_unique_soar_candidates() {
+        let index = IvfIndex {
+            centroids: vec![vec![0.0], vec![1.0], vec![2.0]],
+            postings: vec![
+                [0_u64, 1].into_iter().collect(),
+                [0_u64, 1].into_iter().collect(),
+                [2_u64, 3, 4].into_iter().collect(),
+            ],
+        };
+        let allowed: RoaringTreemap = (0_u64..5).collect();
+        let candidates =
+            index.filtered_candidates(&[0.0], Some(1), 4, &allowed, &RoaringTreemap::new());
+        assert_eq!(candidates.len(), 5);
     }
 }

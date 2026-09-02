@@ -134,7 +134,7 @@ impl IvfRabitqIndex {
         metric: MetricType,
     ) -> Result<Self> {
         Ok(Self {
-            ivf: IvfIndex::build(vectors, n_list, 5),
+            ivf: IvfIndex::build(vectors, n_list, 5, false),
             quantizer: RabitqQuantizer::build(
                 vectors,
                 dimension,
@@ -235,7 +235,7 @@ impl IvfRabitqIndex {
         sample_count: usize,
         metric: MetricType,
     ) -> bool {
-        self.ivf.validates(vectors, dimension, n_list)
+        self.ivf.validates(vectors, dimension, n_list, false)
             && self.quantizer.validates(
                 vectors,
                 dimension,
