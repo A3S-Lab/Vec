@@ -822,9 +822,11 @@ The external Intel gate has a separate manual workflow. It accepts an exact
 `a3s-macos-12`; its script rejects non-Darwin, non-x86_64, non-macOS-12, dirty,
 or revision-mismatched hosts before testing. After a locked dependency fetch,
 formatting, strict Clippy, default/all-feature tests, examples, rustdoc, and
-package verification run offline. The workflow uploads a checksummed crate and
-a machine-readable host/revision report, so a newer hosted Intel image cannot
-be mistaken for Monterey evidence.
+package verification run offline, it executes and validates the feature-matrix,
+concurrent-reader, and mixed-workload smoke benchmarks. The workflow uploads a
+checksummed crate, the three performance CSVs, and a machine-readable
+host/revision report, so a newer hosted Intel image cannot be mistaken for
+Monterey evidence.
 
 The default Cargo feature set is empty and its normal/build dependency graph
 does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit

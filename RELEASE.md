@@ -80,8 +80,9 @@ an actual macOS 12 Intel runtime.
   `a3s-macos-12` label, then manually dispatch
   `macOS 12 Intel Runtime Qualification` with the exact candidate commit. The
   workflow's host-fenced script runs the locked exact/FTS, recovery, async,
-  DiskANN, example, rustdoc, and package gates offline. A deployment target or
-  newer hosted Intel image is insufficient.
+  DiskANN, example, rustdoc, package, and all three smoke-scale performance
+  fixtures (with the same CSV validators as hosted CI) offline. A deployment
+  target or newer hosted Intel image is insufficient.
 - Attach that machine-readable result to the release record and verify the
   source revision matches the candidate artifact.
 - Re-run the Code migration and root compatibility-lock checks against that

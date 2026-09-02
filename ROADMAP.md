@@ -804,7 +804,8 @@ execution are implemented.
   revision only on a self-hosted runner labeled `a3s-macos-12`. Its reusable
   script rejects any host that is not actual macOS 12 on Intel x86-64, runs the
   locked format, Clippy, default/all-feature, recovery, async, DiskANN, example,
-  rustdoc, and package gates offline, and emits checksummed machine-readable
+  rustdoc, package, and all three smoke-scale performance fixtures with the
+  hosted CSV validators offline, and emits checksummed machine-readable
   evidence. No qualifying runner is currently registered, so this automation
   does not close the hardware gate by itself.
 - Remaining release work: an actual macOS 12 Intel runtime result from an

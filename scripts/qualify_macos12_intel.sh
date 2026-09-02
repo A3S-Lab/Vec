@@ -47,6 +47,24 @@ cargo +stable run --locked --example maintenance_health
 cargo +stable rustdoc --locked --all-features -- -D warnings
 cargo +stable package --locked
 
+performance_dir=target/macos12-intel-performance
+mkdir -p "${performance_dir}"
+# Keep the platform qualification aligned with the hosted release gate: each
+# performance fixture must execute on the actual host and pass the same CSV
+# contract checks before its evidence is published.
+A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
+    cargo +stable bench --locked --bench feature_matrix --features async --quiet \
+    > "${performance_dir}/feature-matrix.csv"
+A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
+    cargo +stable bench --locked --bench concurrent_queries --quiet \
+    > "${performance_dir}/concurrent-queries.csv"
+A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
+    cargo +stable bench --locked --bench mixed_workload --quiet \
+    > "${performance_dir}/mixed-workload.csv"
+awk -F, -f .github/check_feature_matrix.awk "${performance_dir}/feature-matrix.csv"
+awk -F, -f .github/check_concurrent.awk "${performance_dir}/concurrent-queries.csv"
+awk -F, -f .github/check_mixed.awk "${performance_dir}/mixed-workload.csv"
+
 package_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | sed -n '1p')
 [ -n "${package_version}" ] || fail "package version could not be resolved"
 
@@ -59,6 +77,7 @@ qualified_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 evidence_dir=target/macos12-intel-evidence
 evidence_path="${evidence_dir}/a3s-vec-${package_version}-macos12-intel.json"
 mkdir -p "${evidence_dir}"
+cp "${performance_dir}"/*.csv "${evidence_dir}/"
 
 printf '%s\n' \
     '{' \
@@ -73,7 +92,7 @@ printf '%s\n' \
     '    "deployment_target": "12.0"' \
     '  },' \
     '  "features": ["default", "all"],' \
-    '  "gates": ["format", "clippy", "unit", "integration", "recovery", "async", "diskann", "examples", "rustdoc", "package"],' \
+    '  "gates": ["format", "clippy", "unit", "integration", "recovery", "async", "diskann", "examples", "rustdoc", "package", "performance-smoke"],' \
     "  \"rustc\": \"${rustc_version}\"," \
     "  \"cargo\": \"${cargo_version}\"," \
     "  \"cargo_lock_sha256\": \"${lock_sha256}\"," \
