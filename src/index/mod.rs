@@ -155,6 +155,10 @@ impl CandidateSelection {
 }
 
 impl IndexRegistry {
+    pub(crate) fn document_ordinal(&self, id: &str) -> Option<u64> {
+        self.ordinals.ordinal(id)
+    }
+
     /// Builds a complete generation before it is published into collection
     /// state. A failure therefore leaves the previous generation untouched.
     pub(crate) fn build(

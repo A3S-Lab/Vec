@@ -42,6 +42,7 @@ impl Collection {
         let result = execute_query_with_candidates(
             &snapshot.schema,
             &snapshot.docs,
+            &snapshot.indexes,
             query,
             plan.selection.as_ref(),
             plan.fts_scores.as_ref(),
@@ -248,6 +249,7 @@ fn execute_multi_query_branches(
         branches.push(execute_query_with_candidates(
             &snapshot.schema,
             &snapshot.docs,
+            &snapshot.indexes,
             &branch,
             plan.selection.as_ref(),
             plan.fts_scores.as_ref(),

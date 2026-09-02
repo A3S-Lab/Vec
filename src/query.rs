@@ -463,6 +463,10 @@ impl SearchQuery {
 }
 
 /// Fluent builder matching the official SDK's naming.
+///
+/// A builder can construct either a dense-vector query or a pure FTS query.
+/// The two routes are mutually exclusive, as are the FTS `query_string` and
+/// `match_string` forms.
 #[derive(Debug, Clone, Default)]
 pub struct SearchQueryBuilder {
     field_name: Option<String>,
@@ -518,14 +522,39 @@ impl SearchQueryBuilder {
         self.fts_match_string = Some(query.to_string());
         self
     }
+    /// Validates the selected route and creates the immutable query payload.
     pub fn build(self) -> Result<SearchQuery> {
         let field = self
             .field_name
             .ok_or_else(|| Error::invalid_argument("field_name is required"))?;
-        let vector = self
-            .vector
-            .ok_or_else(|| Error::invalid_argument("vector is required"))?;
-        let mut query = SearchQuery::new(&field, &vector, self.topk)?;
+        let has_query_string = self.fts_query_string.is_some();
+        let has_match_string = self.fts_match_string.is_some();
+        if self.vector.is_some() && (has_query_string || has_match_string) {
+            return Err(Error::invalid_argument(
+                "query builder cannot combine a vector with an FTS expression",
+            ));
+        }
+        if has_query_string && has_match_string {
+            return Err(Error::invalid_argument(
+                "query builder cannot combine FTS query_string and match_string",
+            ));
+        }
+
+        let mut query = if has_query_string || has_match_string {
+            let mut fts = Fts::new()?;
+            if let Some(value) = self.fts_query_string {
+                fts.set_query_string(&value)?;
+            }
+            if let Some(value) = self.fts_match_string {
+                fts.set_match_string(&value)?;
+            }
+            SearchQuery::fts(&field, &fts, self.topk)?
+        } else {
+            let vector = self
+                .vector
+                .ok_or_else(|| Error::invalid_argument("vector or FTS expression is required"))?;
+            SearchQuery::new(&field, &vector, self.topk)?
+        };
         if let Some(filter) = self.filter {
             query.set_filter(&filter)?;
         }
@@ -538,16 +567,6 @@ impl SearchQueryBuilder {
         if let Some(fields) = self.output_fields {
             let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
             query.set_output_fields(&refs)?;
-        }
-        if self.fts_query_string.is_some() || self.fts_match_string.is_some() {
-            let mut fts = Fts::new()?;
-            if let Some(value) = self.fts_query_string {
-                fts.set_query_string(&value)?;
-            }
-            if let Some(value) = self.fts_match_string {
-                fts.set_match_string(&value)?;
-            }
-            query.set_fts(&fts)?;
         }
         Ok(query)
     }

@@ -31,10 +31,10 @@ cargo test --locked --all-features
 ```
 
 `benches/feature_matrix.rs` executes every successful query route (all four
-dense metrics, dense/sparse source-ID, sparse, indexed FTS, scalar-filtered
-dense, hybrid RRF, group-by, fetch, iterator, statistics/health), mutation and
-flush controls, all six ANN families across their supported metrics, both
-reopened DiskANN sidecar readers, and all three Tokio query wrappers. Each
+dense metrics, include-doc-id, dense/sparse source-ID, sparse, indexed FTS,
+scalar-filtered dense, hybrid RRF, group-by, fetch, iterator, statistics/health),
+mutation and flush controls, all six ANN families across their supported metrics,
+both reopened DiskANN sidecar readers, and all three Tokio query wrappers. Each
 sample asserts a non-empty or
 exactly-sized result, so a disconnected implementation fails the benchmark.
 It emits CSV with nearest-rank p50/p95/p99 latency, total work, and work per
@@ -55,42 +55,43 @@ are microseconds per operation, and the benchmark's CSV also reports
 
 | Operation | Samples | p50_us | p95_us | p99_us |
 | --- | ---: | ---: | ---: | ---: |
-| dense_l2 | 48 | 42.3 | 71.3 | 105.1 |
-| dense_ip | 48 | 42.2 | 91.1 | 214.3 |
-| dense_cosine | 48 | 46.4 | 49.6 | 77.4 |
-| dense_mips_l2 | 48 | 41.5 | 42.3 | 45.3 |
-| dense_source_id_l2 | 48 | 41.4 | 48.8 | 169.2 |
-| dense_source_id_ip | 48 | 41.4 | 44.7 | 195.6 |
-| dense_source_id_cosine | 48 | 45.9 | 53.9 | 156.6 |
-| dense_source_id_mips_l2 | 48 | 41.9 | 42.9 | 80.2 |
-| sparse | 48 | 81.1 | 176.2 | 260.3 |
-| sparse_source_id | 48 | 79.9 | 83.6 | 83.7 |
-| fts_indexed | 48 | 53.1 | 83.1 | 219.7 |
-| dense_scalar_filter | 48 | 271.6 | 324.8 | 411.6 |
-| multi_rrf | 48 | 123.8 | 172.5 | 215.9 |
-| group_by | 48 | 42.0 | 47.6 | 52.6 |
-| fetch_projection | 48 | 1.6 | 1.8 | 2.0 |
-| snapshot_iterator | 3 | 478.9 | 503.8 | 503.8 |
-| stats_health | 48 | 1.0 | 1.2 | 1.6 |
-| partial_update | 3 | 2,255.1 | 2,322.0 | 2,322.0 |
-| flush | 3 | 18,861.3 | 19,431.0 | 19,431.0 |
-| dense_async | 48 | 93.8 | 138.0 | 187.5 |
-| multi_async | 48 | 99.8 | 149.8 | 160.7 |
-| group_by_async | 48 | 82.3 | 126.9 | 159.1 |
-| ann_hnsw | 48 | 59.9 | 64.2 | 78.3 |
-| ann_ivf_soar | 48 | 37.6 | 61.7 | 117.0 |
-| ann_hnsw_rabitq | 48 | 59.5 | 62.4 | 73.8 |
-| ann_ivf_rabitq | 48 | 42.4 | 46.4 | 78.2 |
-| ann_vamana | 48 | 111.0 | 115.0 | 125.4 |
-| ann_vamana_ip | 48 | 106.8 | 163.1 | 239.4 |
-| ann_vamana_cosine | 48 | 116.6 | 125.3 | 132.1 |
-| ann_vamana_mips_l2 | 48 | 106.5 | 110.8 | 121.6 |
-| ann_diskann_pq | 48 | 138.3 | 162.3 | 239.8 |
-| ann_diskann_ip_pq | 48 | 137.2 | 236.6 | 284.9 |
-| ann_diskann_cosine_pq | 48 | 138.8 | 170.4 | 279.8 |
-| ann_diskann_mips_l2_pq | 48 | 134.4 | 141.7 | 152.2 |
-| diskann_positioned_reopen_query | 3 | 7,468.1 | 7,766.2 | 7,766.2 |
-| diskann_mmap_reopen_query | 3 | 6,618.8 | 6,666.3 | 6,666.3 |
+| dense_l2 | 48 | 42.8 | 46.2 | 48.5 |
+| dense_ip | 48 | 42.3 | 43.4 | 43.7 |
+| dense_cosine | 48 | 48.2 | 49.7 | 54.7 |
+| dense_mips_l2 | 48 | 42.0 | 43.0 | 43.1 |
+| dense_include_doc_id | 48 | 47.8 | 49.3 | 50.0 |
+| dense_source_id_l2 | 48 | 41.3 | 51.1 | 77.8 |
+| dense_source_id_ip | 48 | 41.7 | 49.7 | 62.3 |
+| dense_source_id_cosine | 48 | 46.4 | 47.3 | 49.6 |
+| dense_source_id_mips_l2 | 48 | 41.5 | 42.4 | 42.6 |
+| sparse | 48 | 79.1 | 82.0 | 83.1 |
+| sparse_source_id | 48 | 78.7 | 80.0 | 87.8 |
+| fts_indexed | 48 | 54.9 | 70.2 | 76.2 |
+| dense_scalar_filter | 48 | 277.8 | 301.2 | 642.6 |
+| multi_rrf | 48 | 123.7 | 147.1 | 155.7 |
+| group_by | 48 | 42.6 | 57.1 | 64.5 |
+| fetch_projection | 48 | 1.7 | 1.9 | 2.1 |
+| snapshot_iterator | 3 | 483.7 | 499.3 | 499.3 |
+| stats_health | 48 | 1.1 | 1.8 | 3.2 |
+| partial_update | 3 | 3,429.1 | 4,092.4 | 4,092.4 |
+| flush | 3 | 21,109.2 | 23,031.8 | 23,031.8 |
+| dense_async | 48 | 88.2 | 122.6 | 171.8 |
+| multi_async | 48 | 102.1 | 147.7 | 187.1 |
+| group_by_async | 48 | 86.6 | 142.2 | 155.7 |
+| ann_hnsw | 48 | 64.3 | 92.5 | 105.1 |
+| ann_ivf_soar | 48 | 36.2 | 43.6 | 53.4 |
+| ann_hnsw_rabitq | 48 | 62.0 | 67.0 | 87.2 |
+| ann_ivf_rabitq | 48 | 43.0 | 54.0 | 74.8 |
+| ann_vamana | 48 | 110.6 | 117.3 | 142.5 |
+| ann_vamana_ip | 48 | 107.1 | 177.5 | 329.1 |
+| ann_vamana_cosine | 48 | 175.6 | 199.6 | 202.5 |
+| ann_vamana_mips_l2 | 48 | 105.9 | 110.7 | 119.6 |
+| ann_diskann_pq | 48 | 135.3 | 146.0 | 155.7 |
+| ann_diskann_ip_pq | 48 | 130.1 | 141.4 | 178.2 |
+| ann_diskann_cosine_pq | 48 | 136.0 | 140.9 | 155.0 |
+| ann_diskann_mips_l2_pq | 48 | 129.0 | 136.4 | 152.4 |
+| diskann_positioned_reopen_query | 3 | 6,968.7 | 7,171.4 | 7,171.4 |
+| diskann_mmap_reopen_query | 3 | 6,880.4 | 7,028.8 | 7,028.8 |
 
 The metric-aware Vamana and DiskANN rows use the same 512-document, 16-
 dimension fixture and `list_size=64` controls as the original ANN rows. Their

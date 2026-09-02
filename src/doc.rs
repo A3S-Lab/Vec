@@ -228,8 +228,15 @@ impl Doc {
         Ok(())
     }
 
+    /// Returns the generation-local ordinal exposed by a query that requested
+    /// document IDs. Ordinary input documents and queries without that option
+    /// return `None`.
     pub fn doc_id(&self) -> Option<u64> {
         self.internal_id
+    }
+
+    pub(crate) fn set_internal_id(&mut self, doc_id: Option<u64>) {
+        self.internal_id = doc_id;
     }
 
     pub fn field_count(&self) -> usize {

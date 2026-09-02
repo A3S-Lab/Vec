@@ -3,7 +3,7 @@
 use super::query_contract::{query_metric, validate_query_contract};
 use crate::doc::{Doc, DocumentMap, VectorValue};
 use crate::error::{Error, Result};
-use crate::index::{CandidateSelection, OrdinalScores};
+use crate::index::{CandidateSelection, IndexRegistry, OrdinalScores};
 use crate::query::{FtsDefaultOperator, SearchQuery};
 use crate::schema::{CollectionSchema, IndexParams};
 use crate::text::{
@@ -225,6 +225,7 @@ pub(super) fn matches_filter(doc: &Doc, filter: Option<&FilterExpr>) -> bool {
 pub(super) fn execute_query_with_candidates(
     schema: &CollectionSchema,
     docs: &DocumentMap,
+    indexes: &IndexRegistry,
     query: &SearchQuery,
     candidate_ids: Option<&CandidateSelection>,
     fts_scores: Option<&OrdinalScores>,
@@ -254,6 +255,20 @@ pub(super) fn execute_query_with_candidates(
         .into_iter()
         .map(|mut scored| {
             scored.doc.set_score(score_to_f32(scored.exact_score)?)?;
+            if query.include_doc_id {
+                let pk = scored
+                    .doc
+                    .get_pk()
+                    .ok_or_else(|| Error::internal("query result has no primary key"))?;
+                let doc_id = indexes.document_ordinal(pk).ok_or_else(|| {
+                    Error::internal(format!(
+                        "query result primary key '{pk}' has no document ID"
+                    ))
+                })?;
+                scored.doc.set_internal_id(Some(doc_id));
+            } else {
+                scored.doc.set_internal_id(None);
+            }
             Ok(scored.doc.project(output_fields, query.include_vector))
         })
         .collect()

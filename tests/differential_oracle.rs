@@ -276,6 +276,64 @@ fn dense_exact_scan_matches_an_independent_reference() {
 }
 
 #[test]
+fn include_doc_id_resolves_the_generation_ordinal_and_survives_reopen() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary
+        .path()
+        .join("doc-id")
+        .to_str()
+        .expect("temporary path must be UTF-8")
+        .to_string();
+    let collection = Collection::create(&path, &vector_schema(DataType::VectorFp32, 4), None)
+        .expect("collection must be created");
+    let cases = dense_cases();
+    insert_dense(&collection, &cases);
+
+    let mut query =
+        SearchQuery::new("embedding", &[0.75, -1.25, 2.0, 0.5], 7).expect("query must be valid");
+    query
+        .set_include_doc_id(true)
+        .expect("include-doc-id control must be accepted");
+    let first = collection.query(&query).expect("query must succeed");
+    assert_eq!(first.len(), 7);
+    let first_ids: Vec<_> = first
+        .iter()
+        .map(|doc| {
+            (
+                doc.get_pk().expect("query result must have a primary key"),
+                doc.doc_id()
+                    .expect("query result must include a document ID"),
+            )
+        })
+        .collect();
+    let mut distinct = first_ids.iter().map(|(_, id)| *id).collect::<Vec<_>>();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), first_ids.len());
+
+    let hidden =
+        SearchQuery::new("embedding", &[0.75, -1.25, 2.0, 0.5], 7).expect("query must be valid");
+    let hidden_results = collection.query(&hidden).expect("query must succeed");
+    assert!(hidden_results.iter().all(|doc| doc.doc_id().is_none()));
+
+    collection.flush().expect("flush must succeed");
+    collection.close().expect("collection must close");
+    let reopened = Collection::open(&path, None).expect("collection must reopen");
+    let reopened_results = reopened.query(&query).expect("reopened query must succeed");
+    let reopened_ids: Vec<_> = reopened_results
+        .iter()
+        .map(|doc| {
+            (
+                doc.get_pk().expect("query result must have a primary key"),
+                doc.doc_id()
+                    .expect("query result must include a document ID"),
+            )
+        })
+        .collect();
+    assert_eq!(reopened_ids, first_ids);
+}
+
+#[test]
 fn sparse_exact_scan_matches_an_independent_reference() {
     let temporary = tempdir().expect("temporary directory must be available");
     let collection = Collection::create(

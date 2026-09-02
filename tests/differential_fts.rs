@@ -1,6 +1,6 @@
 use a3s_vec::{
     Collection, CollectionSchema, DataType, Doc, ErrorCode, FieldSchema, Fts, IndexParams,
-    SearchQuery,
+    SearchQuery, SearchQueryBuilder,
 };
 use std::cmp::Ordering;
 use tempfile::tempdir;
@@ -267,5 +267,91 @@ fn ambiguous_fts_expression_forms_are_rejected() {
     let error = collection
         .query(&query)
         .expect_err("two FTS expression forms must be ambiguous");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn query_builder_executes_fts_only_routes_and_rejects_ambiguous_routes() {
+    let cases = [
+        TextCase {
+            id: "a",
+            body: Some("rust vector"),
+        },
+        TextCase {
+            id: "b",
+            body: Some("database"),
+        },
+    ];
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection = Collection::create(
+        temporary
+            .path()
+            .join("builder-fts")
+            .to_str()
+            .expect("temporary path must be UTF-8"),
+        &fts_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    insert_text(&collection, &cases);
+
+    let query = SearchQuery::builder()
+        .field_name("body")
+        .fts_query_string("rust vector")
+        .topk(1)
+        .output_fields(&["body"])
+        .build()
+        .expect("FTS query-string builder route must be valid");
+    assert!(query.vector.is_none());
+    assert_eq!(
+        query.fts.as_ref().and_then(Fts::query_string),
+        Some("rust vector".to_string())
+    );
+    let result = collection
+        .query(&query)
+        .expect("FTS query-string builder route must execute");
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get_pk(), Some("a"));
+    assert_eq!(
+        result[0].get_string("body").expect("body getter"),
+        Some("rust vector".into())
+    );
+
+    let query = SearchQueryBuilder::new()
+        .field_name("body")
+        .fts_match_string("database")
+        .topk(1)
+        .build()
+        .expect("FTS match-string builder route must be valid");
+    assert!(query.vector.is_none());
+    assert_eq!(
+        query.fts.as_ref().and_then(Fts::match_string),
+        Some("database".to_string())
+    );
+    let result = collection
+        .query(&query)
+        .expect("FTS match-string builder route must execute");
+    assert_eq!(result.first().and_then(Doc::get_pk), Some("b"));
+
+    let error = SearchQueryBuilder::new()
+        .field_name("body")
+        .build()
+        .expect_err("a builder without a query route must fail");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let error = SearchQueryBuilder::new()
+        .field_name("body")
+        .vector(&[1.0])
+        .fts_query_string("rust")
+        .build()
+        .expect_err("a builder cannot combine vector and FTS routes");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let error = SearchQueryBuilder::new()
+        .field_name("body")
+        .fts_query_string("rust")
+        .fts_match_string("vector")
+        .build()
+        .expect_err("a builder cannot combine FTS expression forms");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
 }

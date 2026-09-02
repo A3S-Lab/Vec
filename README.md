@@ -173,6 +173,9 @@ result.
 - Dense and sparse numeric queries accept either an explicit payload or a
   source document ID. Source-ID queries use the same exact scoring, filtering,
   radius, projection, persistence, and optional Tokio execution paths.
+- `SearchQuery::builder()` supports either a dense route or a pure FTS
+  `query_string`/`match_string` route and rejects ambiguous combinations;
+  `include_doc_id` exposes the generation ordinal for returned query documents.
 - Exact L2, inner product, cosine, and MIPS-L2 scoring with `f64`
   intermediates.
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking;

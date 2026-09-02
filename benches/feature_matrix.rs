@@ -268,6 +268,23 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         });
     }
 
+    let mut include_doc_id = dense_query(config, "cosine");
+    include_doc_id
+        .set_include_doc_id(true)
+        .expect("include-doc-id control must be valid");
+    measure("dense_include_doc_id", config, samples, |sample| {
+        let mut query = include_doc_id.clone();
+        query
+            .set_query_vector(&vector_for(sample % config.documents, config.dimensions))
+            .expect("query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("include-doc-id query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        assert!(result.iter().all(|doc| doc.doc_id().is_some()));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
     for metric in ["l2", "ip", "cosine", "mips_l2"] {
         let mut query = SearchQuery::by_id("embedding", "doc-00017", 10)
             .expect("dense source-ID query must be valid");

@@ -179,11 +179,16 @@ placeholders.
 
 The public modules deliberately mirror the zvec Rust SDK names where that
 improves migration (`Collection`, `Doc`, `CollectionSchema`, `IndexParams`,
-`SearchQuery`, `MultiQuery`, and `DocIterator`). Internal modules remain
-replaceable and do not leak storage implementation details. The `zvec-core`
-algorithm dependency is also private: it may implement internal filtering,
-tokenization, or document conversion, but its modules and types are not
-re-exported as part of the A3S contract.
+`SearchQuery`, `SearchQueryBuilder`, `MultiQuery`, and `DocIterator`). The
+builder validates one route at a time: either a dense vector or one pure FTS
+`query_string`/`match_string` expression. Query result materialisation keeps
+the authoritative document generation separate from public projection;
+`include_doc_id` resolves the shared generation ordinal only for that request
+and never mutates the stored document. Internal modules remain replaceable and
+do not leak storage implementation details. The `zvec-core` algorithm
+dependency is also private: it may implement internal filtering, tokenization,
+or document conversion, but its modules and types are not re-exported as part
+of the A3S contract.
 
 The module inventory above is extended by `collection/maintenance.rs`, which
 owns the explicit scheduler lifecycle; `collection/mutation.rs`, which owns

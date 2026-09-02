@@ -27,6 +27,9 @@ intermediates and are ranked before the public score is narrowed to `f32`.
 Both dense and sparse numeric queries can resolve that authoritative payload
 from a source document ID; missing documents and missing source vectors have
 distinct typed errors.
+The fluent `SearchQueryBuilder` constructs either dense or pure FTS routes,
+rejects ambiguous route combinations, and query results can expose the
+generation ordinal through the explicit `include_doc_id` control.
 Independent differential fixtures now cover deterministic dense/sparse scores,
 filters, radius/top-k ordering, and scan BM25 corpus statistics. A fixed-seed
 256-document corpus adds 100 dense metric/filter combinations and 24
@@ -98,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 247 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 244 unit/integration tests,
+the all-feature baseline has 248 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 245 unit/integration tests,
 and the feature gates remain separate. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
@@ -199,6 +202,10 @@ and direct file-backed mmap remain future work.
   rejected. Boolean groups, exact phrases, required/prohibited modifiers,
   wildcard, fielded, boosted, fuzzy, and range syntax execute with shared
   indexed/scan semantics in Phase 5.
+- Completed: fluent `SearchQueryBuilder` FTS-only query-string and match-string
+  routes execute against the same BM25 oracle; vector/FTS and dual-expression
+  combinations fail at build time. `include_doc_id` resolves the shared
+  generation ordinal and remains deterministic across flush/reopen.
 - Completed: a dependency-free fixed-seed generator produces 256 mixed
   documents and checks 100 dense metric/filter combinations plus 24
   BM25/filter combinations against independent references after persistence
