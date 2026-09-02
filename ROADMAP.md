@@ -774,9 +774,15 @@ execution are implemented.
   1/2/4/8-worker HNSW readers and records index-build time, flat-oracle
   Recall@10, nearest-rank p50/p95/p99 query latency, and wall-clock QPS. The
   smoke CSV is validated by `.github/check_concurrent.awk` and uploaded with
-  the public performance artifact. This closes concurrent read-tail evidence;
-  mixed read/write, allocator RSS, and cross-project scale measurements remain
-  separate roadmap work.
+  the public performance artifact. This closes concurrent read-tail evidence.
+- Completed in the engine: `benches/mixed_workload.rs` starts one scalar-update
+  writer alongside synchronized 1/2/4/8-worker HNSW readers and records read and
+  write p50/p95/p99, wall-clock QPS, Recall@10, final revision, and logical
+  accounted bytes. The 19-column smoke CSV is validated by
+  `.github/check_mixed.awk` and uploaded with the public performance artifact.
+  Vector-index mutation remains covered by `incremental_write`; process RSS,
+  allocator attribution, and cross-project large-corpus scale remain separate
+  external measurements.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
   `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
@@ -811,9 +817,9 @@ execution are implemented.
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, unit/integration/fuzz
   smoke tests, recovery suite, `cargo bench --locked --bench feature_matrix
-  --features async` (smoke scale in CI), benchmark report, and Intel macOS 12
-  runtime smoke all pass. No feature is advertised unless its gate has
-  evidence.
+  --features async`, `concurrent_queries`, and `mixed_workload` (smoke scale
+  in CI), benchmark report, and Intel macOS 12 runtime smoke all pass. No
+  feature is advertised unless its gate has evidence.
 
 ## Deliberate boundaries
 

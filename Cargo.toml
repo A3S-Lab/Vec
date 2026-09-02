@@ -106,6 +106,10 @@ harness = false
 name = "concurrent_queries"
 harness = false
 
+[[bench]]
+name = "mixed_workload"
+harness = false
+
 [lints.rust]
 unsafe_code = "deny"
 

@@ -59,11 +59,14 @@ jobs:
             | tee target/performance/feature-matrix.csv
           cargo +stable bench --locked --bench concurrent_queries --quiet \
             | tee target/performance/concurrent-queries.csv
+          cargo +stable bench --locked --bench mixed_workload --quiet \
+            | tee target/performance/mixed-workload.csv
       - name: Verify complete matrix metrics
         shell: bash
         run: |
           awk -F, -f .github/check_feature_matrix.awk target/performance/feature-matrix.csv
           awk -F, -f .github/check_concurrent.awk target/performance/concurrent-queries.csv
+          awk -F, -f .github/check_mixed.awk target/performance/mixed-workload.csv
       - name: Upload feature matrix
         uses: actions/upload-artifact@v4
         with:
@@ -142,6 +145,11 @@ jobs:
         uses: actions/checkout@v5
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
+      - name: Download performance evidence
+        uses: actions/download-artifact@v5
+        with:
+          name: a3s-vec-performance-${{ github.sha }}
+          path: target/performance
       - name: Resolve package version
         id: package
         shell: bash
@@ -175,5 +183,6 @@ jobs:
             target/package/a3s-vec-${{ steps.package.outputs.version }}.crate
             target/package/a3s-vec-${{ steps.package.outputs.version }}.crate.sha256
             target/package/a3s-vec-${{ steps.package.outputs.version }}.release.json
+            target/performance/*.csv
           if-no-files-found: error
           retention-days: 30

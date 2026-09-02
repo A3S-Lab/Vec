@@ -119,8 +119,41 @@ A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench concurrent_queries --quie
 Set `A3S_VEC_CONCURRENCY` to a comma-separated positive worker list (for
 example, `1,2,4,8`) and use the `A3S_VEC_CONCURRENT_*` variables to select a
 larger fixture. This is read-only query contention evidence. It does not claim
-mixed read/write behavior, process RSS, or a portable latency SLO; those remain
-separate roadmap measurements.
+mixed read/write behavior, process RSS, or a portable latency SLO.
+
+## Mixed read/write contention
+
+`benches/mixed_workload.rs` runs one scalar-update writer alongside 1, 2, 4, or
+8 synchronized HNSW readers. Vectors remain unchanged so Recall@10 is compared
+with a stable flat oracle; vector-index mutation is measured separately by the
+`incremental_write` fixture. Each row reports index-build time, read and write
+p50/p95/p99 latency, read/write wall-clock QPS, Recall@10, final revision, and
+logical accounted bytes. CI uses the smoke scale and validates the 19-column
+CSV with `.github/check_mixed.awk`.
+
+```sh
+cargo bench --locked --bench mixed_workload --quiet
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench mixed_workload --quiet
+```
+
+The default fixture is 2,000 documents x 32 dimensions, 48 queries, five
+rounds, and 192 scalar updates. Set `A3S_VEC_MIXED_READERS` and the
+`A3S_VEC_MIXED_*` variables to repeat a larger or smaller deterministic run.
+Logical accounted bytes are an engine-owned estimate, not process RSS; an
+allocator/process-memory result still requires an OS-specific external harness.
+
+A repeated default-scale run on the same Windows host (one writer, three
+process runs, median per reader count, `RAYON_NUM_THREADS=1`) produced:
+
+| Readers | HNSW build (ms) | Recall@10 | Read p50/p95/p99 (µs) | Write p50/p95/p99 (µs) | Read QPS | Write QPS | Accounted bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 400.8 | 1.0000 | 1,762.9 / 2,098.7 / 2,392.7 | 1,782.5 / 2,157.5 / 2,379.1 | 661 | 529 | 1,263,600 |
+| 2 | 404.1 | 1.0000 | 1,722.7 / 1,986.4 / 2,655.7 | 1,751.8 / 2,027.5 / 2,903.5 | 1,339 | 536 | 1,263,600 |
+| 4 | 406.6 | 1.0000 | 1,781.4 / 2,204.1 / 2,465.6 | 1,823.7 / 2,232.1 / 2,759.8 | 2,590 | 518 | 1,263,600 |
+| 8 | 406.1 | 1.0000 | 1,703.2 / 2,185.2 / 2,530.4 | 1,741.3 / 2,266.0 / 2,686.2 | 5,264 | 526 | 1,263,600 |
+
+These values are local contention indicators, not portable SLOs; compare
+repeated runs on the same host and retain recall/correctness as the gate.
 
 A repeated default-scale run on the Windows host above (three process runs,
 median per worker count, `RAYON_NUM_THREADS=1`) produced:
@@ -900,7 +933,7 @@ already narrows the eligible documents. Telemetry confirms that both broad rows
 selected the same exact scan path as their controls.
 
 A broader representative cross-project benchmark suite, larger corpora,
-sustained mixed read/write workloads, and allocator-aware/process-level memory
-accounting remain Phase 7 work. The cross-project smoke table and concurrent
-reader fixture above provide bounded comparison and read-contention evidence;
-they are not a replacement for those larger-scale or mixed-workload claims.
+long-duration/high-scale mixed read/write workloads, and allocator-aware/
+process-level memory accounting remain Phase 7 work. The cross-project smoke
+table and concurrent/mixed fixtures above provide bounded comparison and
+contention evidence; they are not a replacement for those larger-scale claims.

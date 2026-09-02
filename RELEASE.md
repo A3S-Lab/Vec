@@ -26,8 +26,9 @@ The release-facing contract has the following boundaries:
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
   boundary against deterministic fixtures. Binary32/Binary64 radius and
   projection/include-doc-id combinations also have asserted matrix rows. Its
-  smoke-scale performance CSV is a required hosted CI artifact; same-host
-  p50/p95/p99 baselines are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
+  smoke-scale feature-matrix, concurrent-reader, and mixed-workload performance
+  CSVs are required hosted CI artifacts; same-host p50/p95/p99 baselines are
+  recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
 - The locked dependency graph passes `cargo audit --deny unsound`: no known
   vulnerability or unsoundness advisory is present at the candidate revision.
   The audit still reports four upstream maintenance warnings (`bincode`,
@@ -48,6 +49,8 @@ revision-bound Actions artifact:
 - `a3s-vec-0.1.0.crate.sha256`;
 - `a3s-vec-0.1.0.release.json`, which records the package version, source
   revision, workflow run, and build runner.
+- `feature-matrix.csv`, `concurrent-queries.csv`, and `mixed-workload.csv`,
+  which record the smoke-scale correctness/performance gates.
 
 The same package can be reproduced locally without changing external state:
 
@@ -59,6 +62,10 @@ cargo test --locked --all-features
 cargo test --locked --test feature_matrix
 cargo bench --locked --bench feature_matrix --features async
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
+cargo bench --locked --bench concurrent_queries
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench concurrent_queries
+cargo bench --locked --bench mixed_workload
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench mixed_workload
 cargo doc --locked --no-deps --all-features
 cargo package --locked --offline
 cargo publish --dry-run --locked
