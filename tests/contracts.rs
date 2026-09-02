@@ -77,7 +77,7 @@ fn dense_query_dimension_is_rejected_for_every_metric_and_numeric_vector_type() 
 }
 
 #[test]
-fn sparse_and_binary_query_contracts_fail_explicitly() {
+fn sparse_query_contracts_fail_explicitly() {
     let temporary = tempdir().expect("temporary directory must be available");
     for data_type in [DataType::SparseVectorFp16, DataType::SparseVectorFp32] {
         let path = temporary.path().join(format!("{data_type:?}"));
@@ -108,34 +108,6 @@ fn sparse_and_binary_query_contracts_fail_explicitly() {
             .query(&sparse)
             .expect_err("out-of-range sparse index must fail");
         assert_eq!(error.code, ErrorCode::InvalidArgument);
-    }
-
-    for data_type in [DataType::VectorBinary32, DataType::VectorBinary64] {
-        let path = temporary.path().join(format!("{data_type:?}"));
-        let dimension = if data_type == DataType::VectorBinary32 {
-            32
-        } else {
-            64
-        };
-        let schema = CollectionSchema::builder("binary-contract")
-            .add_field(
-                FieldSchema::new("embedding", data_type, false, dimension)
-                    .expect("binary schema must be valid"),
-            )
-            .build()
-            .expect("collection schema must be valid");
-        let collection = Collection::create(
-            path.to_str().expect("temporary path must be UTF-8"),
-            &schema,
-            None,
-        )
-        .expect("collection must be created");
-        let query = SearchQuery::new("embedding", &vec![0.0; dimension as usize], 10)
-            .expect("binary-shaped query must be created");
-        let error = collection
-            .query(&query)
-            .expect_err("unsupported binary scoring must fail explicitly");
-        assert_eq!(error.code, ErrorCode::NotSupported);
     }
 }
 

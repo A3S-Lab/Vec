@@ -29,6 +29,8 @@ impl Default for RerankMethod {
 pub struct SubQuery {
     pub field_name: Option<String>,
     pub vector: Option<Vec<f32>>,
+    #[serde(default)]
+    pub binary_vector: Option<Vec<u8>>,
     pub sparse_vector: Option<Vec<(u32, f32)>>,
     pub fts: Option<Fts>,
     pub num_candidates: i32,
@@ -40,6 +42,7 @@ impl SubQuery {
         Ok(Self {
             field_name: None,
             vector: None,
+            binary_vector: None,
             sparse_vector: None,
             fts: None,
             num_candidates: 10,
@@ -70,7 +73,21 @@ impl SubQuery {
             ));
         }
         self.vector = Some(data.to_vec());
+        self.binary_vector = None;
         self.sparse_vector = None;
+        self.fts = None;
+        Ok(())
+    }
+    pub fn set_binary_vector(&mut self, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Err(Error::invalid_argument(
+                "binary query vector must be non-empty",
+            ));
+        }
+        self.binary_vector = Some(data.to_vec());
+        self.vector = None;
+        self.sparse_vector = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_sparse_vector(&mut self, indices: &[u32], values: &[f32]) -> Result<()> {
@@ -88,6 +105,8 @@ impl SubQuery {
                 .collect(),
         );
         self.vector = None;
+        self.binary_vector = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_sparse_indices(&mut self, indices: &[u32]) -> Result<()> {
@@ -104,6 +123,9 @@ impl SubQuery {
             ));
         }
         self.sparse_vector = Some(indices.iter().copied().zip(values).collect());
+        self.vector = None;
+        self.binary_vector = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_sparse_values(&mut self, values: &[f32]) -> Result<()> {
@@ -125,6 +147,9 @@ impl SubQuery {
             ));
         }
         self.sparse_vector = Some(indices.into_iter().zip(values.iter().copied()).collect());
+        self.vector = None;
+        self.binary_vector = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_hnsw_params(&mut self, params: HnswQueryParams) -> Result<()> {
@@ -150,6 +175,9 @@ impl SubQuery {
             return Err(Error::invalid_argument("FTS query has no expression"));
         }
         self.fts = Some(fts.clone());
+        self.vector = None;
+        self.binary_vector = None;
+        self.sparse_vector = None;
         Ok(())
     }
     pub(crate) fn to_search_query(&self) -> Result<SearchQuery> {
@@ -157,8 +185,19 @@ impl SubQuery {
             .field_name
             .as_deref()
             .ok_or_else(|| Error::invalid_argument("sub-query field_name is required"))?;
+        let route_count = usize::from(self.vector.is_some())
+            + usize::from(self.binary_vector.is_some())
+            + usize::from(self.sparse_vector.is_some())
+            + usize::from(self.fts.is_some());
+        if route_count != 1 {
+            return Err(Error::invalid_argument(
+                "sub-query must select exactly one dense, binary, sparse, or FTS route",
+            ));
+        }
         let mut query = if let Some(vector) = &self.vector {
             SearchQuery::new(field, vector, self.num_candidates)?
+        } else if let Some(vector) = &self.binary_vector {
+            SearchQuery::binary(field, vector, self.num_candidates)?
         } else if let Some(sparse) = &self.sparse_vector {
             let (i, v): (Vec<_>, Vec<_>) = sparse.iter().copied().unzip();
             SearchQuery::sparse(field, &i, &v, self.num_candidates)?
@@ -166,7 +205,7 @@ impl SubQuery {
             SearchQuery::fts(field, fts, self.num_candidates)?
         } else {
             return Err(Error::invalid_argument(
-                "sub-query has no vector or FTS payload",
+                "sub-query has no dense, binary, sparse, or FTS payload",
             ));
         };
         query.params.extend(self.params.clone());

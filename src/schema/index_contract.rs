@@ -353,9 +353,10 @@ fn validate_flat_configuration(data_type: DataType, params: &IndexParams) -> Res
     if matches!(
         data_type,
         DataType::VectorBinary32 | DataType::VectorBinary64
-    ) {
+    ) && params.metric_type != MetricType::L2
+    {
         return Err(Error::not_supported(
-            "Flat binary-vector execution is not implemented",
+            "Flat binary-vector execution supports only the L2/Hamming metric",
         ));
     }
     if params.metric_type == MetricType::Undefined {

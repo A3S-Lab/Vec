@@ -100,10 +100,21 @@ impl Collection {
 
     pub fn group_by(&self, query: &GroupBySearchQuery) -> Result<HashMap<String, Vec<Doc>>> {
         self.ensure_open()?;
+        let route_count =
+            usize::from(!query.vector.is_empty()) + usize::from(query.binary_vector.is_some());
+        if route_count != 1 {
+            return Err(Error::invalid_argument(
+                "group-by query must select exactly one dense or binary route",
+            ));
+        }
         let candidate_limit = query.group_count.saturating_mul(query.group_topk).max(1);
         let candidate_limit = i32::try_from(candidate_limit)
             .map_err(|_| Error::resource_exhausted("group-by candidate limit exceeds i32"))?;
-        let mut vector_query = SearchQuery::new(&query.field_name, &query.vector, candidate_limit)?;
+        let mut vector_query = if let Some(vector) = &query.binary_vector {
+            SearchQuery::binary(&query.field_name, vector, candidate_limit)?
+        } else {
+            SearchQuery::new(&query.field_name, &query.vector, candidate_limit)?
+        };
         vector_query.include_vector = query.include_vector;
         vector_query.output_fields.clone_from(&query.output_fields);
         vector_query.params.clone_from(&query.params);

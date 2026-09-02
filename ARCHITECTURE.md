@@ -350,8 +350,9 @@ Write-batch and state-limit rejection happens before durable or in-memory
 publication and increments only a metadata counter.
 
 Index and query configuration follows the same rule. The exact executor owns
-Flat metrics and query `metric`/`radius`; HNSW owns `m`, `ef_construction`, and
-`ef`; IVF owns `n_list`, training iterations, optional SOAR dual assignment,
+Flat metrics and query `metric`/`radius`; packed binary fields accept only Flat
+L2, whose squared bit-space distance is Hamming count. HNSW owns `m`,
+`ef_construction`, and `ef`; IVF owns `n_list`, training iterations, optional SOAR dual assignment,
 `nprobe`, and candidate scaling;
 Vamana owns `max_degree`, build/search list sizes, alpha, and deterministic
 two-pass RobustPrune construction. DiskANN owns the same graph controls plus
@@ -412,9 +413,12 @@ variant into another schema type.
 The exact oracle decodes native numeric vectors into `f64` intermediates for
 L2, inner product, cosine, and MIPS-L2. This preserves FP64 coordinates through
 accumulation and result ordering; only after exact ranking is the public
-document score checked and narrowed to `f32`. L2 radius is a non-negative
-distance and is compared with the negative squared-distance score. Binary
-search has no exact consumer yet and returns `NotSupported`. Scale-bearing
+document score checked and narrowed to `f32`. Packed Binary32/Binary64 queries
+use L2 over bit coordinates, so their negative squared-distance score is the
+negative XOR Hamming count. L2 radius is a non-negative distance and is
+compared with the negative squared-distance score for numeric and binary
+routes. Binary execution is exact-only: Flat L2 is live, while non-L2 metrics
+and binary ANN descriptors return `NotSupported`. Scale-bearing
 FP16/INT8/packed-INT4 quantizers are derived HNSW/IVF state only; they never
 replace document vectors, and every selected candidate receives full-vector
 exact refinement.

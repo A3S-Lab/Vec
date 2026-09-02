@@ -20,8 +20,10 @@ collection surface. `tests/feature_matrix.rs` contains three integration tests:
 * HNSW, IVF/SOAR, HNSW RaBitQ, IVF RaBitQ, and metric-aware Vamana and
   DiskANN/PQ (L2, inner product, cosine, and MIPS-L2) are compared with the
   exact oracle at exhaustive controls; and
-* the read-only cache/sidecar path, health state, and the deliberately
-  unsupported binary-query boundary are asserted explicitly.
+* Binary32/Binary64 exact L2/Hamming execution is checked across direct,
+  source-ID, filtered, multi-query, group-by, persistence, and optional Tokio
+  paths; unsupported binary ANN controls remain explicit; and
+* the read-only cache/sidecar path and health state are asserted explicitly.
 
 Run the focused matrix or the complete suite with:
 
@@ -31,15 +33,18 @@ cargo test --locked --all-features
 ```
 
 `benches/feature_matrix.rs` executes every successful query route (all four
-dense metrics, include-doc-id, dense/sparse source-ID, sparse, indexed FTS,
-scalar-filtered dense, hybrid RRF, group-by, fetch, iterator, statistics/health),
-mutation and flush controls, all six ANN families across their supported metrics,
-both reopened DiskANN sidecar readers, and all three Tokio query wrappers. Each
-sample asserts a non-empty or
-exactly-sized result, so a disconnected implementation fails the benchmark.
-It emits CSV with nearest-rank p50/p95/p99 latency, total work, and work per
-second. The default fixture is 512 documents x 16 dimensions, 16 queries, and
-three rounds; CI uses the smaller smoke scale:
+dense metrics, include-doc-id, dense/sparse/binary source-ID, sparse,
+Binary32/Binary64 exact, indexed FTS, scalar-filtered dense/binary, hybrid RRF,
+binary multi-query, dense/binary group-by, fetch, iterator, and
+statistics/health), mutation and flush controls, all six ANN families across
+their supported metrics, both reopened DiskANN sidecar readers, and the Tokio
+query wrappers, including binary exact execution. Each sample asserts a
+non-empty or exactly-sized result, so a disconnected implementation fails the
+benchmark.
+The gate also requires non-zero monotonic percentiles and finite positive
+throughput. It emits CSV with nearest-rank p50/p95/p99 latency, total work, and
+work per second. The default fixture is 512 documents x 16 dimensions, 16
+queries, and three rounds; CI uses the smaller smoke scale:
 
 ```sh
 cargo bench --locked --bench feature_matrix --features async
@@ -51,47 +56,55 @@ The following is a representative default-scale run on 2026-09-02 (Windows
 regression indicators, not portable SLOs; compare repeated runs on the same
 host and keep recall/correctness as the acceptance gate. All latency columns
 are microseconds per operation, and the benchmark's CSV also reports
-`work_per_second`.
+`work_per_second`. Work is the asserted result/write unit count rather than
+query operations; the CSV's `work_per_sample` makes that distinction explicit.
 
-| Operation | Samples | p50_us | p95_us | p99_us |
-| --- | ---: | ---: | ---: | ---: |
-| dense_l2 | 48 | 42.8 | 46.2 | 48.5 |
-| dense_ip | 48 | 42.3 | 43.4 | 43.7 |
-| dense_cosine | 48 | 48.2 | 49.7 | 54.7 |
-| dense_mips_l2 | 48 | 42.0 | 43.0 | 43.1 |
-| dense_include_doc_id | 48 | 47.8 | 49.3 | 50.0 |
-| dense_source_id_l2 | 48 | 41.3 | 51.1 | 77.8 |
-| dense_source_id_ip | 48 | 41.7 | 49.7 | 62.3 |
-| dense_source_id_cosine | 48 | 46.4 | 47.3 | 49.6 |
-| dense_source_id_mips_l2 | 48 | 41.5 | 42.4 | 42.6 |
-| sparse | 48 | 79.1 | 82.0 | 83.1 |
-| sparse_source_id | 48 | 78.7 | 80.0 | 87.8 |
-| fts_indexed | 48 | 54.9 | 70.2 | 76.2 |
-| dense_scalar_filter | 48 | 277.8 | 301.2 | 642.6 |
-| multi_rrf | 48 | 123.7 | 147.1 | 155.7 |
-| group_by | 48 | 42.6 | 57.1 | 64.5 |
-| fetch_projection | 48 | 1.7 | 1.9 | 2.1 |
-| snapshot_iterator | 3 | 483.7 | 499.3 | 499.3 |
-| stats_health | 48 | 1.1 | 1.8 | 3.2 |
-| partial_update | 3 | 3,429.1 | 4,092.4 | 4,092.4 |
-| flush | 3 | 21,109.2 | 23,031.8 | 23,031.8 |
-| dense_async | 48 | 88.2 | 122.6 | 171.8 |
-| multi_async | 48 | 102.1 | 147.7 | 187.1 |
-| group_by_async | 48 | 86.6 | 142.2 | 155.7 |
-| ann_hnsw | 48 | 64.3 | 92.5 | 105.1 |
-| ann_ivf_soar | 48 | 36.2 | 43.6 | 53.4 |
-| ann_hnsw_rabitq | 48 | 62.0 | 67.0 | 87.2 |
-| ann_ivf_rabitq | 48 | 43.0 | 54.0 | 74.8 |
-| ann_vamana | 48 | 110.6 | 117.3 | 142.5 |
-| ann_vamana_ip | 48 | 107.1 | 177.5 | 329.1 |
-| ann_vamana_cosine | 48 | 175.6 | 199.6 | 202.5 |
-| ann_vamana_mips_l2 | 48 | 105.9 | 110.7 | 119.6 |
-| ann_diskann_pq | 48 | 135.3 | 146.0 | 155.7 |
-| ann_diskann_ip_pq | 48 | 130.1 | 141.4 | 178.2 |
-| ann_diskann_cosine_pq | 48 | 136.0 | 140.9 | 155.0 |
-| ann_diskann_mips_l2_pq | 48 | 129.0 | 136.4 | 152.4 |
-| diskann_positioned_reopen_query | 3 | 6,968.7 | 7,171.4 | 7,171.4 |
-| diskann_mmap_reopen_query | 3 | 6,880.4 | 7,028.8 | 7,028.8 |
+| Operation | Samples | p50_us | p95_us | p99_us | Work/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dense_l2 | 48 | 94.8 | 129.2 | 147.1 | 105,485.2 |
+| dense_ip | 48 | 93.7 | 142.8 | 181.9 | 106,723.6 |
+| dense_cosine | 48 | 97.2 | 125.9 | 165.1 | 102,880.7 |
+| dense_mips_l2 | 48 | 92.4 | 126.8 | 162.0 | 108,225.1 |
+| dense_include_doc_id | 48 | 96.5 | 193.6 | 249.2 | 103,626.9 |
+| dense_source_id_l2 | 48 | 91.2 | 124.6 | 160.4 | 109,649.1 |
+| dense_source_id_ip | 48 | 90.0 | 116.5 | 129.8 | 111,111.1 |
+| dense_source_id_cosine | 48 | 94.1 | 117.8 | 137.5 | 106,269.9 |
+| dense_source_id_mips_l2 | 48 | 92.4 | 147.8 | 181.8 | 108,225.1 |
+| sparse | 48 | 156.6 | 181.8 | 189.9 | 63,857.0 |
+| sparse_source_id | 48 | 147.7 | 199.1 | 215.4 | 67,704.8 |
+| binary32_exact | 48 | 74.4 | 76.9 | 156.2 | 134,408.6 |
+| binary64_exact | 48 | 55.3 | 81.1 | 103.0 | 180,831.8 |
+| binary_source_id | 48 | 41.4 | 48.1 | 49.9 | 241,545.9 |
+| binary_scalar_filter | 48 | 459.4 | 621.7 | 701.5 | 21,767.5 |
+| fts_indexed | 48 | 70.0 | 77.3 | 112.8 | 142,857.1 |
+| dense_scalar_filter | 48 | 467.1 | 807.1 | 865.3 | 21,408.7 |
+| multi_rrf | 48 | 199.8 | 257.8 | 311.5 | 50,050.1 |
+| binary_multi | 48 | 59.3 | 81.8 | 122.1 | 168,634.1 |
+| group_by | 48 | 82.1 | 86.4 | 104.9 | 73,081.6 |
+| binary_group_by | 48 | 30.5 | 43.9 | 102.1 | 98,360.7 |
+| fetch_projection | 48 | 3.2 | 3.3 | 3.4 | 625,000.0 |
+| snapshot_iterator | 3 | 871.7 | 1,038.5 | 1,038.5 | 587,358.0 |
+| stats_health | 48 | 14.1 | 16.0 | 19.7 | 70,922.0 |
+| partial_update | 3 | 2,386.4 | 2,687.7 | 2,687.7 | 419.0 |
+| flush | 3 | 18,235.5 | 18,851.9 | 18,851.9 | 54.8 |
+| dense_async | 48 | 157.9 | 201.1 | 222.7 | 63,331.2 |
+| binary_async | 48 | 102.3 | 150.7 | 166.4 | 97,751.7 |
+| multi_async | 48 | 192.3 | 234.4 | 358.1 | 52,002.1 |
+| group_by_async | 48 | 153.0 | 196.1 | 207.3 | 39,215.7 |
+| ann_hnsw | 48 | 69.8 | 87.1 | 202.1 | 143,266.5 |
+| ann_ivf_soar | 48 | 40.7 | 60.6 | 76.2 | 245,700.2 |
+| ann_hnsw_rabitq | 48 | 75.3 | 105.1 | 162.1 | 132,802.1 |
+| ann_ivf_rabitq | 48 | 50.0 | 75.0 | 156.3 | 200,000.0 |
+| ann_vamana | 48 | 123.7 | 223.9 | 278.4 | 80,840.7 |
+| ann_vamana_ip | 48 | 113.3 | 132.4 | 143.5 | 88,261.3 |
+| ann_vamana_cosine | 48 | 123.7 | 252.3 | 286.1 | 80,840.7 |
+| ann_vamana_mips_l2 | 48 | 114.7 | 143.7 | 178.6 | 87,184.0 |
+| ann_diskann_pq | 48 | 146.8 | 170.0 | 292.4 | 68,119.9 |
+| ann_diskann_ip_pq | 48 | 140.1 | 154.8 | 197.9 | 71,377.6 |
+| ann_diskann_cosine_pq | 48 | 147.3 | 273.6 | 345.0 | 67,888.7 |
+| ann_diskann_mips_l2_pq | 48 | 153.1 | 278.3 | 304.6 | 65,316.8 |
+| diskann_positioned_reopen_query | 3 | 7,439.5 | 8,767.6 | 8,767.6 | 1,344.2 |
+| diskann_mmap_reopen_query | 3 | 11,092.6 | 11,677.2 | 11,677.2 | 901.5 |
 
 The metric-aware Vamana and DiskANN rows use the same 512-document, 16-
 dimension fixture and `list_size=64` controls as the original ANN rows. Their

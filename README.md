@@ -170,14 +170,18 @@ result.
 
 - Dense FP16, FP32, FP64, INT4, INT8, INT16, Binary32, and Binary64 payloads.
 - Sparse FP16 and FP32 payloads.
-- Dense and sparse numeric queries accept either an explicit payload or a
-  source document ID. Source-ID queries use the same exact scoring, filtering,
-  radius, projection, persistence, and optional Tokio execution paths.
-- `SearchQuery::builder()` supports either a dense route or a pure FTS
+- Dense, sparse, and packed-binary queries accept either an explicit payload
+  or a source document ID. Source-ID queries use the same exact scoring,
+  filtering, radius, projection, persistence, and optional Tokio execution
+  paths.
+- Binary32 and Binary64 exact searches use L2 over bit coordinates: the exposed
+  score is the negative XOR Hamming count. Flat L2 is supported; other binary
+  metrics and binary ANN indexes return `NotSupported`.
+- `SearchQuery::builder()` supports a dense, packed-binary, or pure FTS
   `query_string`/`match_string` route and rejects ambiguous combinations;
   `include_doc_id` exposes the generation ordinal for returned query documents.
-- Exact L2, inner product, cosine, and MIPS-L2 scoring with `f64`
-  intermediates.
+- Exact numeric L2, inner product, cosine, and MIPS-L2 scoring plus binary
+  L2/Hamming scoring, all with `f64` ranking intermediates.
 - Native HNSW and IVF candidate generation with exact full-vector re-ranking;
   IVF optionally assigns every base vector to a primary centroid and one
   orthogonality-aware SOAR secondary centroid.
@@ -260,8 +264,11 @@ fn configure_rabitq(query: &mut SearchQuery) -> Result<IndexParams> {
 
 Vamana graph saturation/occlusion tuning and standalone Vamana quantization
 remain explicit unsupported controls until they have verified execution
-implementations. Binary-vector query execution and Alibaba's C++ wire format
-remain separate, documented boundaries.
+implementations. Binary ANN and Alibaba's C++ wire format remain separate,
+documented boundaries. The exact binary route is an A3S extension based on
+zvec's former binary squared-Euclidean/Hamming semantics; Alibaba removed its
+Hamming metric in [zvec PR #365](https://github.com/alibaba/zvec/pull/365), so
+this project does not claim current upstream binary-query compatibility.
 
 ### Full-text search
 
@@ -466,12 +473,12 @@ that ownership claim.
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |
 | FTS wildcard/field/boost/fuzzy/proximity/range syntax | Implemented with bounded, analyzer-aware semantics |
-| Dense/sparse source-ID query | Implemented; missing sources return `NotFound` and missing sparse payloads return `FailedPrecondition` |
+| Dense/sparse/binary source-ID query | Implemented; missing sources return `NotFound` and missing source payloads return `FailedPrecondition` |
 | Collection health and background maintenance | Implemented with explicit ownership, bounded schedules, revision-aware skips, worker diagnostics, and joined shutdown |
 | Collection resource admission | Implemented for retained documents/logical bytes, cumulative query candidates, write batches, and metadata-only rejection telemetry |
 | DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
-| Binary vector query execution | Not implemented |
+| Binary vector query execution | Binary32/Binary64 exact L2/Hamming implemented across direct, source-ID, filtered, radius, multi-query, group-by, persistence, and optional Tokio paths; binary ANN remains unsupported |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |
 
 `a3s-vec` follows zvec's Rust vocabulary where it is useful, but it is not a

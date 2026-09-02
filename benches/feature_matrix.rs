@@ -82,6 +82,15 @@ fn vector_for(index: usize, dimensions: usize) -> Vec<f32> {
         .collect()
 }
 
+fn binary_for(index: usize, byte_length: usize) -> Vec<u8> {
+    (0..byte_length)
+        .map(|offset| {
+            let value = (index * 37 + offset * 101 + index * offset * 13) % 256;
+            u8::try_from(value).expect("binary fixture value fits u8")
+        })
+        .collect()
+}
+
 fn full_document(index: usize, dimensions: usize) -> Doc {
     let mut doc = Doc::with_pk(format!("doc-{index:05}")).expect("benchmark id must be valid");
     doc.add_string("category", if index % 2 == 0 { "even" } else { "odd" })
@@ -106,6 +115,10 @@ fn full_document(index: usize, dimensions: usize) -> Doc {
     let second = (first + 7) % 32;
     doc.add_sparse_vector("sparse", &[first, second], &[1.0, 0.25])
         .expect("sparse vector must be valid");
+    doc.add_vector_binary32("bits32", &binary_for(index, 4))
+        .expect("Binary32 vector must be valid");
+    doc.add_vector_binary64("bits64", &binary_for(index, 8))
+        .expect("Binary64 vector must be valid");
     doc
 }
 
@@ -131,6 +144,11 @@ fn full_schema(dimensions: usize) -> CollectionSchema {
         &IndexParams::fts(Some("standard"), Some(&["lowercase"]), None).expect("FTS index"),
     )
     .expect("body index");
+    let mut bits32 =
+        FieldSchema::new("bits32", DataType::VectorBinary32, false, 32).expect("Binary32 schema");
+    bits32
+        .set_index_params(&IndexParams::flat(MetricType::L2).expect("binary Flat index"))
+        .expect("Binary32 Flat index");
     CollectionSchema::builder("feature-matrix-bench")
         .add_field(category)
         .add_field(bucket)
@@ -147,6 +165,11 @@ fn full_schema(dimensions: usize) -> CollectionSchema {
         .add_field(
             FieldSchema::new("sparse", DataType::SparseVectorFp32, false, 32)
                 .expect("sparse schema"),
+        )
+        .add_field(bits32)
+        .add_field(
+            FieldSchema::new("bits64", DataType::VectorBinary64, false, 64)
+                .expect("Binary64 schema"),
         )
         .build()
         .expect("full schema must be valid")
@@ -202,6 +225,7 @@ fn measure<F>(name: &str, config: Config, samples: usize, mut operation: F) -> M
 where
     F: FnMut(usize) -> u64,
 {
+    assert!(samples > 0, "{name} must collect at least one sample");
     let _ = operation(usize::MAX);
     let mut durations = Vec::with_capacity(samples);
     let mut work = 0_u64;
@@ -221,6 +245,16 @@ where
         p99: percentile(&durations, 99),
         work,
     };
+    assert!(!measurement.p50.is_zero(), "{name} p50 must be positive");
+    assert!(
+        measurement.p50 <= measurement.p95 && measurement.p95 <= measurement.p99,
+        "{name} percentiles must be monotonic"
+    );
+    assert!(
+        measurement.work_per_second().is_finite()
+            && measurement.work_per_second().is_sign_positive(),
+        "{name} throughput must be finite and positive"
+    );
     println!(
         "{name},{},{},{},{},{:.3},{:.3},{:.3},{:.3},{:.3}",
         config.documents,
@@ -328,6 +362,60 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
+    let binary32 = SearchQuery::binary("bits32", &binary_for(17, 4), 10)
+        .expect("Binary32 query must be valid");
+    measure("binary32_exact", config, samples, |sample| {
+        let mut query = binary32.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 4))
+            .expect("Binary32 query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary32 exact query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let binary64 = SearchQuery::binary("bits64", &binary_for(17, 8), 10)
+        .expect("Binary64 query must be valid");
+    measure("binary64_exact", config, samples, |sample| {
+        let mut query = binary64.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 8))
+            .expect("Binary64 query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary64 exact query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let binary_source =
+        SearchQuery::by_id("bits32", "doc-00017", 10).expect("binary source-ID query");
+    measure("binary_source_id", config, samples, |_| {
+        let result = collection
+            .query(black_box(&binary_source))
+            .expect("binary source-ID query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let mut binary_filtered = binary32.clone();
+    binary_filtered
+        .set_filter("category == 'even'")
+        .expect("binary scalar filter must be valid");
+    measure("binary_scalar_filter", config, samples, |sample| {
+        let mut query = binary_filtered.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 4))
+            .expect("filtered Binary32 query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("filtered binary query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
     let mut fts_payload = Fts::new().expect("FTS payload must be valid");
     fts_payload
         .set_query_string("rust AND vector")
@@ -394,6 +482,31 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
+    let mut binary_branch = SubQuery::new().expect("binary sub-query must be valid");
+    binary_branch
+        .set_field_name("bits32")
+        .expect("binary sub-query field must be valid");
+    binary_branch
+        .set_binary_vector(&binary_for(17, 4))
+        .expect("binary sub-query vector must be valid");
+    binary_branch
+        .set_num_candidates(16)
+        .expect("binary candidate count must be valid");
+    let mut binary_multi = MultiQuery::new().expect("binary multi-query must be valid");
+    binary_multi
+        .set_topk(10)
+        .expect("binary multi top-k must be valid");
+    binary_multi
+        .add_sub_query(&binary_branch)
+        .expect("binary sub-query must be added");
+    measure("binary_multi", config, samples, |_| {
+        let result = collection
+            .multi_query(black_box(&binary_multi))
+            .expect("binary multi-query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
     let grouped = GroupBySearchQuery::new(
         "embedding",
         "category",
@@ -409,6 +522,17 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         assert!(!result.is_empty());
         u64::try_from(result.values().map(Vec::len).sum::<usize>())
             .expect("group result count fits u64")
+    });
+
+    let binary_grouped = GroupBySearchQuery::binary("bits32", "category", &binary_for(17, 4), 2, 3)
+        .expect("binary group query must be valid");
+    measure("binary_group_by", config, samples, |_| {
+        let result = collection
+            .group_by(black_box(&binary_grouped))
+            .expect("binary group query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.values().map(Vec::len).sum::<usize>())
+            .expect("binary group result count fits u64")
     });
 
     measure("fetch_projection", config, samples, |_| {
@@ -702,6 +826,16 @@ fn measure_async(collection: &Collection, config: Config) {
             .block_on(collection.query_async(black_box(&query)))
             .expect("async query must succeed");
         assert!(!result.is_empty());
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let binary = SearchQuery::binary("bits32", &binary_for(17, 4), 10)
+        .expect("async binary query must be valid");
+    measure("binary_async", config, samples, |_| {
+        let result = runtime
+            .block_on(collection.query_async(black_box(&binary)))
+            .expect("async binary query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
         u64::try_from(result.len()).expect("result count fits u64")
     });
 

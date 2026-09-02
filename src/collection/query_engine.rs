@@ -28,6 +28,7 @@ struct ScoredCandidate<'a> {
 
 enum ResolvedQueryVector {
     Dense(Vec<f64>),
+    Binary(Vec<u8>),
     Sparse(BTreeMap<u32, f64>),
 }
 
@@ -173,6 +174,22 @@ fn dense_score(query: &[f64], vector: &VectorValue, metric: MetricType) -> Optio
             .map(|(left, right)| *left * *right)
             .sum(),
     })
+}
+
+fn binary_score(query: &[u8], vector: &VectorValue) -> Option<f64> {
+    let (VectorValue::Binary32(stored) | VectorValue::Binary64(stored)) = vector else {
+        return None;
+    };
+    if stored.len() != query.len() {
+        return None;
+    }
+    Some(
+        -query
+            .iter()
+            .zip(stored)
+            .map(|(left, right)| f64::from((left ^ right).count_ones()))
+            .sum::<f64>(),
+    )
 }
 
 pub(super) fn sort_docs(docs: &mut [Doc]) {
@@ -321,6 +338,9 @@ fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Resol
             vector.iter().map(|value| f64::from(*value)).collect(),
         ));
     }
+    if let Some(vector) = &query.binary_vector {
+        return Ok(ResolvedQueryVector::Binary(vector.clone()));
+    }
     if let Some(values) = &query.sparse_vector {
         return Ok(ResolvedQueryVector::Sparse(
             values
@@ -330,7 +350,9 @@ fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Resol
         ));
     }
     let id = query.id.as_deref().ok_or_else(|| {
-        Error::invalid_argument("query requires a dense vector, sparse vector, or source id")
+        Error::invalid_argument(
+            "query requires a dense vector, binary vector, sparse vector, or source id",
+        )
     })?;
     let source = docs
         .get(id)
@@ -347,8 +369,11 @@ fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Resol
     if let Some(vector) = vector.to_sparse_f64() {
         return Ok(ResolvedQueryVector::Sparse(vector));
     }
+    if let VectorValue::Binary32(values) | VectorValue::Binary64(values) = vector {
+        return Ok(ResolvedQueryVector::Binary(values.clone()));
+    }
     Err(Error::failed_precondition(format!(
-        "source document '{id}' has no searchable numeric vector in field '{}'",
+        "source document '{id}' has no searchable vector in field '{}'",
         query.field_name
     )))
 }
@@ -372,6 +397,12 @@ fn score_vector_document<'a>(
     let score = match query_vector {
         ResolvedQueryVector::Dense(query) => {
             let Some(score) = dense_score(query, vector, metric) else {
+                return Ok(());
+            };
+            score
+        }
+        ResolvedQueryVector::Binary(query) => {
+            let Some(score) = binary_score(query, vector) else {
                 return Ok(());
             };
             score

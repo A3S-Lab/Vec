@@ -7,9 +7,9 @@
 
 use a3s_vec::{
     AlterColumnOption, Collection, CollectionOptions, CollectionSchema, DataType,
-    DiskannQueryParams, Doc, Durability, ErrorCode, FieldSchema, Fts, GroupBySearchQuery,
-    HnswQueryParams, IndexParams, IndexType, IoBackend, IvfQueryParams, IvfRabitqQueryParams,
-    MetricType, MultiQuery, SearchQuery, SubQuery,
+    DiskannQueryParams, Doc, Durability, FieldSchema, Fts, GroupBySearchQuery, HnswQueryParams,
+    IndexParams, IndexType, IoBackend, IvfQueryParams, IvfRabitqQueryParams, MetricType,
+    MultiQuery, SearchQuery, SubQuery,
 };
 use tempfile::tempdir;
 
@@ -603,13 +603,15 @@ fn cache_sidecar_health_and_unsupported_boundaries_are_explicit() {
     );
     reopened.close().expect("read-only collection must close");
 
-    // Binary execution is a deliberate typed boundary until its metric and
-    // index contract is specified; the failure itself is regression-tested.
-    let binary_schema = CollectionSchema::builder("binary-boundary")
-        .add_field(
-            FieldSchema::new("bits", DataType::VectorBinary32, false, 32)
-                .expect("binary schema must be valid"),
-        )
+    // Packed binary vectors use the exact L2/Hamming route. Binary ANN remains
+    // an explicit unsupported boundary covered by the focused contract suite.
+    let mut binary_field = FieldSchema::new("bits", DataType::VectorBinary32, false, 32)
+        .expect("binary schema must be valid");
+    binary_field
+        .set_index_params(&IndexParams::flat(MetricType::L2).expect("binary Flat index"))
+        .expect("binary Flat configuration");
+    let binary_schema = CollectionSchema::builder("binary-exact")
+        .add_field(binary_field)
         .build()
         .expect("binary schema must build");
     let binary_path = temporary.path().join("binary");
@@ -626,10 +628,12 @@ fn cache_sidecar_health_and_unsupported_boundaries_are_explicit() {
     binary
         .insert(&[&binary_doc])
         .expect("binary insert must succeed");
-    let query = SearchQuery::new("bits", &[0.0; 32], 1).expect("query constructor must succeed");
-    let error = binary
+    let query = SearchQuery::binary("bits", &[0b1010_1010; 4], 1)
+        .expect("binary query constructor must succeed");
+    let hits = binary
         .query(&query)
-        .expect_err("binary query must be explicit");
-    assert_eq!(error.code, ErrorCode::NotSupported);
+        .expect("binary exact query must succeed");
+    assert_eq!(ids(&hits), ["binary-1"]);
+    assert!(hits[0].get_score().abs() <= f32::EPSILON);
     binary.close().expect("binary collection must close");
 }

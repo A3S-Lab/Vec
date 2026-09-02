@@ -20,14 +20,14 @@ compact MessagePack generation snapshots, manifest-committed WAL byte
 boundaries, monotonic DML/schema revisions, read-only lifecycle semantics, and
 bounded recovery reads. Version-3 JSON snapshots remain readable and upgrade
 atomically at the next writable checkpoint. Native FP16, INT4, INT8, INT16,
-and binary payloads now have
-strict physical-type validation and lossless persistence; dense and sparse
-numeric vectors share exact L2/IP/cosine/MIPS-L2 scoring with `f64`
-intermediates and are ranked before the public score is narrowed to `f32`.
-Both dense and sparse numeric queries can resolve that authoritative payload
-from a source document ID; missing documents and missing source vectors have
-distinct typed errors.
-The fluent `SearchQueryBuilder` constructs either dense or pure FTS routes,
+and binary payloads now have strict physical-type validation and lossless
+persistence. Dense and sparse numeric vectors share exact
+L2/IP/cosine/MIPS-L2 scoring; Binary32/Binary64 exact L2 uses the XOR Hamming
+count as squared distance. All routes rank with `f64` intermediates before the
+public score is narrowed to `f32`. Dense, sparse, and binary queries can resolve
+their authoritative payload from a source document ID; missing documents and
+missing source vectors have distinct typed errors.
+The fluent `SearchQueryBuilder` constructs dense, binary, or pure FTS routes,
 rejects ambiguous route combinations, and query results can expose the
 generation ordinal through the explicit `include_doc_id` control.
 Independent differential fixtures now cover deterministic dense/sparse scores,
@@ -155,12 +155,14 @@ and direct file-backed mmap remain future work.
 - Every supported type has positive and negative tests, including dimension,
   nullability, duplicate-name, and overflow cases.
 
-**Evidence landed through 2026-09-01**
+**Evidence landed through 2026-09-02**
 
 - Completed: dense query dimension errors for every current numeric vector
-  type and L2/IP/cosine/MIPS-L2 metric; route/type checks for dense, sparse,
-  scalar, and FTS fields; binary search remains explicitly unsupported.
-- Completed: dense and sparse numeric source-ID queries resolve the stored
+  type and L2/IP/cosine/MIPS-L2 metric, plus byte-length and route/type checks
+  for Binary32/Binary64, dense, sparse, scalar, and FTS fields. Binary exact
+  search supports only Flat L2/Hamming; non-L2 metrics and ANN descriptors fail
+  explicitly.
+- Completed: dense, sparse, and binary source-ID queries resolve the stored
   authoritative vector before exact scoring. FP16/FP32 sparse fixtures cover
   all four metrics, filters, vector projection, flush/reopen, and optional
   Tokio execution against the explicit-payload oracle. Missing source
@@ -202,9 +204,10 @@ and direct file-backed mmap remain future work.
   rejected. Boolean groups, exact phrases, required/prohibited modifiers,
   wildcard, fielded, boosted, fuzzy, and range syntax execute with shared
   indexed/scan semantics in Phase 5.
-- Completed: fluent `SearchQueryBuilder` FTS-only query-string and match-string
-  routes execute against the same BM25 oracle; vector/FTS and dual-expression
-  combinations fail at build time. `include_doc_id` resolves the shared
+- Completed: fluent `SearchQueryBuilder` dense, binary, FTS query-string, and
+  FTS match-string routes execute against their respective exact or BM25
+  oracle; ambiguous route and dual-expression combinations fail at build time.
+  `include_doc_id` resolves the shared
   generation ordinal and remains deterministic across flush/reopen.
 - Completed: a dependency-free fixed-seed generator produces 256 mixed
   documents and checks 100 dense metric/filter combinations plus 24
@@ -215,14 +218,16 @@ and direct file-backed mmap remain future work.
   deployment target, but an actual macOS 12 runtime smoke remains open.
 - Open: the macOS 12 Intel runtime required by the full Phase 1 exit gate.
   Scale-bearing FP16/INT8/INT4 index quantization and exact re-ranking are
-  completed in Phase 4; binary query execution remains unsupported.
+  completed in Phase 4. Binary exact query execution is complete; binary ANN
+  remains an explicit non-goal until a metric/index contract is justified.
 
 ## Phase 2 — Correct in-memory collection
 
 **Deliverables**
 
 - Thread-safe collection handle and deterministic CRUD semantics.
-- Exact flat dense/sparse search with L2, inner-product, cosine, and MIPS-L2.
+- Exact flat dense/sparse numeric search with L2, inner-product, cosine, and
+  MIPS-L2, plus Binary32/Binary64 L2/Hamming search.
 - Filter parser/evaluator, radius filtering, top-k, fetch, and snapshot iterator.
 - Result projection and per-document write results.
 
@@ -231,11 +236,13 @@ and direct file-backed mmap remain future work.
 - Differential tests compare every query result with a simple reference scan;
   concurrent readers see a coherent revision while writes are serialized.
 
-**Evidence landed on 2026-08-30**
+**Evidence landed through 2026-09-02**
 
 - Completed for the current exact surface: independent dense and sparse
-  references cover all four metrics, deterministic filtering, radius/top-k,
-  score comparison, and primary-key ordering.
+  references cover all four numeric metrics, while fixed-seed Binary32 and
+  Binary64 references cover XOR Hamming scoring. Deterministic filtering,
+  radius/top-k, source-ID, score comparison, primary-key ordering, projection,
+  multi-query, group-by, optional Tokio execution, and persistence are gated.
 - Completed for the current in-process surface: concurrent disjoint updates
   preserve both patches and monotonic revisions; iterators retain one captured
   revision; synchronized readers racing repeated two-document upserts observe
@@ -753,12 +760,13 @@ execution are implemented.
   x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
   deployment target.
 - Completed in the engine: a public feature matrix (`tests/feature_matrix.rs`)
-  covers CRUD, projection, exact dense/sparse and source-ID queries, scalar/
+  covers CRUD, projection, exact dense/sparse/binary and source-ID queries, scalar/
   FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
-  health, cache/sidecar readers, all six ANN families, and the explicit binary
-  query boundary. `benches/feature_matrix.rs` adds asserted p50/p95/p99 and
-  throughput rows for synchronous, ANN, sidecar, mutation, and all three Tokio
-  query routes. The smoke-scale CSV is uploaded by CI and is a correctness
+  health, cache/sidecar readers, all six ANN families, and explicit unsupported
+  binary-ANN boundaries. `benches/feature_matrix.rs` adds 44 asserted
+  p50/p95/p99 and throughput rows, including Binary32/64 exact, source-ID,
+  scalar-filter, multi-query, group-by, and Tokio paths. The smoke-scale CSV is
+  uploaded by CI and is a correctness
   gate; same-host default-scale values are recorded in `BENCHMARKS.md`.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit

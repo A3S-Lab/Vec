@@ -23,11 +23,12 @@ pub(super) fn validate_query_contract<'a>(
     }
     let route_count = usize::from(query.fts.is_some())
         + usize::from(query.vector.is_some())
+        + usize::from(query.binary_vector.is_some())
         + usize::from(query.sparse_vector.is_some())
         + usize::from(query.id.is_some());
     if route_count != 1 {
         return Err(Error::invalid_argument(
-            "query must select exactly one FTS, dense, sparse, or source-id route",
+            "query must select exactly one FTS, dense, binary, sparse, or source-id route",
         ));
     }
     if query
@@ -56,17 +57,18 @@ pub(super) fn validate_query_contract<'a>(
             field.data_type
         )));
     }
+    validate_dense_payload(&field, query)?;
+    validate_binary_payload(&field, query)?;
+    validate_sparse_payload(&field, query)?;
     if matches!(
         field.data_type,
         DataType::VectorBinary32 | DataType::VectorBinary64
-    ) {
+    ) && query_metric(&field, query)? != MetricType::L2
+    {
         return Err(Error::not_supported(
-            "binary vector queries are not implemented by the exact oracle",
+            "binary vector queries support only the L2/Hamming exact metric",
         ));
     }
-
-    validate_dense_payload(&field, query)?;
-    validate_sparse_payload(&field, query)?;
     if let Some(radius) = query.params.get("radius") {
         let radius = radius
             .as_f64()
@@ -281,7 +283,16 @@ pub(super) fn query_metric(field: &QueryField<'_>, query: &SearchQuery) -> Resul
             .index_params
             .map(|params| params.metric_type)
             .filter(|metric| *metric != MetricType::Undefined)
-            .unwrap_or(MetricType::Cosine)),
+            .unwrap_or({
+                if matches!(
+                    field.data_type,
+                    DataType::VectorBinary32 | DataType::VectorBinary64
+                ) {
+                    MetricType::L2
+                } else {
+                    MetricType::Cosine
+                }
+            })),
     }
 }
 
@@ -316,9 +327,14 @@ fn validate_dense_payload(field: &QueryField<'_>, query: &SearchQuery) -> Result
     let Some(vector) = query.vector.as_ref() else {
         return Ok(());
     };
-    if !field.data_type.is_dense_vector() {
+    if !field.data_type.is_dense_vector()
+        || matches!(
+            field.data_type,
+            DataType::VectorBinary32 | DataType::VectorBinary64
+        )
+    {
         return Err(Error::invalid_argument(
-            "dense query payload requires a dense vector field",
+            "dense query payload requires a numeric dense vector field",
         ));
     }
     if vector.is_empty() || !vector.iter().all(|value| value.is_finite()) {
@@ -331,6 +347,34 @@ fn validate_dense_payload(field: &QueryField<'_>, query: &SearchQuery) -> Result
     if vector.len() != expected {
         return Err(Error::invalid_argument(format!(
             "query vector dimension mismatch: expected {expected}, got {}",
+            vector.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_binary_payload(field: &QueryField<'_>, query: &SearchQuery) -> Result<()> {
+    let Some(vector) = query.binary_vector.as_ref() else {
+        return Ok(());
+    };
+    if !matches!(
+        field.data_type,
+        DataType::VectorBinary32 | DataType::VectorBinary64
+    ) {
+        return Err(Error::invalid_argument(
+            "binary query payload requires a binary vector field",
+        ));
+    }
+    if vector.is_empty() {
+        return Err(Error::invalid_argument(
+            "binary query vector must be non-empty",
+        ));
+    }
+    let expected = usize::try_from(field.dimension / 8)
+        .map_err(|_| Error::resource_exhausted("binary vector dimension exceeds this platform"))?;
+    if vector.len() != expected {
+        return Err(Error::invalid_argument(format!(
+            "binary query byte length mismatch: expected {expected}, got {}",
             vector.len()
         )));
     }

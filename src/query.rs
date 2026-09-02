@@ -241,11 +241,13 @@ impl Fts {
     }
 }
 
-/// A single dense, sparse, id-based, or FTS query.
+/// A single dense, sparse, binary, id-based, or FTS query.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchQuery {
     pub field_name: String,
     pub vector: Option<Vec<f32>>,
+    #[serde(default)]
+    pub binary_vector: Option<Vec<u8>>,
     pub sparse_vector: Option<Vec<(u32, f32)>>,
     pub id: Option<String>,
     pub topk: i32,
@@ -272,6 +274,7 @@ impl SearchQuery {
         Ok(Self {
             field_name: field_name.to_string(),
             vector: Some(vector.to_vec()),
+            binary_vector: None,
             sparse_vector: None,
             id: None,
             topk,
@@ -291,6 +294,7 @@ impl SearchQuery {
         Ok(Self {
             field_name: field_name.to_string(),
             vector: None,
+            binary_vector: None,
             sparse_vector: None,
             id: None,
             topk,
@@ -312,6 +316,7 @@ impl SearchQuery {
         Ok(Self {
             field_name: field_name.to_string(),
             vector: None,
+            binary_vector: None,
             sparse_vector: None,
             id: Some(id.to_string()),
             topk,
@@ -336,6 +341,7 @@ impl SearchQuery {
         Ok(Self {
             field_name: field_name.to_string(),
             vector: None,
+            binary_vector: None,
             sparse_vector: Some(
                 indices
                     .iter()
@@ -343,6 +349,33 @@ impl SearchQuery {
                     .zip(values.iter().copied())
                     .collect(),
             ),
+            id: None,
+            topk,
+            filter: None,
+            include_vector: false,
+            include_doc_id: false,
+            output_fields: None,
+            fts: None,
+            params: Map::new(),
+        })
+    }
+    /// Creates a packed Binary32 or Binary64 exact query.
+    ///
+    /// The collection schema determines the binary type and validates the byte
+    /// length. Binary search uses L2 over bit coordinates, whose squared
+    /// distance is the XOR Hamming count.
+    pub fn binary(field_name: &str, vector: &[u8], topk: i32) -> Result<Self> {
+        validate_query_header(field_name, topk)?;
+        if vector.is_empty() {
+            return Err(Error::invalid_argument(
+                "binary query vector must be non-empty",
+            ));
+        }
+        Ok(Self {
+            field_name: field_name.to_string(),
+            vector: None,
+            binary_vector: Some(vector.to_vec()),
+            sparse_vector: None,
             id: None,
             topk,
             filter: None,
@@ -368,8 +401,23 @@ impl SearchQuery {
             ));
         }
         self.vector = Some(vector.to_vec());
+        self.binary_vector = None;
         self.sparse_vector = None;
         self.id = None;
+        self.fts = None;
+        Ok(())
+    }
+    pub fn set_binary_vector(&mut self, vector: &[u8]) -> Result<()> {
+        if vector.is_empty() {
+            return Err(Error::invalid_argument(
+                "binary query vector must be non-empty",
+            ));
+        }
+        self.binary_vector = Some(vector.to_vec());
+        self.vector = None;
+        self.sparse_vector = None;
+        self.id = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_sparse_vector(&mut self, indices: &[u32], values: &[f32]) -> Result<()> {
@@ -389,7 +437,9 @@ impl SearchQuery {
                 .collect(),
         );
         self.vector = None;
+        self.binary_vector = None;
         self.id = None;
+        self.fts = None;
         Ok(())
     }
     pub fn set_filter(&mut self, filter: &str) -> Result<()> {
@@ -445,6 +495,10 @@ impl SearchQuery {
             return Err(Error::invalid_argument("FTS query has no expression"));
         }
         self.fts = Some(fts.clone());
+        self.vector = None;
+        self.binary_vector = None;
+        self.sparse_vector = None;
+        self.id = None;
         Ok(())
     }
     pub fn set_radius(&mut self, radius: f32) -> Result<()> {
@@ -458,19 +512,20 @@ impl SearchQuery {
         self.filter.as_deref()
     }
     pub fn has_vector(&self) -> bool {
-        self.vector.is_some() || self.sparse_vector.is_some()
+        self.vector.is_some() || self.binary_vector.is_some() || self.sparse_vector.is_some()
     }
 }
 
 /// Fluent builder matching the official SDK's naming.
 ///
-/// A builder can construct either a dense-vector query or a pure FTS query.
-/// The two routes are mutually exclusive, as are the FTS `query_string` and
+/// A builder can construct a dense-vector, binary-vector, or pure FTS query.
+/// The routes are mutually exclusive, as are the FTS `query_string` and
 /// `match_string` forms.
 #[derive(Debug, Clone, Default)]
 pub struct SearchQueryBuilder {
     field_name: Option<String>,
     vector: Option<Vec<f32>>,
+    binary_vector: Option<Vec<u8>>,
     topk: i32,
     filter: Option<String>,
     include_vector: Option<bool>,
@@ -492,6 +547,10 @@ impl SearchQueryBuilder {
     }
     pub fn vector(mut self, vector: &[f32]) -> Self {
         self.vector = Some(vector.to_vec());
+        self
+    }
+    pub fn binary_vector(mut self, vector: &[u8]) -> Self {
+        self.binary_vector = Some(vector.to_vec());
         self
     }
     pub fn topk(mut self, topk: i32) -> Self {
@@ -529,9 +588,12 @@ impl SearchQueryBuilder {
             .ok_or_else(|| Error::invalid_argument("field_name is required"))?;
         let has_query_string = self.fts_query_string.is_some();
         let has_match_string = self.fts_match_string.is_some();
-        if self.vector.is_some() && (has_query_string || has_match_string) {
+        let route_count = usize::from(self.vector.is_some())
+            + usize::from(self.binary_vector.is_some())
+            + usize::from(has_query_string || has_match_string);
+        if route_count > 1 {
             return Err(Error::invalid_argument(
-                "query builder cannot combine a vector with an FTS expression",
+                "query builder cannot combine dense, binary, and FTS routes",
             ));
         }
         if has_query_string && has_match_string {
@@ -549,11 +611,14 @@ impl SearchQueryBuilder {
                 fts.set_match_string(&value)?;
             }
             SearchQuery::fts(&field, &fts, self.topk)?
-        } else {
-            let vector = self
-                .vector
-                .ok_or_else(|| Error::invalid_argument("vector or FTS expression is required"))?;
+        } else if let Some(vector) = self.vector {
             SearchQuery::new(&field, &vector, self.topk)?
+        } else if let Some(vector) = self.binary_vector {
+            SearchQuery::binary(&field, &vector, self.topk)?
+        } else {
+            return Err(Error::invalid_argument(
+                "dense vector, binary vector, or FTS expression is required",
+            ));
         };
         if let Some(filter) = self.filter {
             query.set_filter(&filter)?;
@@ -578,6 +643,8 @@ pub struct GroupBySearchQuery {
     pub field_name: String,
     pub group_by_field: String,
     pub vector: Vec<f32>,
+    #[serde(default)]
+    pub binary_vector: Option<Vec<u8>>,
     pub group_count: u32,
     pub group_topk: u32,
     pub filter: Option<String>,
@@ -606,6 +673,33 @@ impl GroupBySearchQuery {
             field_name: field_name.to_string(),
             group_by_field: group_by_field.to_string(),
             vector: vector.to_vec(),
+            binary_vector: None,
+            group_count,
+            group_topk,
+            filter: None,
+            include_vector: false,
+            output_fields: None,
+            params: Map::new(),
+        })
+    }
+    /// Creates a grouped packed-binary exact query.
+    pub fn binary(
+        field_name: &str,
+        group_by_field: &str,
+        vector: &[u8],
+        group_count: u32,
+        group_topk: u32,
+    ) -> Result<Self> {
+        validate_name(field_name)?;
+        validate_name(group_by_field)?;
+        if vector.is_empty() || group_count == 0 || group_topk == 0 {
+            return Err(Error::invalid_argument("invalid group-by query parameters"));
+        }
+        Ok(Self {
+            field_name: field_name.to_string(),
+            group_by_field: group_by_field.to_string(),
+            vector: Vec::new(),
+            binary_vector: Some(vector.to_vec()),
             group_count,
             group_topk,
             filter: None,
