@@ -714,7 +714,7 @@ execution are implemented.
 - Add Linux/macOS arm64/macOS x86_64/Windows CI, including macOS 12 Intel.
 - Publish README, migration notes, API docs, and a versioned release artifact.
 
-**Progress through 2026-09-01**
+**Progress through 2026-09-02**
 
 - Completed in the engine: typed per-handle limits for retained document count,
   deterministic authoritative-plus-derived accounted bytes, cumulative query
@@ -727,10 +727,22 @@ execution are implemented.
   health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
   x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
   deployment target.
-- Remaining: the explicit A3S Code/Memory adapter and migration, an actual
-  macOS 12 Intel runtime result from an external runner, final migration/API
-  review, and a versioned release artifact. Logical collection accounting is
-  not advertised as a process-RSS or hard CPU-time limit.
+- Completed cross-project integration on 2026-09-02: A3S Code commit
+  `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
+  `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
+  workspace-retrieval shadow. Code admits one embedding batch, mirrors it once
+  into a session-local temporary Vec collection, compares IDs, partitions,
+  `f32` scores, and search accounting behind one publication gate, and exposes
+  bounded lifecycle/resource/parity diagnostics through Rust, Node.js, Python,
+  and Go. Vec failures degrade the shadow only; Memory remains the sole result
+  authority and close releases both engines. The change-scoped schema-4
+  `workspace-retrieval-v3` run retained 25,000 records in each hybrid arm and
+  matched all 120 queries with zero failures or mismatches.
+- Remaining release work: an actual macOS 12 Intel runtime result from an
+  external runner, final migration/API review, and a versioned release
+  artifact. Logical collection accounting is not advertised as a process-RSS
+  or hard CPU-time limit. The adapter contract and evidence are maintained in
+  [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 **Release gate**
 
@@ -755,5 +767,6 @@ execution are implemented.
    immutable mmap-snapshot query offload with native async reads or direct
    file-backed mmap only after equivalent
    exact-reference, recall, and corruption tests are green.
-5. Finish API compatibility, Intel validation, and A3S integration as release
-   work rather than mixing them into the storage core.
+5. Finish API compatibility, Intel validation, and the versioned release
+   artifact as release work; keep the completed Code/Memory adapter outside the
+   storage core and governed by its migration contract.

@@ -37,7 +37,31 @@ The engine is built around six invariants:
    NEON, immutable mmap snapshots, and platform asynchronous I/O are optional
    accelerators, never required for correctness.
 
-## 2. Module layout
+## 2. Cross-project adapter boundary
+
+The engine remains independent of CLI, provider, and serving policy. A3S Code
+owns the optional workspace-retrieval adapter that exercises this engine as a
+migration shadow:
+
+- A single admitted embedding batch is passed to the authoritative A3S Memory
+  path and mirrored once into a session-local temporary Vec collection. Vec
+  never calls an embedding provider and never becomes the public result source.
+- The adapter compares stable document identifiers, partition/filter selection,
+  narrowed `f32` scores, and search accounting under one publication gate.
+  Only the Memory result can be published; a Vec error records bounded
+  diagnostics and degrades the shadow without changing retrieval behavior.
+- The temporary collection and its resource counters are session-owned and are
+  closed with the session. No Vec state is shared between sessions or persisted
+  as serving data.
+
+The delivered adapter is pinned by Code commit
+[`4163d8e3`](https://github.com/A3S-Lab/Code/commit/4163d8e3a1a96bbae430dc987005acaa362efb30)
+to Vec commit
+[`019fdb929`](https://github.com/A3S-Lab/Vec/commit/019fdb929a57dee1803691e6def60df3946d9561).
+Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
+[Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+
+## 3. Module layout
 
 The checked-in implementation is intentionally smaller than the target index
 layout:
@@ -168,7 +192,7 @@ admission and deterministic accounting. `tests/maintenance_health.rs` and
 `tests/resource_limits.rs` cover their public ownership, atomicity, readiness,
 and rejection contracts.
 
-## 3. Runtime ownership and concurrency
+## 4. Runtime ownership and concurrency
 
 `Collection` is a cheap, cloneable handle around an `Arc<CollectionInner>`:
 
@@ -359,7 +383,7 @@ tombstones, then may extend that window until it can fill top-k. Candidate
 scaling remains the final IVF re-rank bound. These internal
 expansions never make an ineligible identifier visible to the exact executor.
 
-## 4. Data and storage model
+## 5. Data and storage model
 
 ### Logical data
 
@@ -528,7 +552,7 @@ snapshot codec. Format 4 keeps those document semantics and changes only the
 snapshot container to MessagePack. Failure-closed versioning prevents old
 readers from treating incompatible bytes as another schema or vector encoding.
 
-## 5. Index contracts
+## 6. Index contracts
 
 Future persistent index implementations extend the current in-memory contract:
 
@@ -678,7 +702,7 @@ refinement is estimated to cost more. Symbolic `&&` and `||` aliases remain
 `NotSupported`; selecting both `match_string` and `query_string` is invalid and
 ambiguous.
 
-## 6. Query pipeline
+## 7. Query pipeline
 
 ```text
 Request
@@ -707,7 +731,7 @@ Malformed filters, unsupported parameter combinations, dimension mismatches,
 and stale generations are explicit errors or safe fallback decisions. A query
 never starts a network request, child process, or implicit model download.
 
-## 7. Public compatibility surface
+## 8. Public compatibility surface
 
 The Rust API provides the zvec concepts below without requiring zvec's C API:
 
@@ -741,7 +765,7 @@ and are intentionally outside this project. It likewise does not expose the
 dependency kernel as a low-level escape hatch; a kernel replacement must not
 force downstream callers to migrate unrelated types.
 
-## 8. Platform policy
+## 9. Platform policy
 
 The release matrix includes Linux x86_64/aarch64, Windows x86_64, and macOS
 arm64/x86_64 with a macOS deployment target of 12.0. The default derived-file
@@ -764,7 +788,7 @@ dependency chain contains Rust 2024-edition manifests and therefore requires a
 newer Cargo; that feature-specific compiler floor remains explicit until the
 dependency is replaced or its minimum version is raised for the whole crate.
 
-## 9. Non-negotiable quality gates
+## 10. Non-negotiable quality gates
 
 - no production `unwrap`, `expect`, or unchecked user-controlled allocation;
 - `Send + Sync` for public handles where the contract permits it;

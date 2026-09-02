@@ -25,6 +25,18 @@ stale, or not selective enough.
 | Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana/DiskANN sector sidecar |
 | Predictable failure | Typed validation errors and exact fallbacks instead of silent approximation |
 
+## A3S Code integration
+
+The engine is now consumed by A3S Code through a session-local migration shadow.
+Code commit [`4163d8e3`](https://github.com/A3S-Lab/Code/commit/4163d8e3a1a96bbae430dc987005acaa362efb30)
+pins Vec commit [`019fdb929`](https://github.com/A3S-Lab/Vec/commit/019fdb929a57dee1803691e6def60df3946d9561).
+The adapter mirrors each already-admitted embedding batch once into a temporary
+collection and compares the Vec result with the A3S Memory result, while Memory
+remains the only serving authority. Shadow failures are isolated and surfaced
+as bounded diagnostics; they cannot change public retrieval results. The
+complete ownership, mapping, resource, and rollback contract is documented in
+[Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
 That lets the planner compose bitmaps and candidates without building
 query-sized primary-key maps, then resolve only the exact top-k documents.
