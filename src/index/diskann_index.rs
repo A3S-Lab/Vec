@@ -61,7 +61,7 @@ impl DiskannIndex {
                 metric,
             ));
         };
-        let table = pq.table(query)?;
+        let table = pq.table(query, metric)?;
         Ok(self.graph.scored_candidates(
             vectors.len(),
             ordinals,
@@ -95,7 +95,7 @@ impl DiskannIndex {
                 excluded,
             ));
         };
-        let table = pq.table(query)?;
+        let table = pq.table(query, metric)?;
         Ok(self.graph.scored_filtered_candidates(
             vectors.len(),
             ordinals,

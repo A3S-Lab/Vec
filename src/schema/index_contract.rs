@@ -41,11 +41,7 @@ fn validate_diskann_configuration(
     params: &IndexParams,
 ) -> Result<()> {
     validate_ann_base(data_type, params)?;
-    if params.metric_type != MetricType::L2 {
-        return Err(Error::not_supported(
-            "DiskANN currently requires the L2 metric",
-        ));
-    }
+    let chunks = nonnegative_integer(params, "pq_chunk_num")?;
     if params.quantize_type != QuantizeType::Undefined {
         return Err(Error::not_supported(
             "DiskANN product quantization is configured with pq_chunk_num",
@@ -57,7 +53,6 @@ fn validate_diskann_configuration(
     )?;
     positive_integer(params, "max_degree")?;
     positive_integer(params, "list_size")?;
-    let chunks = nonnegative_integer(params, "pq_chunk_num")?;
     if chunks > u64::from(dimension) {
         return Err(Error::invalid_argument(
             "DiskANN pq_chunk_num cannot exceed the vector dimension",
@@ -203,9 +198,12 @@ fn rabitq_bits(params: &IndexParams) -> Result<u64> {
 
 fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> Result<()> {
     validate_ann_base(data_type, params)?;
-    if params.metric_type != MetricType::L2 {
+    if !matches!(
+        params.metric_type,
+        MetricType::L2 | MetricType::Ip | MetricType::Cosine | MetricType::MipsL2
+    ) {
         return Err(Error::not_supported(
-            "Vamana currently requires the L2 metric",
+            "Vamana supports L2, inner-product, cosine, and MIPS-L2 metrics",
         ));
     }
     if params.quantize_type != QuantizeType::Undefined {

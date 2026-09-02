@@ -17,8 +17,9 @@ collection surface. `tests/feature_matrix.rs` contains three integration tests:
 * the CRUD, projection, exact dense/sparse, source-ID, scalar/FTS, hybrid,
   group-by, iterator, schema-evolution, flush, reopen, and health routes are
   checked against a bounded fixture;
-* HNSW, IVF/SOAR, HNSW RaBitQ, IVF RaBitQ, L2 Vamana, and L2 DiskANN/PQ are
-  compared with the exact oracle at exhaustive controls; and
+* HNSW, IVF/SOAR, HNSW RaBitQ, IVF RaBitQ, and metric-aware Vamana and
+  DiskANN/PQ (L2, inner product, cosine, and MIPS-L2) are compared with the
+  exact oracle at exhaustive controls; and
 * the read-only cache/sidecar path, health state, and the deliberately
   unsupported binary-query boundary are asserted explicitly.
 
@@ -32,8 +33,9 @@ cargo test --locked --all-features
 `benches/feature_matrix.rs` executes every successful query route (all four
 dense metrics, dense/sparse source-ID, sparse, indexed FTS, scalar-filtered
 dense, hybrid RRF, group-by, fetch, iterator, statistics/health), mutation and
-flush controls, all six ANN families, both reopened DiskANN sidecar readers,
-and all three Tokio query wrappers. Each sample asserts a non-empty or
+flush controls, all six ANN families across their supported metrics, both
+reopened DiskANN sidecar readers, and all three Tokio query wrappers. Each
+sample asserts a non-empty or
 exactly-sized result, so a disconnected implementation fails the benchmark.
 It emits CSV with nearest-rank p50/p95/p99 latency, total work, and work per
 second. The default fixture is 512 documents x 16 dimensions, 16 queries, and
@@ -53,36 +55,49 @@ are microseconds per operation, and the benchmark's CSV also reports
 
 | Operation | Samples | p50_us | p95_us | p99_us |
 | --- | ---: | ---: | ---: | ---: |
-| dense_l2 | 48 | 42.2 | 69.6 | 75.3 |
-| dense_ip | 48 | 41.7 | 42.6 | 43.0 |
-| dense_cosine | 48 | 46.1 | 46.8 | 47.4 |
-| dense_mips_l2 | 48 | 41.5 | 42.4 | 42.8 |
-| dense_source_id_l2 | 48 | 41.3 | 42.0 | 43.6 |
-| dense_source_id_ip | 48 | 41.2 | 41.8 | 41.9 |
-| dense_source_id_cosine | 48 | 47.1 | 60.3 | 122.3 |
-| dense_source_id_mips_l2 | 48 | 41.7 | 43.2 | 79.6 |
-| sparse | 48 | 83.0 | 85.6 | 86.3 |
-| sparse_source_id | 48 | 81.4 | 84.8 | 89.9 |
-| fts_indexed | 48 | 53.6 | 54.3 | 56.1 |
-| dense_scalar_filter | 48 | 277.9 | 304.8 | 338.4 |
-| multi_rrf | 48 | 119.0 | 125.2 | 139.6 |
-| group_by | 48 | 42.0 | 43.1 | 44.1 |
-| fetch_projection | 48 | 1.6 | 1.8 | 1.8 |
-| snapshot_iterator | 3 | 471.9 | 483.9 | 483.9 |
-| stats_health | 48 | 1.0 | 1.1 | 1.6 |
-| partial_update | 3 | 1,591.8 | 1,643.0 | 1,643.0 |
-| flush | 3 | 15,198.5 | 15,919.7 | 15,919.7 |
-| dense_async | 48 | 85.7 | 128.4 | 255.3 |
-| multi_async | 48 | 96.4 | 123.9 | 138.2 |
-| group_by_async | 48 | 78.2 | 95.8 | 106.6 |
-| ann_hnsw | 48 | 62.5 | 69.1 | 83.1 |
-| ann_ivf_soar | 48 | 36.5 | 49.8 | 55.4 |
-| ann_hnsw_rabitq | 48 | 60.3 | 76.4 | 85.0 |
-| ann_ivf_rabitq | 48 | 42.5 | 50.0 | 61.3 |
-| ann_vamana | 48 | 111.7 | 114.8 | 124.7 |
-| ann_diskann_pq | 48 | 130.6 | 139.4 | 149.1 |
-| diskann_positioned_reopen_query | 3 | 6,484.5 | 7,014.6 | 7,014.6 |
-| diskann_mmap_reopen_query | 3 | 6,484.7 | 6,638.4 | 6,638.4 |
+| dense_l2 | 48 | 42.3 | 71.3 | 105.1 |
+| dense_ip | 48 | 42.2 | 91.1 | 214.3 |
+| dense_cosine | 48 | 46.4 | 49.6 | 77.4 |
+| dense_mips_l2 | 48 | 41.5 | 42.3 | 45.3 |
+| dense_source_id_l2 | 48 | 41.4 | 48.8 | 169.2 |
+| dense_source_id_ip | 48 | 41.4 | 44.7 | 195.6 |
+| dense_source_id_cosine | 48 | 45.9 | 53.9 | 156.6 |
+| dense_source_id_mips_l2 | 48 | 41.9 | 42.9 | 80.2 |
+| sparse | 48 | 81.1 | 176.2 | 260.3 |
+| sparse_source_id | 48 | 79.9 | 83.6 | 83.7 |
+| fts_indexed | 48 | 53.1 | 83.1 | 219.7 |
+| dense_scalar_filter | 48 | 271.6 | 324.8 | 411.6 |
+| multi_rrf | 48 | 123.8 | 172.5 | 215.9 |
+| group_by | 48 | 42.0 | 47.6 | 52.6 |
+| fetch_projection | 48 | 1.6 | 1.8 | 2.0 |
+| snapshot_iterator | 3 | 478.9 | 503.8 | 503.8 |
+| stats_health | 48 | 1.0 | 1.2 | 1.6 |
+| partial_update | 3 | 2,255.1 | 2,322.0 | 2,322.0 |
+| flush | 3 | 18,861.3 | 19,431.0 | 19,431.0 |
+| dense_async | 48 | 93.8 | 138.0 | 187.5 |
+| multi_async | 48 | 99.8 | 149.8 | 160.7 |
+| group_by_async | 48 | 82.3 | 126.9 | 159.1 |
+| ann_hnsw | 48 | 59.9 | 64.2 | 78.3 |
+| ann_ivf_soar | 48 | 37.6 | 61.7 | 117.0 |
+| ann_hnsw_rabitq | 48 | 59.5 | 62.4 | 73.8 |
+| ann_ivf_rabitq | 48 | 42.4 | 46.4 | 78.2 |
+| ann_vamana | 48 | 111.0 | 115.0 | 125.4 |
+| ann_vamana_ip | 48 | 106.8 | 163.1 | 239.4 |
+| ann_vamana_cosine | 48 | 116.6 | 125.3 | 132.1 |
+| ann_vamana_mips_l2 | 48 | 106.5 | 110.8 | 121.6 |
+| ann_diskann_pq | 48 | 138.3 | 162.3 | 239.8 |
+| ann_diskann_ip_pq | 48 | 137.2 | 236.6 | 284.9 |
+| ann_diskann_cosine_pq | 48 | 138.8 | 170.4 | 279.8 |
+| ann_diskann_mips_l2_pq | 48 | 134.4 | 141.7 | 152.2 |
+| diskann_positioned_reopen_query | 3 | 7,468.1 | 7,766.2 | 7,766.2 |
+| diskann_mmap_reopen_query | 3 | 6,618.8 | 6,666.3 | 6,666.3 |
+
+The metric-aware Vamana and DiskANN rows use the same 512-document, 16-
+dimension fixture and `list_size=64` controls as the original ANN rows. Their
+correctness companion checks use eight deterministic query points, require at
+least 0.50 recall@10, and cap exact candidate work at 96 on a 256-document
+fixture; the benchmark rows are latency/throughput observations rather than a
+portable latency SLO.
 
 The smoke job uploads this CSV as a CI artifact and gates the release-candidate
 job. It intentionally checks correctness and captures metrics without applying
@@ -142,8 +157,10 @@ layouts remain possible later optimizations.
 The sidecar-reader Vamana/PQ baseline was recorded on 2026-09-01 on Windows
 x86_64 with an Intel Xeon w5-2445, 128 GiB memory, and Rust/Cargo 1.97.1. It
 uses the same deterministic vectors, query count, rounds, and percentile
-methodology. Both graph families validate L2 only, so their reference is a
-separate exact L2 run. Every positioned or mmap row closes and reopens the
+methodology and intentionally reports the L2 rows. The graph and ADC
+implementations now also accept inner product, cosine, and MIPS-L2; their
+metric-specific correctness and bounded-work evidence is in the public feature
+matrix and ANN contract tests. Every positioned or mmap row closes and reopens the
 collection read-only, asserts a validated cache hit and the requested backend,
 performs one untimed warmup, and then traverses the A3S-native sidecar. The
 benchmark also asserts identical mapped and positioned result IDs and exact

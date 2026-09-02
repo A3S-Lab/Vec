@@ -7,8 +7,8 @@ workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
 The project is an active prototype. HNSW, IVF with optional SOAR assignment,
-HNSW/IVF RaBitQ, L2 Vamana,
-product-quantized L2 DiskANN with typed positioned or immutable mmap-snapshot traversal,
+HNSW/IVF RaBitQ, metric-aware Vamana,
+product-quantized DiskANN with typed positioned or immutable mmap-snapshot traversal,
 scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough.
@@ -21,7 +21,7 @@ stale, or not selective enough.
 
 | Need | Current implementation |
 | --- | --- |
-| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF/SOAR, HNSW/IVF RaBitQ, L2 Vamana, PQ/ADC DiskANN, and exact re-ranking |
+| Local semantic retrieval | Dense and sparse exact search, HNSW, IVF/SOAR, HNSW/IVF RaBitQ, metric-aware Vamana, PQ/ADC DiskANN, and exact re-ranking |
 | Workspace text search | BM25, Unicode n-grams, boolean groups, wildcard/fuzzy/range terms, ordered phrase proximity, boosts, and token filters |
 | Structured narrowing | Typed scalar indexes, range/null/IN/wildcard predicates, and bitmap prefiltering |
 | Durable embedding | WAL, checksummed snapshots, manifest commits, file locking, a validated derived-index cache, and a Vamana/DiskANN sector sidecar |
@@ -180,8 +180,9 @@ result.
   orthogonality-aware SOAR secondary centroid.
 - Portable HNSW/IVF RaBitQ with deterministic random rotation, compact
   1-to-9-bit codes, bounded refinement, and exact full-vector re-ranking.
-- Deterministic two-pass L2 Vamana construction, bounded `list_size` search,
-  incremental overlays, and exact full-vector re-ranking.
+- Deterministic two-pass metric-aware Vamana construction (L2, inner product,
+  cosine, and MIPS-L2), bounded `list_size` search, incremental overlays, and
+  exact full-vector re-ranking.
 - Deterministic product-quantizer training with up to 256 centroids per chunk,
   one-byte codes, query-local ADC tables, and exact full-vector re-ranking.
 - Native 4 KiB-sector Vamana/DiskANN files with fixed full-vector or PQ-code
@@ -191,15 +192,16 @@ result.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
 
-Vamana accepts unquantized L2 vectors. `IndexParams::diskann` uses the same
-deterministic graph and enables corpus-trained PQ when `pq_chunk_num > 0`;
-zero selects full-vector graph scoring. A freshly built or rebuilt generation
+Vamana accepts unquantized L2, inner-product, cosine, and MIPS-L2 vectors.
+`IndexParams::diskann` uses the same metric-aware deterministic graph and
+enables corpus-trained PQ when `pq_chunk_num > 0`; zero selects full-vector
+graph scoring. A freshly built or rebuilt generation
 traverses in memory. After a validated cache reopen, bounded queries use
 portable positioned reads by default and retain a request-local sector/node
 cache. `IoBackend::Mmap` instead copies the already validated sidecar into a
 read-only anonymous memory map at open time and serves the same bounded extents
-from that immutable snapshot. PQ queries build one centroid-distance table
-and sum code distances during graph traversal. Incremental overlays share the
+from that immutable snapshot. PQ queries build one metric-aware ADC table and
+sum code similarities or distances during graph traversal. Incremental overlays share the
 reader; a full rebuild retrains the codebook and invalidates the reader until
 the next validated reopen. A short read or malformed record falls back to the
 equivalent in-memory full-vector or ADC graph, and authoritative vectors still
@@ -253,9 +255,10 @@ fn configure_rabitq(query: &mut SearchQuery) -> Result<IndexParams> {
 }
 ```
 
-Non-L2 Vamana/DiskANN, Vamana graph saturation/occlusion tuning, and standalone
-Vamana quantization fail at schema validation until they have verified
-execution implementations.
+Vamana graph saturation/occlusion tuning and standalone Vamana quantization
+remain explicit unsupported controls until they have verified execution
+implementations. Binary-vector query execution and Alibaba's C++ wire format
+remain separate, documented boundaries.
 
 ### Full-text search
 
@@ -454,8 +457,8 @@ that ownership claim.
 | --- | --- |
 | Flat, HNSW, IVF/SOAR | Implemented; SOAR postings use deterministic primary-plus-secondary assignment and unique-candidate probing |
 | HNSW/IVF RaBitQ | Implemented for L2, inner product, and cosine with 1-to-9-bit codes and exact re-ranking |
-| L2 Vamana traversal and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
-| L2 DiskANN PQ/ADC and incremental overlays | Implemented in memory and through positioned or immutable mmap-snapshot PQ-code reads after reopen |
+| Metric-aware Vamana traversal and incremental overlays | Implemented for L2, inner product, cosine, and MIPS-L2 in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
+| Metric-aware DiskANN PQ/ADC and incremental overlays | Implemented for L2, inner product, cosine, and MIPS-L2 in memory and through positioned or immutable mmap-snapshot PQ-code reads after reopen |
 | Sector-aligned native Vamana/DiskANN file | Implemented |
 | Scalar inverted index | Implemented |
 | BM25 + structured boolean/phrase FTS | Implemented |

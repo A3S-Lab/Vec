@@ -83,6 +83,14 @@ impl VamanaIndex {
             };
         }
 
+        // MIPS uses the standard norm-augmentation reduction to turn inner
+        // product ordering into a non-negative L2 distance for graph
+        // construction.  The bound is derived once from the immutable base
+        // and is shared by every RobustPrune invocation.
+        let mips_norm_bound = decoded
+            .values()
+            .map(|vector| vector_norm(vector))
+            .fold(0.0_f64, f64::max);
         let entry_ordinal = medoid(&decoded, ordinals);
         let mut graph = initial_graph(&decoded, max_degree);
         let build_order = shuffled_ordinals(decoded.keys().collect(), BUILD_ORDER_SEED);
@@ -108,6 +116,8 @@ impl VamanaIndex {
                     &search.visited,
                     pass_alpha,
                     max_degree,
+                    metric,
+                    mips_norm_bound,
                 );
 
                 let neighbors = graph.get(ordinal).cloned().unwrap_or_default();
@@ -125,6 +135,8 @@ impl VamanaIndex {
                             &candidates,
                             pass_alpha,
                             max_degree,
+                            metric,
+                            mips_norm_bound,
                         );
                     } else {
                         graph.insert(neighbor, candidates);
@@ -376,6 +388,8 @@ fn robust_prune(
     candidates: &[u64],
     alpha: f64,
     max_degree: usize,
+    metric: MetricType,
+    mips_norm_bound: f64,
 ) {
     let Some(source_vector) = vectors.get(source) else {
         return;
@@ -398,12 +412,12 @@ fn robust_prune(
             .iter()
             .enumerate()
             .min_by(|(_, left), (_, right)| {
-                let left_distance = vectors
-                    .get(**left)
-                    .map_or(f64::INFINITY, |vector| squared_l2(source_vector, vector));
-                let right_distance = vectors
-                    .get(**right)
-                    .map_or(f64::INFINITY, |vector| squared_l2(source_vector, vector));
+                let left_distance = vectors.get(**left).map_or(f64::INFINITY, |vector| {
+                    metric_distance(source_vector, vector, metric, mips_norm_bound)
+                });
+                let right_distance = vectors.get(**right).map_or(f64::INFINITY, |vector| {
+                    metric_distance(source_vector, vector, metric, mips_norm_bound)
+                });
                 left_distance.total_cmp(&right_distance).then_with(|| {
                     ordinals
                         .id(**left)
@@ -419,11 +433,19 @@ fn robust_prune(
             break;
         };
         pool.retain(|candidate| {
+            // Remove the selected node by identity.  Metric distances can be
+            // equal up to a tiny floating-point residual (for example, two
+            // collinear cosine vectors), and the occlusion inequality alone
+            // could otherwise retain the same ordinal repeatedly.
+            if *candidate == closest {
+                return false;
+            }
             let Some(candidate_vector) = vectors.get(*candidate) else {
                 return false;
             };
-            alpha_squared * squared_l2(closest_vector, candidate_vector)
-                > squared_l2(source_vector, candidate_vector)
+            alpha_squared
+                * metric_distance(closest_vector, candidate_vector, metric, mips_norm_bound)
+                > metric_distance(source_vector, candidate_vector, metric, mips_norm_bound)
         });
     }
     graph.insert(source, selected);
@@ -524,6 +546,60 @@ fn squared_l2(left: &[f32], right: &[f32]) -> f64 {
         .sum()
 }
 
+/// Returns a non-negative distance suitable for Vamana `RobustPrune`.
+///
+/// The public query contract ranks by similarity for IP/MIPS/Cosine.  Graph
+/// pruning, however, needs a proper distance and cannot safely compare raw
+/// (possibly negative) similarities.  Cosine uses angular distance directly.
+/// Inner product uses the standard norm-augmentation reduction: with a bound
+/// `R >= ||x||` for every base vector, augmenting `x` by
+/// `sqrt(R² - ||x||²)` makes squared L2 ordering equivalent to maximizing
+/// `q·x` for a query whose extra coordinate is zero.
+fn metric_distance(left: &[f32], right: &[f32], metric: MetricType, mips_norm_bound: f64) -> f64 {
+    if left.len() != right.len() {
+        return f64::INFINITY;
+    }
+    match metric {
+        MetricType::L2 => squared_l2(left, right),
+        MetricType::Cosine => {
+            let left_norm = vector_norm(left);
+            let right_norm = vector_norm(right);
+            if left_norm == 0.0 || right_norm == 0.0 {
+                1.0
+            } else {
+                let dot = left
+                    .iter()
+                    .zip(right)
+                    .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                    .sum::<f64>();
+                (1.0 - dot / (left_norm * right_norm)).max(0.0)
+            }
+        }
+        MetricType::Ip | MetricType::MipsL2 | MetricType::Undefined => {
+            let bound = mips_norm_bound
+                .max(vector_norm(left))
+                .max(vector_norm(right));
+            let left_extra = (bound * bound - vector_norm_squared(left)).max(0.0).sqrt();
+            let right_extra = (bound * bound - vector_norm_squared(right)).max(0.0).sqrt();
+            squared_l2(left, right) + (left_extra - right_extra).powi(2)
+        }
+    }
+}
+
+fn vector_norm_squared(vector: &[f32]) -> f64 {
+    vector
+        .iter()
+        .map(|value| {
+            let value = f64::from(*value);
+            value * value
+        })
+        .sum()
+}
+
+fn vector_norm(vector: &[f32]) -> f64 {
+    vector_norm_squared(vector).sqrt()
+}
+
 fn shuffled_ordinals(mut values: Vec<u64>, seed: u64) -> Vec<u64> {
     let mut state = seed;
     for index in (1..values.len()).rev() {
@@ -549,7 +625,7 @@ fn usize_to_f64(value: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::VamanaIndex;
+    use super::{metric_distance, VamanaIndex};
     use crate::doc::{Doc, DocumentMap};
     use crate::index::ordinal_map::OrdinalMap;
     use crate::index::ordinals::OrdinalTable;
@@ -597,6 +673,30 @@ mod tests {
     }
 
     #[test]
+    fn metric_aware_graphs_are_deterministic_and_validated() {
+        let (ordinals, vectors) = fixture();
+        for metric in [
+            MetricType::L2,
+            MetricType::Ip,
+            MetricType::Cosine,
+            MetricType::MipsL2,
+        ] {
+            let first = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
+            let second = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
+            assert_eq!(first.graph, second.graph, "metric={metric:?}");
+            assert!(first.validates(&vectors, 12, 48, 1.2), "metric={metric:?}");
+            assert!(first.graph.values().all(|neighbors| {
+                neighbors
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == neighbors.len()
+            }));
+        }
+    }
+
+    #[test]
     fn exhaustive_list_returns_every_ordinal() {
         let (ordinals, vectors) = fixture();
         let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, MetricType::L2);
@@ -612,6 +712,105 @@ mod tests {
             candidates.len(),
             u64::try_from(vectors.len()).unwrap_or(u64::MAX)
         );
+    }
+
+    #[test]
+    fn cosine_pruning_keeps_duplicate_vectors_canonical() {
+        let docs: DocumentMap = (0_u8..6)
+            .map(|index| {
+                let id = format!("duplicate-{index}");
+                let doc = Doc::with_pk(&id).expect("document id must be valid");
+                (id, Arc::new(doc))
+            })
+            .collect();
+        let ordinals = OrdinalTable::build(&docs).expect("ordinals must build");
+        let values = [
+            vec![1.0, 0.0],
+            vec![2.0, 0.0],
+            vec![0.0, 1.0],
+            vec![0.0, 2.0],
+            vec![-1.0, 0.0],
+            vec![0.0, -1.0],
+        ];
+        let vectors = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, values)| {
+                let id = format!("duplicate-{index}");
+                (
+                    ordinals.ordinal(&id).expect("ordinal must exist"),
+                    QuantizedVector::encode(values, QuantizeType::Undefined)
+                        .expect("vector must encode"),
+                )
+            })
+            .collect();
+        let index = VamanaIndex::build(&vectors, &ordinals, 4, 6, 1.2, MetricType::Cosine);
+        assert!(index.validates(&vectors, 4, 6, 1.2));
+        assert!(index.graph.values().all(|neighbors| neighbors
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == neighbors.len()));
+    }
+
+    #[test]
+    fn metric_distance_is_finite_non_negative_and_orders_similarity_neighbors() {
+        let query = [1.0_f32, 0.0];
+        let aligned = [2.0_f32, 0.0];
+        let orthogonal = [0.0_f32, 2.0];
+        for metric in [MetricType::Cosine, MetricType::Ip, MetricType::MipsL2] {
+            let aligned_distance = metric_distance(&query, &aligned, metric, 2.0);
+            let orthogonal_distance = metric_distance(&query, &orthogonal, metric, 2.0);
+            assert!(aligned_distance.is_finite() && aligned_distance >= 0.0);
+            assert!(orthogonal_distance.is_finite() && orthogonal_distance >= 0.0);
+            assert!(aligned_distance < orthogonal_distance, "metric={metric:?}");
+        }
+    }
+
+    #[test]
+    fn filtered_similarity_search_matches_the_exact_eligible_oracle() {
+        let (ordinals, vectors) = fixture();
+        let allowed: RoaringTreemap = vectors.keys().filter(|ordinal| ordinal % 2 == 0).collect();
+        let excluded: RoaringTreemap = [40_u64].into_iter().collect();
+        let query = [41.0, 8.0, 1.0];
+        for metric in [MetricType::Ip, MetricType::Cosine, MetricType::MipsL2] {
+            let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
+            let actual = index.filtered_candidates(
+                &vectors,
+                &ordinals,
+                &query,
+                10,
+                vectors.len(),
+                metric,
+                &allowed,
+                &excluded,
+            );
+            let mut expected: Vec<_> = vectors
+                .iter()
+                .filter(|(ordinal, _)| allowed.contains(*ordinal) && !excluded.contains(*ordinal))
+                .map(|(ordinal, vector)| {
+                    (
+                        ordinal,
+                        super::super::quantization::score(&query, vector, metric),
+                    )
+                })
+                .collect();
+            expected.sort_unstable_by(|left, right| {
+                right.1.total_cmp(&left.1).then_with(|| {
+                    ordinals
+                        .id(left.0)
+                        .unwrap_or_default()
+                        .cmp(ordinals.id(right.0).unwrap_or_default())
+                })
+            });
+            let expected: RoaringTreemap = expected
+                .into_iter()
+                .take(10)
+                .map(|(ordinal, _)| ordinal)
+                .collect();
+            assert_eq!(actual, expected, "metric={metric:?}");
+        }
     }
 
     #[test]

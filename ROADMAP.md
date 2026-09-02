@@ -11,7 +11,7 @@ not replace an earlier correctness gate.
 
 ## Current implementation status
 
-**2026-09-01:** Phase 1's query/write contract hardening, Phase 3's core
+**2026-09-02:** Phase 1's query/write contract hardening, Phase 3's core
 recovery transaction, and Phase 4's in-memory ANN gate are implemented. Query
 routes, dense dimensions, sparse
 indices, JSON adapter values, schema defaults, and replacement upserts are
@@ -44,9 +44,9 @@ and array type, and numeric scalar/array conversion is checked at both extrema
 and beyond each representable boundary. Future index/query/schema tuning now
 fails explicitly unless it has an execution consumer; Flat and unindexed scan
 FTS telemetry do not claim approximate or physical-index execution. HNSW, IVF,
-HNSW/IVF RaBitQ, L2 Vamana, L2 DiskANN/PQ with in-memory, positioned, or
-immutable mmap-snapshot traversal, and FTS are live derived indexes with
-dedicated telemetry.
+HNSW/IVF RaBitQ, metric-aware Vamana and DiskANN/PQ (L2, inner product, cosine,
+and MIPS-L2) with in-memory, positioned, or immutable mmap-snapshot traversal,
+and FTS are live derived indexes with dedicated telemetry.
 Document generations
 share unchanged `Arc<Doc>` values through a persistent ordered tree, so ordinary
 writes copy only an O(log N) tree path. Indexed mutations share an immutable ANN
@@ -98,9 +98,9 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 241 passing unit/integration tests plus four doctests;
-the default-feature suite passes 238 unit/integration tests, and default and
-no-default-feature suites are separate gates. Formatting, default/all-feature
+all-feature baseline has 247 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 244 unit/integration tests,
+and the feature gates remain separate. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
 and `rmp` dependency ranges to compatible release lines; optional Jieba still
@@ -196,9 +196,9 @@ and direct file-backed mmap remain future work.
   public `f32` narrowing boundary; negative L2 radius is rejected.
 - Completed: independent scan-BM25 ranking over the text-bearing corpus,
   including a nullable missing-field case. Ambiguous expression forms are
-  rejected. Boolean groups, exact phrases, and required/prohibited modifiers
-  now execute in Phase 5; wildcard, fielded, boosted, fuzzy, and range syntax
-  returns `NotSupported` rather than silently changing query meaning.
+  rejected. Boolean groups, exact phrases, required/prohibited modifiers,
+  wildcard, fielded, boosted, fuzzy, and range syntax execute with shared
+  indexed/scan semantics in Phase 5.
 - Completed: a dependency-free fixed-seed generator produces 256 mixed
   documents and checks 100 dense metric/filter combinations plus 24
   BM25/filter combinations against independent references after persistence
@@ -567,15 +567,19 @@ execution are implemented.
 
 **Progress**
 
-- Completed: deterministic in-memory L2 Vamana construction follows the
+- Completed: deterministic in-memory metric-aware Vamana construction follows the
   two-pass [DiskANN sequence](https://proceedings.neurips.cc/paper/2019/file/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Paper.pdf): seeded R-regular initialization, centroid medoid,
   greedy search, RobustPrune at alpha 1 then the configured alpha, and bounded
   backward edges. `list_size` controls SearchQuery, group-by, and multi-query
-  branches; candidates receive authoritative full-vector refinement.
+  branches; candidates receive authoritative full-vector refinement. L2 uses
+  squared distance, cosine uses angular distance, and inner-product/MIPS-L2
+  use a norm-augmentation transform with an immutable-base bound.
 - Completed: immutable Vamana bases participate in incremental delta/tombstone
   overlays, scalar-filter planning, targeted rebuilds, telemetry, and validated
   cache-format-10 reopen. Unit, exhaustive-oracle, bounded-candidate recall,
-  mutation, rebuild, and cache-hit tests cover the slice.
+  mutation, rebuild, and cache-hit tests cover the slice for all four numeric
+  metrics. The public matrix checks eight deterministic bounded queries for
+  non-L2 graph recall and enforces the candidate budget.
 - Completed: every Vamana and DiskANN base is mirrored in the A3S-native
   `indexes/diskann-graph.bin` format. Its versioned header and field metadata
   bind the schema digest, revision, and manifest-derived source identity;
@@ -599,16 +603,18 @@ execution are implemented.
   in-memory full-vector or ADC graph. Packed/oversized/PQ,
   filtered/unfiltered parity, corruption,
   overlay, rebuild, and telemetry fixtures cover the contract.
-- Completed: `IndexType::Diskann` accepts L2 with `pq_chunk_num` in
-  `0..=dimension`. Positive values split dimensions into balanced contiguous
+- Completed: `IndexType::Diskann` accepts L2, inner product, cosine, and MIPS-L2
+  with `pq_chunk_num` in `0..=dimension`. Positive values split dimensions into balanced contiguous
   chunks, train up to 256 deterministic centroids per chunk with eight Lloyd
-  iterations, encode one byte per chunk, and build one query-local ADC table.
+  iterations, encode one byte per chunk, and build one query-local metric-aware
+  ADC table (distance, inner-product, or cosine scoring).
   In-memory, positioned, and mmap-snapshot traversals use identical
   codes/tables; full vectors remain authoritative for exact final ranking and
   for delta documents until a
   rebuild retrains the generation. Cache and sidecar validation cover
   codebooks, codes, graph membership, deterministic training, filtered and
-  unfiltered parity, lifecycle, corruption, and query-time fallback.
+  unfiltered parity, all numeric metrics, lifecycle, corruption, and query-time
+  fallback.
 - Completed: `IndexType::HnswRabitq` and `IndexType::IvfRabitq` execute for
   L2, inner product, and cosine using the
   [RaBitQ estimator](https://arxiv.org/abs/2405.12497) and the official
@@ -661,10 +667,14 @@ execution are implemented.
   snapshot reduced measured query median by 34.0% and 32.2% versus the matching
   positioned rows, excluding its full-copy open cost. Exact L2 remained faster
   at 128.28 microseconds, so no exact-scan speedup is claimed.
+- Completed: non-L2 Vamana and DiskANN/PQ now use metric-aware graph pruning
+  and ADC for inner product, cosine, and MIPS-L2. Exact-oracle tests cover
+  in-memory and sidecar reopen paths; a deterministic eight-query fixture
+  requires at least 0.50 recall@10 while capping exact candidate work at 96.
+  The public feature benchmark records p50/p95/p99 latency and throughput for
+  all four metrics in both graph families.
 - Remaining: native async file reads or a sound direct file-backed mmap
-  backend, plus the Linux/macOS Intel runtime portability gate. Non-L2
-  Vamana/DiskANN remains
-  explicit `NotSupported` until a correct metric transform is implemented.
+  backend, plus the Linux/macOS Intel runtime portability gate.
 
 ## Phase 7 — Advanced collection API
 

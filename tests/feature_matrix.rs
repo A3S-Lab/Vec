@@ -342,7 +342,13 @@ enum AnnCase {
     HnswRabitq,
     IvfRabitq,
     Vamana,
+    VamanaIp,
+    VamanaCosine,
+    VamanaMipsL2,
     Diskann,
+    DiskannIp,
+    DiskannCosine,
+    DiskannMipsL2,
 }
 
 impl AnnCase {
@@ -353,7 +359,37 @@ impl AnnCase {
             Self::HnswRabitq => "hnsw_rabitq",
             Self::IvfRabitq => "ivf_rabitq",
             Self::Vamana => "vamana",
+            Self::VamanaIp => "vamana_ip",
+            Self::VamanaCosine => "vamana_cosine",
+            Self::VamanaMipsL2 => "vamana_mips_l2",
             Self::Diskann => "diskann",
+            Self::DiskannIp => "diskann_ip",
+            Self::DiskannCosine => "diskann_cosine",
+            Self::DiskannMipsL2 => "diskann_mips_l2",
+        }
+    }
+
+    fn metric(self) -> MetricType {
+        match self {
+            Self::Hnsw
+            | Self::IvfSoar
+            | Self::HnswRabitq
+            | Self::IvfRabitq
+            | Self::VamanaCosine
+            | Self::DiskannCosine => MetricType::Cosine,
+            Self::Vamana | Self::Diskann => MetricType::L2,
+            Self::VamanaIp | Self::DiskannIp => MetricType::Ip,
+            Self::VamanaMipsL2 | Self::DiskannMipsL2 => MetricType::MipsL2,
+        }
+    }
+
+    fn metric_name(self) -> &'static str {
+        match self.metric() {
+            MetricType::L2 => "l2",
+            MetricType::Ip => "ip",
+            MetricType::Cosine => "cosine",
+            MetricType::MipsL2 => "mips_l2",
+            MetricType::Undefined => "undefined",
         }
     }
 
@@ -365,18 +401,22 @@ impl AnnCase {
                 IndexParams::hnsw_rabitq_with_options(MetricType::Cosine, 8, 32, 5, 8, 0)
             }
             Self::IvfRabitq => IndexParams::ivf_rabitq(MetricType::Cosine, 8, 5, 0),
-            Self::Vamana => IndexParams::vamana(
-                MetricType::L2,
-                12,
-                i32::try_from(DOCUMENTS).expect("document count fits i32"),
-                1.2,
-            ),
-            Self::Diskann => IndexParams::diskann(
-                MetricType::L2,
-                12,
-                i32::try_from(DOCUMENTS).expect("document count fits i32"),
-                2,
-            ),
+            Self::Vamana | Self::VamanaIp | Self::VamanaCosine | Self::VamanaMipsL2 => {
+                IndexParams::vamana(
+                    self.metric(),
+                    12,
+                    i32::try_from(DOCUMENTS).expect("document count fits i32"),
+                    1.2,
+                )
+            }
+            Self::Diskann | Self::DiskannIp | Self::DiskannCosine | Self::DiskannMipsL2 => {
+                IndexParams::diskann(
+                    self.metric(),
+                    12,
+                    i32::try_from(DOCUMENTS).expect("document count fits i32"),
+                    2,
+                )
+            }
         }
         .expect("ANN descriptor must be valid")
     }
@@ -403,11 +443,23 @@ impl AnnCase {
                     .set_ivf_rabitq_params(params)
                     .expect("IVF RaBitQ controls must be valid");
             }
-            Self::Vamana | Self::Diskann => query
-                .set_diskann_params(DiskannQueryParams::new(
-                    i32::try_from(DOCUMENTS).expect("document count fits i32"),
-                ))
-                .expect("DiskANN controls must be valid"),
+            Self::Vamana
+            | Self::VamanaIp
+            | Self::VamanaCosine
+            | Self::VamanaMipsL2
+            | Self::Diskann
+            | Self::DiskannIp
+            | Self::DiskannCosine
+            | Self::DiskannMipsL2 => {
+                query
+                    .params
+                    .insert("metric".into(), serde_json::json!(self.metric_name()));
+                query
+                    .set_diskann_params(DiskannQueryParams::new(
+                        i32::try_from(DOCUMENTS).expect("document count fits i32"),
+                    ))
+                    .expect("DiskANN controls must be valid");
+            }
         }
     }
 
@@ -417,8 +469,12 @@ impl AnnCase {
             Self::IvfSoar => IndexType::Ivf,
             Self::HnswRabitq => IndexType::HnswRabitq,
             Self::IvfRabitq => IndexType::IvfRabitq,
-            Self::Vamana => IndexType::Vamana,
-            Self::Diskann => IndexType::Diskann,
+            Self::Vamana | Self::VamanaIp | Self::VamanaCosine | Self::VamanaMipsL2 => {
+                IndexType::Vamana
+            }
+            Self::Diskann | Self::DiskannIp | Self::DiskannCosine | Self::DiskannMipsL2 => {
+                IndexType::Diskann
+            }
         }
     }
 }
@@ -431,7 +487,13 @@ fn every_ann_family_matches_the_exact_oracle_at_exhaustive_controls() {
         AnnCase::HnswRabitq,
         AnnCase::IvfRabitq,
         AnnCase::Vamana,
+        AnnCase::VamanaIp,
+        AnnCase::VamanaCosine,
+        AnnCase::VamanaMipsL2,
         AnnCase::Diskann,
+        AnnCase::DiskannIp,
+        AnnCase::DiskannCosine,
+        AnnCase::DiskannMipsL2,
     ] {
         let temporary = tempdir().expect("temporary directory must be available");
         let path = temporary.path().join(case.name());
@@ -448,10 +510,20 @@ fn every_ann_family_matches_the_exact_oracle_at_exhaustive_controls() {
         );
         let mut query =
             SearchQuery::new("embedding", &vector_for(17), 12).expect("ANN query must be valid");
-        if matches!(case, AnnCase::Vamana | AnnCase::Diskann) {
+        if matches!(
+            case,
+            AnnCase::Vamana
+                | AnnCase::VamanaIp
+                | AnnCase::VamanaCosine
+                | AnnCase::VamanaMipsL2
+                | AnnCase::Diskann
+                | AnnCase::DiskannIp
+                | AnnCase::DiskannCosine
+                | AnnCase::DiskannMipsL2
+        ) {
             query
                 .params
-                .insert("metric".into(), serde_json::json!("l2"));
+                .insert("metric".into(), serde_json::json!(case.metric_name()));
         }
         let exact = collection.query(&query).expect("exact oracle must succeed");
         collection

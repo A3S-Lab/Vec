@@ -577,8 +577,8 @@ The target and fallback implementations are:
 | Dense/sparse exact search | Flat scan | Always available |
 | HNSW | Hierarchical graph + eligible-result heap + bounded delta/tombstones | Flat re-rank/filter fallback |
 | IVF | Lloyd centroids + optional SOAR primary/secondary ordinal postings + adaptive filtered probes | Flat re-rank/filter fallback |
-| L2 Vamana | Two-pass RobustPrune graph + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
-| L2 DiskANN/PQ | Vamana graph + deterministic per-chunk codebooks/codes + ADC + bounded overlays | In-memory ADC + flat re-rank |
+| Metric-aware Vamana | Two-pass RobustPrune graph for L2, inner product, cosine, and MIPS-L2 + bounded delta/tombstones + validated sector sidecar | Flat re-rank/filter fallback |
+| Metric-aware DiskANN/PQ | Vamana graph + deterministic per-chunk codebooks/codes + metric-aware ADC + bounded overlays | In-memory ADC + flat re-rank |
 | DiskANN query reader | Request-local positioned or immutable mmap-snapshot full-vector/PQ-code traversal after cache reopen | Equivalent in-memory graph + flat re-rank |
 | HNSW/IVF RaBitQ | Fixed-seed signed Hadamard rotation + compact 1-to-9-bit residual codes + unbiased traversal/refinement estimator | Full-vector re-rank/filter fallback |
 | Scalar filters | Persistent ordered postings + Roaring bitmaps | AST scan verification/fallback |
@@ -592,9 +592,9 @@ number is repeated. Any mismatch makes open ignore the cache rather than
 return unverifiable results.
 
 At the current baseline, Flat executes the exact oracle directly. HNSW, IVF,
-HNSW/IVF RaBitQ, L2 Vamana, and L2 DiskANN select candidates only when the immutable registry
-entry matches the captured collection revision and metric; otherwise planning
-falls back to Flat. Each
+HNSW/IVF RaBitQ, metric-aware Vamana, and metric-aware DiskANN select candidates
+only when the immutable registry entry matches the captured collection revision
+and metric; otherwise planning falls back to Flat. Each
 revision shares a complete base with older readers and owns a bounded overlay;
 base tombstones are filtered with a bitmap, delta vectors are scored without
 materializing a decoded vector, and merged candidates remain ordinals while
@@ -604,8 +604,17 @@ re-ranking then matches Flat ordering and scores. A freshly built Vamana base
 traverses in memory; a cache-restored base uses the native sidecar's configured
 positioned or immutable mmap-snapshot reader for bounded traversal and fails
 closed to that same memory graph.
-DiskANN follows the same lifecycle, but a positive `pq_chunk_num` uses ADC for
-in-memory and either sidecar traversal. RaBitQ uses compact codes only for
+Vamana RobustPrune uses squared L2 for L2, angular distance for cosine, and a
+standard norm-augmentation distance for inner product and MIPS-L2. The
+augmentation bound is computed once from the immutable base, so graph pruning
+never compares raw signed similarities. Selected ordinals are removed by
+identity before occlusion filtering; this keeps duplicate or collinear vectors
+canonical despite floating-point ties.
+DiskANN follows the same lifecycle, but a positive `pq_chunk_num` uses a
+metric-aware ADC table for in-memory and either sidecar traversal. L2 sums
+asymmetric squared distances, inner-product/MIPS-L2 sums centroid similarities,
+and cosine normalizes the reconstructed centroid vector against the query.
+RaBitQ uses compact codes only for
 candidate traversal/refinement and retains the same authoritative exact-score
 handoff. Scalar generations use
 the same source-revision
@@ -658,19 +667,22 @@ Vamana starts at the vector nearest the dataset centroid. It initializes a
 seeded R-regular directed graph and performs two deterministic build passes,
 first with alpha 1 and then with the configured alpha. Each pass uses greedy
 search, RobustPrune, backward-edge insertion, and re-pruning to enforce the
-degree bound. The currently validated execution contract is L2-only; other
-metrics fail before schema mutation instead of receiving an unproven transform.
+degree bound. L2 uses squared distance, cosine uses angular distance, and
+inner-product/MIPS-L2 use a norm-augmentation transform with an immutable-base
+bound. Selected ordinals are removed by identity before occlusion filtering so
+floating-point ties cannot duplicate edges.
 
 DiskANN partitions the vector into `pq_chunk_num` contiguous, balanced chunks.
 Each non-empty generation trains `min(256, vector_count)` centroids per chunk
 with deterministic farthest-first seeds, stable lower-index tie breaks, and
 eight Lloyd iterations. Every base ordinal stores one `u8` centroid code per
 chunk. A query computes squared-L2 distances to all centroids once, then graph
-navigation sums the selected table entries and negates the distance to preserve
-the engine's higher-is-better score convention. The approximate score is never
-returned publicly: authoritative document vectors perform final `f64` L2
-ranking. A complete rebuild retrains codebooks; bounded delta vectors remain
-full precision until compaction.
+navigation uses a query-local metric-aware ADC table: squared distances for L2,
+centroid similarities for inner product/MIPS-L2, and normalized reconstructed
+centroid scores for cosine. The approximate score is never returned publicly:
+authoritative document vectors perform final `f64` ranking. A complete rebuild
+re-trains codebooks; bounded delta vectors remain full precision until
+compaction.
 
 Filtered vector planning resolves the scalar generation before invoking ANN.
 Small eligible sets are scored directly. A conservative bitmap is first

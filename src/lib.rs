@@ -7,9 +7,9 @@
 //! Apple Silicon, Linux, and Windows.
 //!
 //! A collection's document snapshot and WAL are authoritative. Flat queries
-//! execute against that snapshot; revision-tagged HNSW, IVF, L2 Vamana, and
-//! product-quantized L2 `DiskANN` generations select bounded candidates before
-//! exact re-ranking. Each Vamana/DiskANN base also has an A3S-native,
+//! execute against that snapshot; revision-tagged HNSW, IVF, metric-aware
+//! Vamana, and product-quantized `DiskANN` generations select bounded
+//! candidates before exact re-ranking. Each Vamana/DiskANN base also has an A3S-native,
 //! sector-aligned recovery sidecar. Native
 //! numeric vector encodings are preserved at rest and remain distinct from index-only
 //! FP16/INT8/INT4 scalar quantization. Revisioned scalar and full-text indexes

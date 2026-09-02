@@ -3,6 +3,7 @@
 use super::ordinal_map::OrdinalMap;
 use super::quantization::QuantizedVector;
 use crate::error::{Error, Result};
+use crate::types::MetricType;
 
 const MAX_CENTROIDS: usize = 256;
 const TRAINING_ITERATIONS: usize = 8;
@@ -23,6 +24,10 @@ pub(super) struct ProductQuantizer {
 #[derive(Debug)]
 pub(super) struct AdcTable {
     distances: Vec<Vec<f64>>,
+    similarities: Vec<Vec<f64>>,
+    centroid_norms_squared: Vec<Vec<f64>>,
+    query_norm_squared: f64,
+    metric: MetricType,
 }
 
 impl ProductQuantizer {
@@ -76,8 +81,8 @@ impl ProductQuantizer {
         self.codes.get(ordinal).map(Vec::as_slice)
     }
 
-    pub(super) fn table(&self, query: &[f32]) -> Result<AdcTable> {
-        self.codebook.table(query)
+    pub(super) fn table(&self, query: &[f32], metric: MetricType) -> Result<AdcTable> {
+        self.codebook.table(query, metric)
     }
 
     pub(super) fn score(&self, table: &AdcTable, ordinal: u64) -> Option<f64> {
@@ -139,24 +144,43 @@ impl ProductCodebook {
         self.centroids.iter().flatten().flatten().copied()
     }
 
-    pub(super) fn table(&self, query: &[f32]) -> Result<AdcTable> {
+    pub(super) fn table(&self, query: &[f32], metric: MetricType) -> Result<AdcTable> {
         if query.len() != self.dimension || query.iter().any(|value| !value.is_finite()) {
             return Err(Error::invalid_argument(
                 "PQ query dimension or values are invalid",
             ));
         }
-        let distances = self
-            .chunk_offsets
-            .windows(2)
-            .zip(&self.centroids)
-            .map(|(range, centroids)| {
+        let mut distances = Vec::with_capacity(self.centroids.len());
+        let mut similarities = Vec::with_capacity(self.centroids.len());
+        let mut centroid_norms_squared = Vec::with_capacity(self.centroids.len());
+        for (range, centroids) in self.chunk_offsets.windows(2).zip(&self.centroids) {
+            let query_chunk = &query[range[0]..range[1]];
+            distances.push(
                 centroids
                     .iter()
-                    .map(|centroid| squared_l2(&query[range[0]..range[1]], centroid))
-                    .collect()
-            })
-            .collect();
-        Ok(AdcTable { distances })
+                    .map(|centroid| squared_l2(query_chunk, centroid))
+                    .collect(),
+            );
+            similarities.push(
+                centroids
+                    .iter()
+                    .map(|centroid| dot(query_chunk, centroid))
+                    .collect(),
+            );
+            centroid_norms_squared.push(
+                centroids
+                    .iter()
+                    .map(|centroid| dot(centroid, centroid))
+                    .collect(),
+            );
+        }
+        Ok(AdcTable {
+            distances,
+            similarities,
+            centroid_norms_squared,
+            query_norm_squared: dot(query, query),
+            metric,
+        })
     }
 
     pub(super) fn score(&self, table: &AdcTable, code: &[u8]) -> Option<f64> {
@@ -172,17 +196,63 @@ impl AdcTable {
         if code.len() != self.distances.len() {
             return None;
         }
-        let distance = code
-            .iter()
-            .enumerate()
-            .try_fold(0.0_f64, |total, (chunk, centroid)| {
-                self.distances
-                    .get(chunk)?
-                    .get(usize::from(*centroid))
-                    .map(|distance| total + distance)
-            })?;
-        Some(-distance)
+        match self.metric {
+            MetricType::L2 => {
+                let distance =
+                    code.iter()
+                        .enumerate()
+                        .try_fold(0.0_f64, |total, (chunk, centroid)| {
+                            self.distances
+                                .get(chunk)?
+                                .get(usize::from(*centroid))
+                                .map(|distance| total + distance)
+                        })?;
+                Some(-distance)
+            }
+            MetricType::Cosine => {
+                let (similarity, candidate_norm_squared) = code.iter().enumerate().try_fold(
+                    (0.0_f64, 0.0_f64),
+                    |(similarity, norm), (chunk, centroid)| {
+                        Some((
+                            similarity
+                                + self.similarities.get(chunk)?.get(usize::from(*centroid))?,
+                            norm + self
+                                .centroid_norms_squared
+                                .get(chunk)?
+                                .get(usize::from(*centroid))?,
+                        ))
+                    },
+                )?;
+                if self.query_norm_squared == 0.0 || candidate_norm_squared == 0.0 {
+                    Some(0.0)
+                } else {
+                    Some(
+                        similarity
+                            / (self.query_norm_squared.sqrt() * candidate_norm_squared.sqrt()),
+                    )
+                }
+            }
+            MetricType::Ip | MetricType::MipsL2 | MetricType::Undefined => code
+                .iter()
+                .enumerate()
+                .try_fold(0.0_f64, |total, (chunk, centroid)| {
+                    self.similarities
+                        .get(chunk)?
+                        .get(usize::from(*centroid))
+                        .map(|similarity| total + similarity)
+                }),
+        }
     }
+}
+
+fn dot(left: &[f32], right: &[f32]) -> f64 {
+    if left.len() != right.len() {
+        return f64::NEG_INFINITY;
+    }
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| f64::from(*left) * f64::from(*right))
+        .sum()
 }
 
 impl ProductCodebook {
@@ -422,10 +492,35 @@ mod tests {
             .get(17)
             .expect("fixture ordinal must exist")
             .decode();
-        let table = first.table(&query).expect("ADC table must build");
+        let table = first
+            .table(&query, crate::types::MetricType::L2)
+            .expect("ADC table must build");
         let exact = first.score(&table, 17).expect("fixture code must score");
         let distant = first.score(&table, 1).expect("fixture code must score");
         assert!(exact > distant);
+    }
+
+    #[test]
+    fn adc_tables_support_similarity_metrics_with_finite_scores() {
+        let vectors = vectors();
+        let quantizer = ProductQuantizer::build(&vectors, 5, 3).expect("PQ must train");
+        let query = vectors
+            .get(17)
+            .expect("fixture ordinal must exist")
+            .decode();
+        for metric in [
+            crate::types::MetricType::Ip,
+            crate::types::MetricType::Cosine,
+            crate::types::MetricType::MipsL2,
+        ] {
+            let table = quantizer
+                .table(&query, metric)
+                .expect("similarity ADC table must build");
+            let score = quantizer
+                .score(&table, 17)
+                .expect("similarity ADC score must exist");
+            assert!(score.is_finite(), "metric={metric:?} score={score}");
+        }
     }
 
     #[test]
@@ -435,7 +530,7 @@ mod tests {
         assert_eq!(quantizer.codebook.centroid_count(), 0);
         assert!(quantizer.validates(&vectors, 7, 4));
         let table = quantizer
-            .table(&[0.0; 7])
+            .table(&[0.0; 7], crate::types::MetricType::L2)
             .expect("empty ADC table must build");
         assert!(quantizer.codebook.score(&table, &[0; 4]).is_none());
     }

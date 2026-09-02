@@ -402,19 +402,21 @@ fn live_ann_indexes_are_accepted_while_unused_build_parameters_fail_at_schema_bo
 }
 
 #[test]
-fn diskann_rejects_ambiguous_quantization_and_invalid_pq_shapes() {
+fn diskann_accepts_numeric_metrics_and_rejects_invalid_pq_shapes() {
     let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
         .expect("vector schema must be valid");
     let cosine = IndexParams::diskann(MetricType::Cosine, 32, 100, 2)
         .expect("descriptor must be syntactically valid");
-    let error = field
+    field
         .set_index_params(&cosine)
-        .expect_err("DiskANN must not approximate cosine as L2");
-    assert_eq!(error.code, ErrorCode::NotSupported);
+        .expect("DiskANN full ADC path must support cosine");
+    assert!(field.has_index());
 
     let too_many_chunks = IndexParams::diskann(MetricType::L2, 32, 100, 4)
         .expect("descriptor must be syntactically valid");
-    let error = field
+    let mut shape_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let error = shape_field
         .set_index_params(&too_many_chunks)
         .expect_err("PQ cannot create empty chunks");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
@@ -424,49 +426,61 @@ fn diskann_rejects_ambiguous_quantization_and_invalid_pq_shapes() {
     ambiguous
         .set_quantize_type(QuantizeType::Pq)
         .expect("quantization descriptor must be syntactically valid");
-    let error = field
+    let mut ambiguous_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let error = ambiguous_field
         .set_index_params(&ambiguous)
         .expect_err("DiskANN PQ must have one source of truth");
     assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!field.has_index());
+    assert!(!ambiguous_field.has_index());
 }
 
 #[test]
-fn vamana_rejects_unimplemented_metrics_and_pruning_controls() {
+fn vamana_accepts_all_numeric_metrics_and_rejects_unimplemented_controls() {
     let error = IndexParams::vamana(MetricType::L2, 32, 100, 0.9)
         .expect_err("Vamana alpha below one must fail");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
 
-    let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
-        .expect("vector schema must be valid");
-    let error = field
-        .set_index_params(
-            &IndexParams::vamana(MetricType::Cosine, 32, 100, 1.2)
-                .expect("descriptor must be syntactically valid"),
-        )
-        .expect_err("Vamana must not silently approximate cosine distance");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!field.has_index());
+    for metric in [
+        MetricType::L2,
+        MetricType::Ip,
+        MetricType::Cosine,
+        MetricType::MipsL2,
+    ] {
+        let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+            .expect("vector schema must be valid");
+        field
+            .set_index_params(
+                &IndexParams::vamana(metric, 32, 100, 1.2)
+                    .expect("descriptor must be syntactically valid"),
+            )
+            .expect("Vamana must accept every exact numeric metric");
+        assert!(field.has_index());
+    }
 
     let tuned = IndexParams::vamana(MetricType::L2, 32, 100, 1.2)
         .expect("descriptor must be valid")
         .with_parameter("max_occlusion", json!(4));
-    let error = field
+    let mut tuned_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let error = tuned_field
         .set_index_params(&tuned)
         .expect_err("unimplemented Vamana pruning controls must fail");
     assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!field.has_index());
+    assert!(!tuned_field.has_index());
 
     let mut quantized =
         IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid");
     quantized
         .set_quantize_type(QuantizeType::Int8)
         .expect("quantization descriptor must be syntactically valid");
-    let error = field
+    let mut quantized_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+        .expect("vector schema must be valid");
+    let error = quantized_field
         .set_index_params(&quantized)
         .expect_err("Vamana quantization must fail until it has an execution consumer");
     assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!field.has_index());
+    assert!(!quantized_field.has_index());
 }
 
 #[test]

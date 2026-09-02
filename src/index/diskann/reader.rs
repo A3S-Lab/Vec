@@ -134,7 +134,7 @@ impl FieldReader {
         let table = self
             .codebook
             .as_ref()
-            .map(|codebook| codebook.table(query))
+            .map(|codebook| codebook.table(query, metric))
             .transpose()?;
         let mut session = ReadSession::new(self);
         let search = greedy_search(
@@ -174,7 +174,7 @@ impl FieldReader {
         let table = self
             .codebook
             .as_ref()
-            .map(|codebook| codebook.table(query))
+            .map(|codebook| codebook.table(query, metric))
             .transpose()?;
         let mut session = ReadSession::new(self);
         let search = greedy_search(
