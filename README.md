@@ -40,9 +40,9 @@ complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The current engine and feature-matrix evidence in this repository are at
-[`03e4031f`](https://github.com/A3S-Lab/Vec/commit/03e4031f4e117c0dd8c467470dd711feda7c84ed),
+[`dbd4a75d`](https://github.com/A3S-Lab/Vec/commit/dbd4a75df4de5e02b4ddb106700617e686186a56),
 with the complete hosted gate recorded in
-[CI run 33656188603](https://github.com/A3S-Lab/Vec/actions/runs/33656188603).
+[CI run 33670661773](https://github.com/A3S-Lab/Vec/actions/runs/33670661773).
 Code intentionally keeps the older `019fdb929` shadow pin until its promotion
 workflow is qualified against the newer engine revision.
 
