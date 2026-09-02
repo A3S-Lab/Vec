@@ -13,7 +13,8 @@ exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
-[Reproducible benchmarks](BENCHMARKS.md)
+[Reproducible benchmarks](BENCHMARKS.md) ·
+[Release qualification](RELEASE.md)
 
 ## What it delivers
 

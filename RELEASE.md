@@ -1,0 +1,61 @@
+# Release Qualification
+
+`a3s-vec` is currently qualified as a `0.1.0` release candidate. A formal tag
+or registry publication must not be created until every release gate below is
+green for the same source revision.
+
+## Public API review
+
+The release-facing contract has the following boundaries:
+
+- `zvec-core` remains a private algorithm dependency and cannot be named
+  through the public crate surface.
+- Collection and process configuration use typed Rust values. Unsupported
+  controls and index/query combinations fail with typed errors before
+  mutation.
+- Public embedding and query-executor ports require `Send + Sync`. The
+  `public_api_contract` integration test also enforces `Send + Sync` for the
+  owned public handles, schemas, queries, values, statistics, and errors.
+- `unsafe_code = "deny"` remains active. The mmap option is an immutable
+  anonymous snapshot of a fully validated sidecar, not a mutable file-backed
+  mapping.
+- `version()`, the numeric version accessors, and `check_version()` are checked
+  against the package's `0.1.0` identity.
+
+## Reproducible candidate artifact
+
+After every required hosted CI job passes on `main`, the `Versioned release
+candidate` job runs `cargo package --locked`. It uploads these files in one
+revision-bound Actions artifact:
+
+- `a3s-vec-0.1.0.crate`;
+- `a3s-vec-0.1.0.crate.sha256`;
+- `a3s-vec-0.1.0.release.json`, which records the package version, source
+  revision, workflow run, and build runner.
+
+The same package can be reproduced locally without changing external state:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
+cargo doc --locked --no-deps --all-features
+cargo package --locked --offline
+cargo publish --dry-run --locked
+```
+
+The candidate artifact is not a crates.io publication and is not evidence of
+an actual macOS 12 Intel runtime.
+
+## Formal release blockers
+
+- Run the exact/FTS, recovery, async, and DiskANN smoke suite on an actual
+  Intel Mac running macOS 12. A deployment target or newer hosted Intel image
+  is insufficient.
+- Attach that machine-readable result to the release record and verify the
+  source revision matches the candidate artifact.
+- Re-run the Code migration and root compatibility-lock checks against that
+  same Vec revision before creating the formal tag and registry artifact.
+
+Until those gates pass, A3S Code keeps A3S Memory as the serving authority and
+uses Vec only as a failure-isolated differential shadow.

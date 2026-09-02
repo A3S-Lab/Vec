@@ -6,6 +6,8 @@ rust-version = "1.75"
 license = "MIT"
 authors = ["A3S Lab Team"]
 repository = "https://github.com/A3S-Lab/Vec"
+documentation = "https://docs.rs/a3s-vec"
+readme = "README.md"
 description = "Native Rust in-process vector database with zvec-compatible capabilities"
 keywords = ["a3s", "vector-database", "ann", "hnsw", "fts"]
 categories = ["database-implementations", "algorithms"]
@@ -101,3 +103,6 @@ pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
 return_self_not_must_use = "allow"
+
+[package.metadata.docs.rs]
+all-features = true

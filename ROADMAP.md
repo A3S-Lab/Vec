@@ -738,9 +738,15 @@ execution are implemented.
   authority and close releases both engines. The change-scoped schema-4
   `workspace-retrieval-v3` run retained 25,000 records in each hybrid arm and
   matched all 120 queries with zero failures or mismatches.
+- Completed release-candidate hardening: the final public API review keeps the
+  external kernel private, preserves `unsafe_code = "deny"`, and compile-checks
+  `Send + Sync` across the owned public contract. `cargo package --locked` and
+  `cargo publish --dry-run --locked` verify version `0.1.0`. After every hosted
+  gate passes on `main`, CI uploads the verified crate, SHA-256 checksum, and a
+  source-revision manifest as one versioned release-candidate artifact.
 - Remaining release work: an actual macOS 12 Intel runtime result from an
-  external runner, final migration/API review, and a versioned release
-  artifact. Logical collection accounting is not advertised as a process-RSS
+  external runner and publication of the formal tagged artifact against that
+  same revision. Logical collection accounting is not advertised as a process-RSS
   or hard CPU-time limit. The adapter contract and evidence are maintained in
   [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 

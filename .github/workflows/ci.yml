@@ -98,3 +98,49 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Run default plus Tokio async query suite
         run: cargo +stable test --locked --features async
+
+  release-candidate:
+    name: Versioned release candidate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality, msrv, recovery-fuzz, platform]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Resolve package version
+        id: package
+        shell: bash
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "a3s-vec") | .version')"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Build and verify locked crate package
+        run: cargo +stable package --locked
+      - name: Write checksum and release manifest
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          crate="target/package/a3s-vec-${PACKAGE_VERSION}.crate"
+          test -f "${crate}"
+          sha256sum "${crate}" > "${crate}.sha256"
+          jq -n \
+            --arg schema "a3s-vec-release-candidate-v1" \
+            --arg version "${PACKAGE_VERSION}" \
+            --arg revision "${GITHUB_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg runner_os "${RUNNER_OS}" \
+            --arg runner_arch "${RUNNER_ARCH}" \
+            '{schema: $schema, version: $version, revision: $revision, run_id: $run_id, runner: {os: $runner_os, arch: $runner_arch}}' \
+            > "target/package/a3s-vec-${PACKAGE_VERSION}.release.json"
+      - name: Upload revision-bound candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: a3s-vec-${{ steps.package.outputs.version }}-${{ github.sha }}
+          path: |
+            target/package/a3s-vec-${{ steps.package.outputs.version }}.crate
+            target/package/a3s-vec-${{ steps.package.outputs.version }}.crate.sha256
+            target/package/a3s-vec-${{ steps.package.outputs.version }}.release.json
+          if-no-files-found: error
+          retention-days: 30
