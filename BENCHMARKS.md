@@ -494,6 +494,24 @@ rebuild portion. In the two final observations, cache persistence added about
 27.9 ms to the initial close, less than the measured saving from one later
 open.
 
+The current format-10 implementation was re-run on 2026-09-02 with the same
+100,000-document, 32-dimensional scalar+FTS-only fixture. Each value below is
+the median of three independent process runs; each process used five warm
+read-only opens per row. The host was Windows x86_64 with an Intel Xeon
+w5-2445 and 128 GiB RAM. The documents-only row is the control for separating
+authoritative snapshot recovery from derived-index work.
+
+| Open mode | Median (ms) | Cache (bytes) | Snapshot (bytes) |
+| --- | ---: | ---: | ---: |
+| Documents only | 461.58 | 0 | 28,523,360 |
+| Valid scalar + FTS cache | 745.66 | 17,107,426 | 28,523,501 |
+| Forced scalar + FTS rebuild | 918.04 | 0 | 28,523,501 |
+
+The valid cache is 18.8% faster than rebuilding the scalar and FTS indexes on
+raw open time; the absolute difference is 172.38 ms. These numbers are warm
+page-cache observations, not a portable
+SLO, and they do not measure process RSS.
+
 As historical storage-codec evidence, immediately before format-4 MessagePack
 snapshots replaced format-3 JSON—and before the later bulk-freeze and
 derived-cache changes—the then-current ANN-only cache produced this paired run:
