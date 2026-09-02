@@ -554,11 +554,14 @@ impl Collection {
     }
 
     pub fn rename_column(&self, old_name: &str, new_name: &str) -> Result<()> {
-        if old_name == new_name {
-            return Ok(());
+        if old_name.trim().is_empty() || old_name.contains('\0') {
+            return Err(Error::invalid_argument("old field name is invalid"));
         }
         if new_name.trim().is_empty() || new_name.contains('\0') {
             return Err(Error::invalid_argument("new field name is invalid"));
+        }
+        if old_name == new_name {
+            return Ok(());
         }
         self.ensure_open()?;
         let _writer = self

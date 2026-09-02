@@ -54,6 +54,11 @@ cargo bench --locked --bench feature_matrix --features async
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
 ```
 
+The same CSV contract used by CI can be checked locally with
+`.github/check_feature_matrix.awk`; it requires all 53 operation names to be
+unique and every dimension, work, percentile, throughput, and work-per-sample
+column to be a finite positive number with monotonic p50/p95/p99 values.
+
 The following is a representative default-scale run on 2026-09-02 (Windows
 11 x86_64, Intel Xeon w5-2445, 128 GiB, Rust/Cargo 1.97.1). Values are local
 regression indicators, not portable SLOs; compare repeated runs on the same

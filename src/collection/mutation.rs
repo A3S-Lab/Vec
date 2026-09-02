@@ -72,10 +72,10 @@ impl Collection {
         let mut ids = Vec::new();
         let mut seen = HashSet::new();
         for pk in pks {
-            if pk.is_empty() {
+            if pk.is_empty() || pk.contains('\0') {
                 results.push(write_error(
                     ErrorCode::InvalidArgument,
-                    "primary key is empty",
+                    "primary key must be non-empty and contain no NUL byte",
                 ));
             } else if !seen.insert(*pk) {
                 results.push(write_error(

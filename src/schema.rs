@@ -417,32 +417,7 @@ pub struct FieldSchema {
 
 impl FieldSchema {
     pub fn new(name: &str, data_type: DataType, nullable: bool, dimension: u32) -> Result<Self> {
-        validate_name(name)?;
-        if data_type == DataType::Undefined {
-            return Err(Error::invalid_argument("field data type must be defined"));
-        }
-        if data_type.is_vector() && !data_type.is_sparse_vector() && dimension == 0 {
-            return Err(Error::invalid_argument(
-                "dense vector dimension must be positive",
-            ));
-        }
-        let binary_alignment = match data_type {
-            DataType::VectorBinary32 => Some(32),
-            DataType::VectorBinary64 => Some(64),
-            _ => None,
-        };
-        if let Some(alignment) = binary_alignment {
-            if dimension % alignment != 0 {
-                return Err(Error::invalid_argument(format!(
-                    "{data_type} dimension must be a multiple of {alignment}"
-                )));
-            }
-        }
-        if !data_type.is_vector() && dimension != 0 {
-            return Err(Error::invalid_argument(
-                "non-vector field dimension must be zero",
-            ));
-        }
+        validate_field_shape(name, data_type, dimension)?;
         Ok(Self {
             name: name.to_string(),
             data_type,
@@ -452,6 +427,7 @@ impl FieldSchema {
         })
     }
     pub fn set_index_params(&mut self, params: &IndexParams) -> Result<()> {
+        validate_field_shape(&self.name, self.data_type, self.dimension)?;
         validate_index_configuration(&self.name, self.data_type, self.dimension, params)?;
         self.index_params = Some(params.clone());
         Ok(())
@@ -568,6 +544,7 @@ impl CollectionSchema {
         &self.name
     }
     pub fn add_field(&mut self, field: &FieldSchema) -> Result<()> {
+        validate_field_shape(&field.name, field.data_type, field.dimension)?;
         self.ensure_unique(&field.name)?;
         if let Some(params) = &field.index_params {
             validate_index_configuration(&field.name, field.data_type, field.dimension, params)?;
@@ -585,6 +562,7 @@ impl CollectionSchema {
         Ok(())
     }
     pub fn add_vector_field(&mut self, field: &VectorSchema) -> Result<()> {
+        validate_field_shape(&field.name, field.data_type, field.dimension)?;
         self.ensure_unique(&field.name)?;
         if !field.data_type.is_vector() {
             return Err(Error::invalid_argument(
@@ -685,6 +663,7 @@ impl CollectionSchema {
         self.max_doc_count_per_segment
     }
     pub fn validate(&self) -> Result<()> {
+        validate_name(&self.name)?;
         if self.max_doc_count_per_segment != 0 {
             return Err(Error::not_supported(
                 "max_doc_count_per_segment requires a segmented storage executor",
@@ -697,6 +676,13 @@ impl CollectionSchema {
         }
         let mut names = BTreeSet::new();
         for field in &self.fields {
+            validate_field_shape(&field.name, field.data_type, field.dimension)?;
+            if field.data_type.is_vector() {
+                return Err(Error::invalid_argument(format!(
+                    "vector field '{}' must be stored in the vector schema list",
+                    field.name
+                )));
+            }
             if !names.insert(&field.name) {
                 return Err(Error::invalid_argument(format!(
                     "duplicate field name '{}'",
@@ -713,6 +699,13 @@ impl CollectionSchema {
             }
         }
         for field in &self.vectors {
+            validate_field_shape(&field.name, field.data_type, field.dimension)?;
+            if !field.data_type.is_vector() {
+                return Err(Error::invalid_argument(format!(
+                    "non-vector field '{}' must be stored in the scalar schema list",
+                    field.name
+                )));
+            }
             if !names.insert(&field.name) {
                 return Err(Error::invalid_argument(format!(
                     "duplicate field name '{}'",
@@ -835,6 +828,39 @@ fn validate_name(name: &str) -> Result<()> {
     if name.trim().is_empty() || name.contains('\0') {
         return Err(Error::invalid_argument(
             "name must be non-empty and contain no NUL byte",
+        ));
+    }
+    Ok(())
+}
+
+/// Validates the portion of a public field descriptor that must remain sound
+/// even when callers construct or deserialize the descriptor and then mutate
+/// its public fields directly.
+fn validate_field_shape(name: &str, data_type: DataType, dimension: u32) -> Result<()> {
+    validate_name(name)?;
+    if data_type == DataType::Undefined {
+        return Err(Error::invalid_argument("field data type must be defined"));
+    }
+    if data_type.is_vector() && !data_type.is_sparse_vector() && dimension == 0 {
+        return Err(Error::invalid_argument(
+            "dense vector dimension must be positive",
+        ));
+    }
+    let binary_alignment = match data_type {
+        DataType::VectorBinary32 => Some(32),
+        DataType::VectorBinary64 => Some(64),
+        _ => None,
+    };
+    if let Some(alignment) = binary_alignment {
+        if dimension % alignment != 0 {
+            return Err(Error::invalid_argument(format!(
+                "{data_type} dimension must be a multiple of {alignment}"
+            )));
+        }
+    }
+    if !data_type.is_vector() && dimension != 0 {
+        return Err(Error::invalid_argument(
+            "non-vector field dimension must be zero",
         ));
     }
     Ok(())

@@ -1,6 +1,6 @@
 use a3s_vec::{
     Collection, CollectionSchema, DataType, Doc, ErrorCode, FieldSchema, FieldValue, Fts,
-    IndexParams, SearchQuery,
+    IndexParams, SearchQuery, VectorSchema,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -74,6 +74,112 @@ fn dense_query_dimension_is_rejected_for_every_metric_and_numeric_vector_type() 
             assert!(error.message.contains("expected 3, got 2"));
         }
     }
+}
+
+#[test]
+fn externally_mutated_schema_descriptors_are_revalidated_before_execution() {
+    let mut malformed_scalar = FieldSchema::new("scalar", DataType::String, false, 0)
+        .expect("initial scalar descriptor must be valid");
+    malformed_scalar.dimension = 1;
+    let mut schema = CollectionSchema::new("shape-contract").expect("schema must be valid");
+    let error = schema
+        .add_field(&malformed_scalar)
+        .expect_err("a scalar dimension changed through a public field must be rejected");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let mut malformed_dense = FieldSchema::new("dense", DataType::VectorFp32, false, 3)
+        .expect("initial dense descriptor must be valid");
+    malformed_dense.dimension = 0;
+    let error = CollectionSchema {
+        name: "shape-contract".to_string(),
+        fields: Vec::new(),
+        vectors: vec![VectorSchema {
+            name: malformed_dense.name.clone(),
+            data_type: malformed_dense.data_type,
+            dimension: malformed_dense.dimension,
+            index_params: None,
+        }],
+        max_doc_count_per_segment: 0,
+    }
+    .validate()
+    .expect_err("a zero-dimensional dense vector must be rejected on validation");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let mut malformed_binary = VectorSchema::new("bits", DataType::VectorBinary32, 32)
+        .expect("initial binary descriptor must be valid");
+    malformed_binary.dimension = 40;
+    let error = CollectionSchema::new("shape-contract")
+        .expect("schema must be valid")
+        .add_vector_field(&malformed_binary)
+        .expect_err("binary dimensions must remain chunk-aligned after mutation");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let malformed_layout = CollectionSchema {
+        name: "shape-contract".to_string(),
+        fields: vec![
+            FieldSchema::new("wrong-list", DataType::VectorFp32, false, 3)
+                .expect("vector descriptor must be valid"),
+        ],
+        vectors: Vec::new(),
+        max_doc_count_per_segment: 0,
+    };
+    let error = malformed_layout
+        .validate()
+        .expect_err("vectors must not be smuggled into the scalar field list");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+    let malformed_name = CollectionSchema {
+        name: String::new(),
+        fields: vec![FieldSchema::new("value", DataType::String, false, 0)
+            .expect("field descriptor must be valid")],
+        vectors: Vec::new(),
+        max_doc_count_per_segment: 0,
+    };
+    let error = malformed_name
+        .validate()
+        .expect_err("a directly mutated collection name must be rejected");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn mutation_and_schema_rename_boundaries_reject_invalid_names() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("name-boundaries");
+    let collection = Collection::create(
+        path.to_str().expect("temporary path must be UTF-8"),
+        &contract_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let doc = valid_doc("doc-1");
+    collection
+        .insert(&[&doc])
+        .expect("document must be inserted");
+
+    let result = collection
+        .delete(&["doc-1\0suffix"])
+        .expect("invalid delete names must return per-document results");
+    assert_eq!(result.success_count, 0);
+    assert_eq!(result.error_count, 1);
+    assert_eq!(result.results[0].code, ErrorCode::InvalidArgument);
+    assert_eq!(collection.count().expect("count must succeed"), 1);
+
+    let error = collection
+        .rename_column("\0old", "new")
+        .expect_err("invalid old field names must fail before mutation");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    let error = collection
+        .rename_column("title", "")
+        .expect_err("invalid new field names must fail before mutation");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    let error = collection
+        .rename_column("", "")
+        .expect_err("invalid no-op field names must not be silently accepted");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(collection
+        .schema()
+        .expect("schema must remain readable")
+        .has_field("title"));
 }
 
 #[test]
