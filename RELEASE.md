@@ -27,6 +27,9 @@ The release-facing contract has the following boundaries:
   boundary against deterministic fixtures. Its smoke-scale performance CSV is
   a required hosted CI artifact; same-host p50/p95/p99 baselines are recorded
   in [`BENCHMARKS.md`](BENCHMARKS.md).
+- `SearchQueryBuilder` dense and pure-FTS routes are executed against the same
+  collection oracles, and `include_doc_id` is checked for deterministic,
+  generation-local ordinals across projections and reopen.
 
 ## Reproducible candidate artifact
 

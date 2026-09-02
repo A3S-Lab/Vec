@@ -1,4 +1,7 @@
-use a3s_vec::{Collection, CollectionSchema, DataType, Doc, ErrorCode, FieldSchema, SearchQuery};
+use a3s_vec::{
+    Collection, CollectionSchema, DataType, Doc, ErrorCode, FieldSchema, SearchQuery,
+    SearchQueryBuilder,
+};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -331,6 +334,81 @@ fn include_doc_id_resolves_the_generation_ordinal_and_survives_reopen() {
         })
         .collect();
     assert_eq!(reopened_ids, first_ids);
+}
+
+#[test]
+fn query_builder_dense_route_executes_controls_and_matches_direct_query() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection = Collection::create(
+        temporary
+            .path()
+            .join("builder-dense")
+            .to_str()
+            .expect("temporary path must be UTF-8"),
+        &vector_schema(DataType::VectorFp32, 4),
+        None,
+    )
+    .expect("collection must be created");
+    let cases = dense_cases();
+    insert_dense(&collection, &cases);
+    let query_vector = [0.75_f32, -1.25, 2.0, 0.5];
+
+    let mut direct = SearchQuery::new("embedding", &query_vector, 5).expect("query must be valid");
+    direct
+        .set_filter("bucket != 2")
+        .expect("direct filter must be valid");
+    direct
+        .set_include_vector(true)
+        .expect("direct vector projection must be valid");
+    direct
+        .set_include_doc_id(true)
+        .expect("direct document IDs must be valid");
+    direct
+        .set_output_fields(&["bucket", "embedding"])
+        .expect("direct projection must be valid");
+    let direct = collection
+        .query(&direct)
+        .expect("direct dense query must succeed");
+    let built = SearchQueryBuilder::new()
+        .field_name("embedding")
+        .vector(&query_vector)
+        .topk(5)
+        .filter("bucket != 2")
+        .include_vector(true)
+        .include_doc_id(true)
+        .output_fields(&["bucket", "embedding"])
+        .build()
+        .expect("dense builder route must be valid");
+    let filtered = collection
+        .query(&built)
+        .expect("dense builder route must execute");
+    assert_eq!(filtered.len(), 5);
+    assert!(filtered.iter().all(|doc| {
+        doc.doc_id().is_some()
+            && doc.vector("embedding").is_some()
+            && doc.get_i32("bucket").expect("bucket getter").is_some()
+    }));
+    assert_eq!(
+        filtered.iter().map(Doc::get_pk).collect::<Vec<_>>(),
+        direct.iter().map(Doc::get_pk).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        filtered.iter().map(Doc::get_score).collect::<Vec<_>>(),
+        direct.iter().map(Doc::get_score).collect::<Vec<_>>()
+    );
+    let mut expected = cases
+        .iter()
+        .filter(|case| case.bucket != 2)
+        .map(|case| {
+            (
+                case.id.clone(),
+                dense_score(&query_vector, &case.vector, "cosine"),
+            )
+        })
+        .collect::<Vec<_>>();
+    sort_reference(&mut expected);
+    expected.truncate(5);
+    assert_ranked_result(&filtered, &expected);
 }
 
 #[test]

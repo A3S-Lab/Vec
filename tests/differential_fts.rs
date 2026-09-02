@@ -299,6 +299,7 @@ fn query_builder_executes_fts_only_routes_and_rejects_ambiguous_routes() {
         .field_name("body")
         .fts_query_string("rust vector")
         .topk(1)
+        .include_doc_id(true)
         .output_fields(&["body"])
         .build()
         .expect("FTS query-string builder route must be valid");
@@ -312,6 +313,7 @@ fn query_builder_executes_fts_only_routes_and_rejects_ambiguous_routes() {
         .expect("FTS query-string builder route must execute");
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].get_pk(), Some("a"));
+    assert!(result[0].doc_id().is_some());
     assert_eq!(
         result[0].get_string("body").expect("body getter"),
         Some("rust vector".into())
