@@ -101,10 +101,11 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 257 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 254 unit/integration tests,
-and the feature gates remain separate. Formatting, default/all-feature
-Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
+all-feature baseline has 254 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 252 unit/integration tests
+plus four doctests, and the feature gates remain separate. Formatting,
+default/all-feature Clippy with `-D warnings`, and rustdoc are green. The full
+default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
 and `rmp` dependency ranges to compatible release lines; optional Jieba still
 requires a newer Cargo because its current compressed-dictionary chain uses
