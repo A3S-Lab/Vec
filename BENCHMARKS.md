@@ -118,6 +118,27 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
+The latest complete hosted run is [CI run 33654493402](https://github.com/A3S-Lab/Vec/actions/runs/33654493402)
+for revision `0767c6e06b75b27e2cfd44d6fad4a3fe2a5ca8de`. All ten jobs passed,
+including the versioned release-candidate package. The following compact
+extraction comes from its revision-bound platform artifacts. It uses the smoke
+fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
+contention fixtures use 8 queries and 2 rounds), so it is a portability
+snapshot rather than a production SLO. Latencies are p50 microseconds; the
+last column is the 8-reader mixed-workload read/write p50.
+
+| Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux arm64 | 16.209 | 41.961 | 22.881 | 39,037 | 87.12 / 101.75 |
+| Linux x86_64 | 18.103 | 48.119 | 26.289 | 29,820 | 184.95 / 196.44 |
+| macOS arm64 | 16.750 | 36.167 | 20.375 | 27,394 | 56.42 / 193.12 |
+| macOS Intel (hosted macOS 15) | 48.760 | 62.851 | 52.040 | 22,791 | 145.44 / 1,343.76 |
+| Windows x86_64 | 44.900 | 58.000 | 32.500 | 24,778 | 210.30 / 1,131.70 |
+
+Every contention row retained Recall@10 = 1.0000. The artifact also contains
+the full 53-row feature matrix and all percentile/throughput columns; the
+table only shows representative routes to keep platform differences legible.
+
 ## Concurrent query tail latency
 
 `benches/concurrent_queries.rs` complements the feature matrix with a shared

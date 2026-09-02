@@ -115,12 +115,18 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-**Verification refresh (2026-09-03):** Vec commit `2d73ef9` independently
-passes the all-feature and no-default suites, all compatibility examples,
-formatting, all-target checks, all-feature Clippy, locked packaging, and the
-53-row feature/concurrent/mixed benchmark validators on the local Windows
-x86_64 host. These checks do not replace the hosted platform artifacts or the
-actual macOS 12 Intel runtime gate described below.
+**Verification refresh (2026-09-03):** Vec revision `0767c6e` independently
+passes the all-feature and no-default suites (debug and release), the Rust
+1.75 no-default release suite, all compatibility examples, formatting,
+all-target checks, all-feature Clippy, locked packaging, and the complete
+local benchmark sweep: the 53-row feature matrix, concurrent readers, mixed
+read/write contention, ANN recall, filtered ANN, scalar filters, indexed FTS,
+incremental writes, reopen, n-gram FTS, and structured FTS. Their CSVs contain
+finite metrics and the three gate validators pass on the local Windows
+x86_64 host. Hosted revision-bound artifacts are recorded in
+[CI run 33654493402](https://github.com/A3S-Lab/Vec/actions/runs/33654493402),
+which passed all ten jobs. These checks do not replace the actual macOS 12
+Intel runtime gate described below.
 
 Phase 3's portable implementation gate is complete: per-handle deterministic
 fault injection covers all 18 write/sync/rename/prune boundaries, including
