@@ -61,9 +61,9 @@ to Vec commit
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`c6efdf5`](https://github.com/A3S-Lab/Vec/commit/c6efdf56f33e5b444824e912ba66ffa64718e9f4),
+[`daf69cd7`](https://github.com/A3S-Lab/Vec/commit/daf69cd7cd794d9d6f25d9f2ba2ed465f4adee2b),
 with the complete hosted gate recorded in
-[CI run 33627554447](https://github.com/A3S-Lab/Vec/actions/runs/33627554447);
+[CI run 33628336581](https://github.com/A3S-Lab/Vec/actions/runs/33628336581);
 the older adapter pin remains deliberate until Code's promotion workflow is
 qualified against that revision.
 

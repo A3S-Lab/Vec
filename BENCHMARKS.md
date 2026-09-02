@@ -9,6 +9,47 @@ concurrency levels.
 Environment for the 2026-08-30 and 2026-08-31 measurements: Apple M5, 16 GiB
 memory, Darwin arm64, Rust/Cargo 1.98.0.
 
+## Cross-project smoke comparison: a3s-vec and zvec
+
+This is a supplemental, same-host API comparison recorded on 2026-09-02. It
+is not the release gate and is not a substitute for a VectorDBBench run at
+production scale. Both implementations used direct Rust APIs, a vector-only
+schema, the same deterministic vector generator as `ann_recall`, 2,000
+documents, 32 dimensions, 48 top-10 queries, five measured rounds, cosine
+distance, and one worker thread. Index construction is timed separately from
+query execution; queries include one warmup and result decoding is limited to
+primary-key collection. The host was Windows x86_64 with an Intel Xeon w5-2445,
+128 GiB RAM, and Rust/Cargo 1.97.1. Each row is the median of three process
+runs, so the values are regression evidence rather than an SLO.
+
+| Engine / mode | Build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS at p50 | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 44.0 | 176.6 | 225.4 | 261.4 | 5,663 | 1.0000 |
+| zvec 0.7.0 flat | 96.4 | 198.0 | 237.6 | 265.2 | 5,051 | 1.0000 |
+| a3s-vec HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 602.5 | 126.6 | 151.6 | 182.6 | 7,899 | 1.0000 |
+| zvec 0.7.0 HNSW (same nominal controls) | 191.2 | 187.2 | 224.1 | 244.2 | 5,342 | 0.9979 |
+
+On this fixture, a3s-vec's median query latency is about 11% lower for flat
+and 32% lower for HNSW. zvec's HNSW build is about 3.2x faster, while the
+a3s-vec flat path builds about 2.2x faster. The build comparison is directional:
+a3s-vec maintains its graph during inserts, whereas zvec's run includes its
+post-insert optimize step, and the two engines have different persistence and
+index lifecycle semantics. The a3s-vec release `ann_recall` gate uses its
+authoritative HNSW refiner; this cross-project smoke run disables refinement in
+both engines so that the query controls are closer. It therefore must not be
+read as a replacement for the release-gate numbers above.
+
+For scale context, zvec's published benchmark page evaluates Cohere 1M and
+10M (768-dimensional) with QPS, recall, and load duration using VectorDBBench;
+its reproduction commands pin the historical `zvec==v0.1.1` package. The
+published results and environment are documented in the
+[official zvec benchmark report](https://zvec.org/en/docs/db/benchmarks/).
+Zvec's newer DiskANN report uses a 16-vCPU/64-GiB host and reports Cohere 1M
+single-thread QPS of 238.2/142.9/94.3 at list sizes 100/300/500, with Recall@10
+of 98.30/99.49/99.67%; those disk-backed numbers are not comparable to this
+in-memory 2,000-vector smoke test. See the
+[official DiskANN analysis](https://zvec.org/en/blog/2026-08-04-zvec-diskann/).
+
 ## Public feature matrix and performance gate
 
 The release gate now has one small, deterministic matrix for the public
