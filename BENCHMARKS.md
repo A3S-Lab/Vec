@@ -899,8 +899,8 @@ another structured estimate reaches three quarters, unless a scalar bitmap
 already narrows the eligible documents. Telemetry confirms that both broad rows
 selected the same exact scan path as their controls.
 
-A representative cross-project benchmark suite, larger corpora, sustained
-mixed read/write workloads, allocator-aware memory accounting, and concurrent
-tail-latency reporting remain Phase 7 work. The ANN fixture above provides a
-single-process latency distribution and deterministic encoded-payload estimate,
-not those broader claims.
+A broader representative cross-project benchmark suite, larger corpora,
+sustained mixed read/write workloads, and allocator-aware/process-level memory
+accounting remain Phase 7 work. The cross-project smoke table and concurrent
+reader fixture above provide bounded comparison and read-contention evidence;
+they are not a replacement for those larger-scale or mixed-workload claims.
