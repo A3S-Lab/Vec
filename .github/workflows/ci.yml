@@ -52,19 +52,23 @@ jobs:
       - name: Run smoke matrix and capture CSV
         env:
           A3S_VEC_BENCH_SCALE: smoke
+          RAYON_NUM_THREADS: 1
         run: |
           mkdir -p target/performance
           cargo +stable bench --locked --bench feature_matrix --features async --quiet \
             | tee target/performance/feature-matrix.csv
+          cargo +stable bench --locked --bench concurrent_queries --quiet \
+            | tee target/performance/concurrent-queries.csv
       - name: Verify complete matrix metrics
         shell: bash
         run: |
           awk -F, -f .github/check_feature_matrix.awk target/performance/feature-matrix.csv
+          awk -F, -f .github/check_concurrent.awk target/performance/concurrent-queries.csv
       - name: Upload feature matrix
         uses: actions/upload-artifact@v4
         with:
-          name: a3s-vec-feature-matrix-${{ github.sha }}
-          path: target/performance/feature-matrix.csv
+          name: a3s-vec-performance-${{ github.sha }}
+          path: target/performance/*.csv
           if-no-files-found: error
           retention-days: 30
 

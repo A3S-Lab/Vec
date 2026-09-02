@@ -516,6 +516,8 @@ Reproducible performance fixtures:
 ```sh
 cargo bench --locked --bench feature_matrix --features async
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
+cargo bench --locked --bench concurrent_queries
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench concurrent_queries
 cargo bench --bench ann_recall
 cargo bench --bench filtered_ann
 cargo bench --bench scalar_filter

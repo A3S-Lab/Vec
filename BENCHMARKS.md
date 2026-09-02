@@ -100,6 +100,38 @@ The same CSV contract used by CI can be checked locally with
 unique and every dimension, work, percentile, throughput, and work-per-sample
 column to be a finite positive number with monotonic p50/p95/p99 values.
 
+## Concurrent query tail latency
+
+`benches/concurrent_queries.rs` complements the feature matrix with a shared
+HNSW collection queried concurrently by 1, 2, 4, and 8 workers. A barrier starts
+all workers together; every worker executes the same deterministic top-10 query
+set for the configured number of rounds. The report includes index build time,
+Recall@10 against a flat oracle, nearest-rank p50/p95/p99 per-query latency,
+and wall-clock QPS. The default fixture is 2,000 documents x 32 dimensions,
+48 queries, and five rounds. CI uses the smoke scale (96 x 8, eight queries,
+two rounds) and validates the CSV with `.github/check_concurrent.awk`.
+
+```sh
+cargo bench --locked --bench concurrent_queries --quiet
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench concurrent_queries --quiet
+```
+
+Set `A3S_VEC_CONCURRENCY` to a comma-separated positive worker list (for
+example, `1,2,4,8`) and use the `A3S_VEC_CONCURRENT_*` variables to select a
+larger fixture. This is read-only query contention evidence. It does not claim
+mixed read/write behavior, process RSS, or a portable latency SLO; those remain
+separate roadmap measurements.
+
+A repeated default-scale run on the Windows host above (three process runs,
+median per worker count, `RAYON_NUM_THREADS=1`) produced:
+
+| Workers | HNSW build (ms) | Recall@10 | p50 (µs) | p95 (µs) | p99 (µs) | QPS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 395.7 | 1.0000 | 125.7 | 168.3 | 225.0 | 7,553 |
+| 2 | 395.7 | 1.0000 | 130.8 | 174.3 | 257.8 | 14,331 |
+| 4 | 395.7 | 1.0000 | 131.9 | 176.8 | 215.6 | 28,131 |
+| 8 | 395.7 | 1.0000 | 139.6 | 213.9 | 296.7 | 45,231 |
+
 The following is a representative default-scale run on 2026-09-02 (Windows
 11 x86_64, Intel Xeon w5-2445, 128 GiB, Rust/Cargo 1.97.1). Values are local
 regression indicators, not portable SLOs; compare repeated runs on the same

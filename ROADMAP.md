@@ -770,6 +770,13 @@ execution are implemented.
   The smoke-scale CSV is
   uploaded by CI and is a correctness
   gate; same-host default-scale values are recorded in `BENCHMARKS.md`.
+- Completed in the engine: `benches/concurrent_queries.rs` starts synchronized
+  1/2/4/8-worker HNSW readers and records index-build time, flat-oracle
+  Recall@10, nearest-rank p50/p95/p99 query latency, and wall-clock QPS. The
+  smoke CSV is validated by `.github/check_concurrent.awk` and uploaded with
+  the public performance artifact. This closes concurrent read-tail evidence;
+  mixed read/write, allocator RSS, and cross-project scale measurements remain
+  separate roadmap work.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
   `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
