@@ -61,12 +61,15 @@ jobs:
             | tee target/performance/concurrent-queries.csv
           cargo +stable bench --locked --bench mixed_workload --quiet \
             | tee target/performance/mixed-workload.csv
+          cargo +stable bench --locked --bench scale_compare --quiet \
+            | tee target/performance/scale-compare.csv
       - name: Verify complete matrix metrics
         shell: bash
         run: |
           awk -F, -f .github/check_feature_matrix.awk target/performance/feature-matrix.csv
           awk -F, -f .github/check_concurrent.awk target/performance/concurrent-queries.csv
           awk -F, -f .github/check_mixed.awk target/performance/mixed-workload.csv
+          awk -F, -f .github/check_scale_compare.awk target/performance/scale-compare.csv
       - name: Upload feature matrix
         uses: actions/upload-artifact@v4
         with:
@@ -153,6 +156,8 @@ jobs:
             > "${output}/concurrent-queries.csv"
           cargo +stable bench --locked --bench mixed_workload --quiet \
             > "${output}/mixed-workload.csv"
+          cargo +stable bench --locked --bench scale_compare --quiet \
+            > "${output}/scale-compare.csv"
       - name: Verify platform performance metrics
         shell: bash
         run: |
@@ -160,6 +165,7 @@ jobs:
           awk -F, -f .github/check_feature_matrix.awk "${output}/feature-matrix.csv"
           awk -F, -f .github/check_concurrent.awk "${output}/concurrent-queries.csv"
           awk -F, -f .github/check_mixed.awk "${output}/mixed-workload.csv"
+          awk -F, -f .github/check_scale_compare.awk "${output}/scale-compare.csv"
       - name: Upload platform performance evidence
         uses: actions/upload-artifact@v4
         with:

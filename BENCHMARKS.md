@@ -39,6 +39,79 @@ authoritative HNSW refiner; this cross-project smoke run disables refinement in
 both engines so that the query controls are closer. It therefore must not be
 read as a replacement for the release-gate numbers above.
 
+## Larger-corpus scale comparison
+
+`benches/scale_compare.rs` and `scripts/scale_compare_zvec.py` provide a
+repeatable larger-corpus comparison. They share a SplitMix64 `f32` generator,
+document IDs, query schedule, batch size, cosine metric, HNSW `m`,
+`ef_construction`, `ef`, nearest-rank percentiles, and Recall@10 calculation.
+The Rust benchmark is dependency-free and is included in the smoke CI gate;
+the Python companion is an opt-in local tool because zvec wheels are
+platform-specific. Both tools emit the same 20-column CSV contract, including
+all HNSW construction and search controls.
+
+The following single-process snapshot was collected on 2026-09-03 on the same
+Windows x86_64 Intel Xeon w5-2445 host (128 GiB RAM). The fixture has 100,000
+documents x 128 dimensions, 32 queries, three measured rounds, batches of
+512, one query/build worker, cosine distance, and HNSW `m=16`,
+`ef_construction=96`, `ef=64`. Refinement and zvec post-optimize were disabled.
+The a3s-vec run used manual durability; `insert_ms` includes the initial
+insert-plus-flush/checkpoint boundary in both harnesses, while index lifecycle
+timings are reported separately. Percentiles are based on 96 samples, so this
+is a scale indicator rather than an SLO or a multi-run confidence interval.
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (us) | p95 (us) | p99 (us) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 6,288.918 | 0 | 6,288.918 | 51,140.100 | 63,088.200 | 81,376.700 | 19.22 | 1.0000 |
+| zvec 0.7.0 flat | 2,809.454 | 0 | 2,809.454 | 5,645.200 | 6,085.700 | 7,138.000 | 175.42 | 1.0000 |
+| a3s-vec HNSW | 6,288.918 | 235,088.473 | 241,377.391 | 2,192.700 | 3,253.800 | 3,744.400 | 430.34 | 0.6000 |
+| zvec 0.7.0 HNSW | 2,809.454 | 80,129.048 | 82,938.502 | 413.400 | 632.400 | 747.700 | 2,281.46 | 0.5844 |
+
+At this corpus size and configuration, zvec's flat query p50 is 9.1x lower,
+and its HNSW query p50 is 5.3x lower; zvec's HNSW build is 2.9x shorter. On
+this particular query set a3s-vec's HNSW Recall@10 is 1.56 percentage points
+higher at `ef=64`, despite the higher latency, so latency comparisons must
+always retain the recall column. These results do not establish a
+universal engine ranking: they are one host, one corpus, one worker, and one
+parameter point. The HNSW build lifecycle also differs: a3s-vec maintains and
+checkpoints its graph during the index-creation transaction, while the zvec
+call has different persistence and post-insert lifecycle semantics. Repeat the
+run with identical durability and optimize policies before using it for a
+capacity decision.
+
+Run the Rust side at smoke or selected scale with:
+
+```sh
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench scale_compare --quiet
+A3S_VEC_SCALE_DOCUMENTS=100000 \
+A3S_VEC_SCALE_DIMENSIONS=128 \
+A3S_VEC_SCALE_QUERIES=32 \
+A3S_VEC_SCALE_ROUNDS=3 \
+A3S_VEC_SCALE_BATCH_SIZE=512 \
+A3S_VEC_SCALE_MODE=both \
+RAYON_NUM_THREADS=1 \
+cargo bench --locked --bench scale_compare --quiet
+```
+
+Run the zvec companion from an environment containing zvec 0.7.0 and NumPy:
+
+```sh
+python scripts/scale_compare_zvec.py \
+  --documents 100000 --dimensions 128 --queries 32 --rounds 3 \
+  --batch-size 512 --ef-search 64 --hnsw-m 16 \
+  --ef-construction 96 --mode both
+```
+
+On Unix, validate a Rust CSV before recording it:
+
+```sh
+awk -F, -f .github/check_scale_compare.awk scale-compare.csv
+```
+
+The same validator accepts the zvec companion CSV (`engine` must be either
+`a3s-vec` or `zvec`), so both sides can be checked before a comparison is
+recorded.
+
 For scale context, zvec's published benchmark page evaluates Cohere 1M and
 10M (768-dimensional) with QPS, recall, and load duration using VectorDBBench;
 its reproduction commands pin the historical `zvec==v0.1.1` package. The
@@ -103,9 +176,9 @@ column to be a finite positive number with monotonic p50/p95/p99 values.
 ## Cross-platform smoke performance evidence
 
 The CI platform matrix runs the same smoke-scale feature, concurrent-reader,
-and mixed-read/write benches on Linux x86_64, Linux arm64, Windows x86_64,
-macOS arm64, and macOS Intel. Each platform validates its three CSVs with the
-same AWK gates and uploads them as a revision-bound artifact named
+mixed-read/write, and scale benches on Linux x86_64, Linux arm64, Windows
+x86_64, macOS arm64, and macOS Intel. Each platform validates its four CSVs
+with the same AWK gates and uploads them as a revision-bound artifact named
 `a3s-vec-platform-performance-<platform>-<revision>`. This catches platform-
 specific regressions in latency, throughput, ANN recall, and mixed-workload
 revision/accounting behavior instead of treating a single Linux run as

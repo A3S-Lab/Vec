@@ -10,7 +10,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"A3VW";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
+const MIN_READABLE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 4 + 4;
 const MAX_WAL_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WAL_REPLAY_BYTES: u64 = 512 * 1024 * 1024;
@@ -53,6 +54,15 @@ pub enum WalOperation {
     Schema {
         schema: crate::schema::CollectionSchema,
         docs: Vec<Doc>,
+    },
+    /// Persists a schema revision when the document set is unchanged.
+    ///
+    /// Index creation and removal only mutate the schema. Keeping that
+    /// operation separate from [`WalOperation::Schema`] avoids serializing
+    /// the complete document set into one WAL frame (which is bounded by
+    /// `MAX_WAL_FRAME_BYTES`).
+    SchemaOnly {
+        schema: crate::schema::CollectionSchema,
     },
 }
 
@@ -198,7 +208,7 @@ pub fn replay(
                 return Err(Error::internal("WAL magic mismatch"));
             }
             let version = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]);
-            if version != VERSION {
+            if !(MIN_READABLE_VERSION..=VERSION).contains(&version) {
                 return Err(Error::new(
                     crate::error::ErrorCode::NotSupported,
                     format!("unsupported WAL frame version {version}"),
@@ -231,8 +241,14 @@ pub fn replay(
             if crc32fast::hash(payload) != expected_crc {
                 return Err(Error::internal("WAL checksum mismatch"));
             }
-            let record = serde_json::from_slice(payload)
+            let record: WalRecord = serde_json::from_slice(payload)
                 .map_err(|e| Error::internal(format!("decode WAL record: {e}")))?;
+            if version < VERSION && matches!(record.operation, WalOperation::SchemaOnly { .. }) {
+                return Err(Error::new(
+                    crate::error::ErrorCode::NotSupported,
+                    "schema-only WAL operations require frame version 4",
+                ));
+            }
             validate_record(&record)?;
             records.push(record);
             offset = frame_end;

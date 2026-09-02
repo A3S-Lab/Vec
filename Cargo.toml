@@ -110,6 +110,10 @@ harness = false
 name = "mixed_workload"
 harness = false
 
+[[bench]]
+name = "scale_compare"
+harness = false
+
 [lints.rust]
 unsafe_code = "deny"
 

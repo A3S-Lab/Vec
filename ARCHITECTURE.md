@@ -468,11 +468,14 @@ before switching the manifest, so interruption leaves either the complete old
 format or the complete new format recoverable. Cleanup recognizes both file
 extensions and prunes only generations not named by the committed manifest.
 
-Schema and backfilled documents are carried in the schema WAL operation until
-the immediately following checkpoint publishes their snapshot. This keeps a
-single replay transaction authoritative while the schema-change encoding is
-still a prototype; a more compact schema delta format may replace it only with
-equivalent recovery tests.
+Schema changes that alter documents and backfill values are carried in the
+schema WAL operation until the immediately following checkpoint publishes
+their snapshot. Index lifecycle and other metadata-only revisions use the
+schema-only WAL operation and retain the already-authoritative document map
+during replay. This distinction keeps one replay transaction authoritative
+without placing a large unchanged document set into a single WAL frame; the
+individual frame remains bounded at 64 MiB. Any future schema-delta encoding
+must preserve the same atomic recovery tests.
 
 `indexes/index-cache.bin` and `indexes/diskann-graph.bin` are never referenced
 by the manifest and are never commit points. Cache format 10 stores the shared
@@ -559,7 +562,9 @@ HNSW/IVF/RaBitQ/Vamana/DiskANN rebuilds and `optimize()` refresh it after public
 
 Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
 committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
-deserialization. The format is versioned and checksummed. Compatibility with
+deserialization. WAL frame version 4 adds the schema-only operation while
+retaining readability for version-3 frames. The format is versioned and
+checksummed. Compatibility with
 the Alibaba C++ binary files is provided through an explicit importer/exporter
 milestone; the native format is not silently interpreted as a different
 schema. Prototype formats 1 and 2 are rejected. Format 3 introduced raw
@@ -823,12 +828,12 @@ The external Intel gate has a separate manual workflow. It accepts an exact
 or revision-mismatched hosts before testing. After a locked dependency fetch,
 formatting, strict Clippy, default/all-feature tests, examples, rustdoc, and
 package verification run offline, it executes and validates the feature-matrix,
-concurrent-reader, and mixed-workload smoke benchmarks. The workflow uploads a
-checksummed crate, the three performance CSVs, and a machine-readable
+concurrent-reader, mixed-workload, and scale-comparison smoke benchmarks. The workflow uploads a
+checksummed crate, the four performance CSVs, and a machine-readable
 host/revision report, so a newer hosted Intel image cannot be mistaken for
 Monterey evidence.
 
-The ordinary CI platform matrix runs those same three smoke benchmarks on
+The ordinary CI platform matrix runs those same four smoke benchmarks on
 Linux x86_64/arm64, Windows x86_64, and macOS arm64/Intel, with one validated,
 revision-bound CSV artifact per platform. This is cross-platform regression
 evidence; the hosted macOS Intel image still does not satisfy the macOS 12

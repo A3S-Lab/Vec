@@ -222,6 +222,143 @@ fn schema_wal_record_recovers_schema_and_backfilled_documents() {
 }
 
 #[test]
+fn schema_only_wal_record_recovers_schema_without_replacing_documents() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let root = temporary.path().join("collection");
+    let initial_schema = schema();
+    let mut next_schema = initial_schema.clone();
+    next_schema
+        .add_index(
+            "title",
+            &crate::schema::IndexParams::invert(false, false)
+                .expect("test index params must be valid"),
+        )
+        .expect("test index change must be valid");
+    let stored_doc = doc("doc-1");
+
+    let mut storage =
+        StorageHandle::create(&root, &initial_schema, false).expect("storage must be created");
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![stored_doc.clone()],
+            },
+            &ConfigBuilder::default(),
+        )
+        .expect("document WAL record must commit");
+    storage
+        .append(
+            2,
+            WalOperation::SchemaOnly {
+                schema: next_schema.clone(),
+            },
+            &ConfigBuilder::default(),
+        )
+        .expect("schema-only WAL record must commit");
+    drop(storage);
+
+    let (recovered, recovered_schema, docs) =
+        StorageHandle::open(&root, false).expect("schema-only WAL must recover");
+    assert_eq!(recovered.manifest.revision, 2);
+    assert_eq!(recovered_schema, next_schema);
+    assert_eq!(docs, [stored_doc]);
+}
+
+#[test]
+fn legacy_v3_wal_frames_replay_after_wal_format_upgrade() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let root = temporary.path().join("collection");
+    let initial_schema = schema();
+    let mut next_schema = initial_schema.clone();
+    next_schema
+        .add_index(
+            "title",
+            &crate::schema::IndexParams::invert(false, false)
+                .expect("test index params must be valid"),
+        )
+        .expect("test index change must be valid");
+    let stored_doc = doc("doc-1");
+    let mut storage =
+        StorageHandle::create(&root, &initial_schema, false).expect("storage must be created");
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![stored_doc.clone()],
+            },
+            &ConfigBuilder::default(),
+        )
+        .expect("WAL append must commit");
+    storage
+        .append(
+            2,
+            WalOperation::Schema {
+                schema: next_schema.clone(),
+                docs: vec![stored_doc.clone()],
+            },
+            &ConfigBuilder::default(),
+        )
+        .expect("legacy-compatible schema WAL append must commit");
+    let wal_path = wal::segment_path(&root, storage.manifest.wal_active_seq);
+    drop(storage);
+
+    let mut bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
+    // Each frame header stores the version as a little-endian u16 at offset 4.
+    bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    let first_payload_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
+    let second_header = 14usize
+        .checked_add(first_payload_len)
+        .expect("test frame offset must fit usize");
+    bytes[second_header + 4..second_header + 6].copy_from_slice(&3_u16.to_le_bytes());
+    std::fs::write(&wal_path, bytes).expect("legacy WAL frame must be writable");
+
+    let (recovered, recovered_schema, docs) =
+        StorageHandle::open(&root, false).expect("version-3 WAL frames must remain readable");
+    assert_eq!(recovered.manifest.revision, 2);
+    assert_eq!(recovered_schema, next_schema);
+    assert_eq!(docs, [stored_doc]);
+}
+
+#[test]
+fn legacy_v3_wal_frame_rejects_schema_only_operations() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let root = temporary.path().join("collection");
+    let mut next_schema = schema();
+    next_schema
+        .add_index(
+            "title",
+            &crate::schema::IndexParams::invert(false, false)
+                .expect("test index params must be valid"),
+        )
+        .expect("test index change must be valid");
+    let mut storage =
+        StorageHandle::create(&root, &schema(), false).expect("storage must be created");
+    storage
+        .append(
+            1,
+            WalOperation::SchemaOnly {
+                schema: next_schema,
+            },
+            &ConfigBuilder::default(),
+        )
+        .expect("schema-only WAL append must commit");
+    let wal_path = wal::segment_path(&root, storage.manifest.wal_active_seq);
+    drop(storage);
+
+    let mut bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
+    bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    std::fs::write(&wal_path, bytes).expect("legacy WAL frame must be writable");
+
+    let error = StorageHandle::open(&root, false)
+        .expect_err("version-3 frames must not carry version-4 operations");
+    assert_eq!(error.code, crate::error::ErrorCode::NotSupported);
+    assert!(error
+        .message
+        .contains("schema-only WAL operations require frame version 4"));
+}
+
+#[test]
 fn committed_wal_checksum_corruption_is_rejected() {
     let temporary = tempdir().expect("temporary directory must be available");
     let root = temporary.path().join("collection");

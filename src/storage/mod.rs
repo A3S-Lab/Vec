@@ -364,6 +364,13 @@ fn apply_operation(
             *schema = next;
             *docs = next_docs;
         }
+        WalOperation::SchemaOnly { schema: next } => {
+            next.validate()?;
+            if next.name != schema.name {
+                return Err(Error::internal("WAL schema name mismatch"));
+            }
+            *schema = next;
+        }
     }
     Ok(())
 }

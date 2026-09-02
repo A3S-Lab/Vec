@@ -20,7 +20,11 @@ fuzz_target!(|input: &[u8]| {
 
     let targets = [
         root.join("manifest.json"),
-        root.join("segments/snapshot-00000000000000000001.json"),
+        // Writable collections use the current format-4 MessagePack
+        // snapshot. Keeping the target aligned with the seeded layout is
+        // important: a missing legacy path would make every fuzz input a
+        // silent no-op after initialization.
+        root.join("segments/snapshot-00000000000000000001.bin"),
         root.join("wal/wal-00000000000000000001.bin"),
     ];
     let target = &targets[usize::from(input[0]) % targets.len()];

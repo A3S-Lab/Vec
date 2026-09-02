@@ -61,9 +61,13 @@ A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
 A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
     cargo +stable bench --locked --bench mixed_workload --quiet \
     > "${performance_dir}/mixed-workload.csv"
+A3S_VEC_BENCH_SCALE=smoke RAYON_NUM_THREADS=1 \
+    cargo +stable bench --locked --bench scale_compare --quiet \
+    > "${performance_dir}/scale-compare.csv"
 awk -F, -f .github/check_feature_matrix.awk "${performance_dir}/feature-matrix.csv"
 awk -F, -f .github/check_concurrent.awk "${performance_dir}/concurrent-queries.csv"
 awk -F, -f .github/check_mixed.awk "${performance_dir}/mixed-workload.csv"
+awk -F, -f .github/check_scale_compare.awk "${performance_dir}/scale-compare.csv"
 
 package_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | sed -n '1p')
 [ -n "${package_version}" ] || fail "package version could not be resolved"

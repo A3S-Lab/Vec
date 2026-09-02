@@ -101,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 263 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 260 unit/integration tests
+all-feature baseline has 266 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 263 unit/integration tests
 plus four doctests, and the feature gates remain separate. Formatting,
 default/all-feature Clippy with `-D warnings`, and rustdoc are green. The full
 default-feature suite
@@ -120,13 +120,21 @@ passes the all-feature and no-default suites (debug and release), the Rust
 1.75 no-default release suite, all compatibility examples, formatting,
 all-target checks, all-feature Clippy, locked packaging, and the complete
 local benchmark sweep: the 53-row feature matrix, concurrent readers, mixed
-read/write contention, ANN recall, filtered ANN, scalar filters, indexed FTS,
-incremental writes, reopen, n-gram FTS, and structured FTS. Their CSVs contain
-finite metrics and the three gate validators pass on the local Windows
-x86_64 host. Hosted revision-bound artifacts are recorded in
+read/write contention, scale comparison, ANN recall, filtered ANN, scalar
+filters, indexed FTS, incremental writes, reopen, n-gram FTS, and structured
+FTS. Their CSVs contain finite metrics and the four gate validators pass on the
+local Windows x86_64 host (with the Unix validator under WSL where needed).
+Hosted revision-bound artifacts are recorded in
 [CI run 33656188603](https://github.com/A3S-Lab/Vec/actions/runs/33656188603),
 which passed all ten jobs. These checks do not replace the actual macOS 12
 Intel runtime gate described below.
+
+The scale-comparison harness now has a reproducible 20-column CSV contract;
+the recorded 100,000-document run is documented in `BENCHMARKS.md`, and its
+Rust smoke row is validated in every hosted platform job. The zvec companion is
+kept opt-in because its native wheel is platform-specific; its measurements
+must retain the same recall and lifecycle controls before being used for a
+capacity decision.
 
 Phase 3's portable implementation gate is complete: per-handle deterministic
 fault injection covers all 18 write/sync/rename/prune boundaries, including
@@ -795,9 +803,16 @@ execution are implemented.
   write p50/p95/p99, wall-clock QPS, Recall@10, final revision, and logical
   accounted bytes. The 19-column smoke CSV is validated by
   `.github/check_mixed.awk` and uploaded with the public performance artifact.
-  Vector-index mutation remains covered by `incremental_write`; process RSS,
-  allocator attribution, and cross-project large-corpus scale remain separate
-  external measurements.
+  Vector-index mutation remains covered by `incremental_write`; the new
+  `scale_compare` smoke gate records build time, p50/p95/p99, QPS, and
+  Recall@10 for a configurable larger-corpus fixture, while the zvec companion
+  remains an opt-in external-wheel measurement. Process RSS and allocator
+  attribution remain OS-specific external measurements.
+- Completed in the engine: metadata-only schema revisions emit a compact
+  schema-only WAL operation instead of copying every unchanged document into a
+  single 64 MiB-bounded frame. Recovery tests cover schema-only replay and the
+  scale benchmark now reaches 100,000-document HNSW builds without a WAL frame
+  overflow.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
   `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
@@ -819,7 +834,7 @@ execution are implemented.
   revision only on a self-hosted runner labeled `a3s-macos-12`. Its reusable
   script rejects any host that is not actual macOS 12 on Intel x86-64, runs the
   locked format, Clippy, default/all-feature, recovery, async, DiskANN, example,
-  rustdoc, package, and all three smoke-scale performance fixtures with the
+  rustdoc, package, and all four smoke-scale performance fixtures with the
   hosted CSV validators offline, and emits checksummed machine-readable
   evidence. No qualifying runner is currently registered, so this automation
   does not close the hardware gate by itself.
@@ -833,9 +848,10 @@ execution are implemented.
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, unit/integration/fuzz
   smoke tests, recovery suite, `cargo bench --locked --bench feature_matrix
-  --features async`, `concurrent_queries`, and `mixed_workload` (smoke scale
-  in CI), benchmark report, and Intel macOS 12 runtime smoke all pass. No
-  feature is advertised unless its gate has evidence.
+  --features async`, `concurrent_queries`, `mixed_workload`, and
+  `scale_compare` (smoke scale in CI), benchmark report, and Intel macOS 12
+  runtime smoke all pass. No feature is advertised unless its gate has
+  evidence.
 
 ## Deliberate boundaries
 

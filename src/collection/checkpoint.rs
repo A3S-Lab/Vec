@@ -20,24 +20,42 @@ pub(super) fn commit_prepared_schema_change(
             "prepared schema generation no longer follows collection state",
         ));
     }
+    // Schema-only revisions (index lifecycle changes and metadata-only
+    // alterations) must not copy the entire document set into one WAL frame.
+    // Pointer identity is the collection's immutable-generation signal: any
+    // schema operation that changed documents receives a new document map.
     let revision = next.revision;
     let schema = next.schema.clone();
-    let docs: Vec<Doc> = next.docs.values().map(|doc| doc.as_ref().clone()).collect();
-    storage.append(
-        revision,
-        WalOperation::Schema {
+    let docs = (!std::sync::Arc::ptr_eq(&next.docs, &state.docs)).then(|| {
+        next.docs
+            .values()
+            .map(|doc| doc.as_ref().clone())
+            .collect::<Vec<Doc>>()
+    });
+    let operation = match docs.as_ref() {
+        Some(docs) => WalOperation::Schema {
             schema: schema.clone(),
             docs: docs.clone(),
         },
-        config,
-    )?;
+        None => WalOperation::SchemaOnly {
+            schema: schema.clone(),
+        },
+    };
+    storage.append(revision, operation, config)?;
 
     // The WAL + manifest pair is the commit point. Publish the same state in
     // memory before checkpoint maintenance so a checkpoint error cannot leave
     // this process behind the already committed revision.
     *state = next;
+    let checkpoint_docs = docs.unwrap_or_else(|| {
+        state
+            .docs
+            .values()
+            .map(|doc| doc.as_ref().clone())
+            .collect()
+    });
     let sync = !matches!(config.durability, Durability::Manual);
-    storage.checkpoint(&schema, &docs, revision, sync)?;
+    storage.checkpoint(&schema, &checkpoint_docs, revision, sync)?;
     persist_index_cache(storage, &schema, &state.indexes, revision, sync);
     Ok(())
 }
