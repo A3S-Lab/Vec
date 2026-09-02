@@ -11,33 +11,39 @@ memory, Darwin arm64, Rust/Cargo 1.98.0.
 
 ## Cross-project smoke comparison: a3s-vec and zvec
 
-This is a supplemental, same-host API comparison recorded on 2026-09-02. It
+This is a supplemental, same-host API comparison refreshed on 2026-09-03. It
 is not the release gate and is not a substitute for a VectorDBBench run at
-production scale. Both implementations used direct Rust APIs, a vector-only
-schema, the same deterministic vector generator as `ann_recall`, 2,000
-documents, 32 dimensions, 48 top-10 queries, five measured rounds, cosine
-distance, and one worker thread. Index construction is timed separately from
-query execution; queries include one warmup and result decoding is limited to
+production scale. The a3s-vec side uses its Rust API and the zvec side uses
+the zvec 0.7.0 Python/native binding. Both use a vector-only schema, the same
+deterministic vector generator as `ann_recall`, 2,000 documents, 32
+dimensions, 48 top-10 queries, five measured rounds, cosine distance, and one
+query worker. zvec index creation is explicitly set to
+`IndexOption(concurrency=1)`; the query and Rust Rayon worker controls are
+also pinned to one. Index construction is timed separately from query
+execution; queries include one warmup and result decoding is limited to
 primary-key collection. The host was Windows x86_64 with an Intel Xeon w5-2445,
-128 GiB RAM, and Rust/Cargo 1.97.1. Each row is the median of three process
-runs, so the values are regression evidence rather than an SLO.
+128 GiB RAM, Rust/Cargo 1.97.1, and Python 3.13. Each row is the median of
+three independent process runs, so the values are regression evidence rather
+than an SLO.
 
-| Engine / mode | Build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS at p50 | Recall@10 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| a3s-vec flat | 44.0 | 176.6 | 225.4 | 261.4 | 5,663 | 1.0000 |
-| zvec 0.7.0 flat | 96.4 | 198.0 | 237.6 | 265.2 | 5,051 | 1.0000 |
-| a3s-vec HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 602.5 | 126.6 | 151.6 | 182.6 | 7,899 | 1.0000 |
-| zvec 0.7.0 HNSW (same nominal controls) | 191.2 | 187.2 | 224.1 | 244.2 | 5,342 | 0.9979 |
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 34.617 | 0 | 34.617 | 707.9 | 798.4 | 937.6 | 1,384.78 | 1.0000 |
+| zvec 0.7.0 flat | 60.772 | 0 | 60.772 | 182.4 | 280.2 | 324.8 | 4,922.33 | 1.0000 |
+| a3s-vec HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 34.617 | 465.543 | 498.991 | 212.6 | 239.2 | 292.2 | 4,574.25 | 1.0000 |
+| zvec 0.7.0 HNSW (same nominal controls) | 60.772 | 127.337 | 188.109 | 182.4 | 281.1 | 317.5 | 4,931.69 | 1.0000 |
 
-On this fixture, a3s-vec's median query latency is about 11% lower for flat
-and 32% lower for HNSW. zvec's HNSW build is about 3.2x faster, while the
-a3s-vec flat path builds about 2.2x faster. The build comparison is directional:
-a3s-vec maintains its graph during inserts, whereas zvec's run includes its
-post-insert optimize step, and the two engines have different persistence and
-index lifecycle semantics. The a3s-vec release `ann_recall` gate uses its
-authoritative HNSW refiner; this cross-project smoke run disables refinement in
-both engines so that the query controls are closer. It therefore must not be
-read as a replacement for the release-gate numbers above.
+On this current small fixture, zvec's median query latency is about 3.9x
+lower for flat and 1.2x lower for HNSW. Its HNSW index-build time is about
+3.7x lower and its total build time about 2.7x lower. Recall is identical at
+this scale. The earlier 2026-09-02 table is intentionally superseded: it
+used implicit zvec index concurrency and therefore did not enforce the
+one-worker comparison. The two engines also have different persistence and
+index lifecycle semantics, and process-to-process timing variance remains
+material. The a3s-vec release `ann_recall` gate uses its authoritative HNSW
+refiner; this cross-project smoke run disables refinement in both engines so
+that the query controls are closer. It must not be read as a replacement for
+the release-gate numbers above.
 
 ## Larger-corpus scale comparison
 
@@ -50,34 +56,40 @@ the Python companion is an opt-in local tool because zvec wheels are
 platform-specific. Both tools emit the same 20-column CSV contract, including
 all HNSW construction and search controls.
 
-The following single-process snapshot was collected on 2026-09-03 on the same
+The following three-process median was collected on 2026-09-03 on the same
 Windows x86_64 Intel Xeon w5-2445 host (128 GiB RAM). The fixture has 100,000
 documents x 128 dimensions, 32 queries, three measured rounds, batches of
 512, one query/build worker, cosine distance, and HNSW `m=16`,
-`ef_construction=96`, `ef=64`. Refinement and zvec post-optimize were disabled.
-The a3s-vec run used manual durability; `insert_ms` includes the initial
-insert-plus-flush/checkpoint boundary in both harnesses, while index lifecycle
-timings are reported separately. Percentiles are based on 96 samples, so this
-is a scale indicator rather than an SLO or a multi-run confidence interval.
+`ef_construction=96`, `ef=64`. Refinement and zvec post-optimize were
+disabled. The zvec harness passes `IndexOption(concurrency=1)`; the a3s-vec
+harness uses `RAYON_NUM_THREADS=1`. The a3s-vec run uses manual durability;
+`insert_ms` includes the initial insert-plus-flush/checkpoint boundary in
+both harnesses, while index lifecycle timings are reported separately.
+Percentiles are based on 96 samples per process. zvec's HNSW graph is not
+bit-for-bit deterministic across processes, so the recorded recall range is
+reported below alongside the median. These are scale indicators rather than
+SLOs.
 
-| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (us) | p95 (us) | p99 (us) | QPS | Recall@10 |
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| a3s-vec flat | 6,288.918 | 0 | 6,288.918 | 51,140.100 | 63,088.200 | 81,376.700 | 19.22 | 1.0000 |
-| zvec 0.7.0 flat | 2,809.454 | 0 | 2,809.454 | 5,645.200 | 6,085.700 | 7,138.000 | 175.42 | 1.0000 |
-| a3s-vec HNSW | 6,288.918 | 235,088.473 | 241,377.391 | 2,192.700 | 3,253.800 | 3,744.400 | 430.34 | 0.6000 |
-| zvec 0.7.0 HNSW | 2,809.454 | 80,129.048 | 82,938.502 | 413.400 | 632.400 | 747.700 | 2,281.46 | 0.5844 |
+| a3s-vec flat | 2,902.064 | 0 | 2,902.064 | 43,422.800 | 46,618.100 | 55,666.600 | 22.82 | 1.0000 |
+| zvec 0.7.0 flat | 2,720.001 | 0 | 2,720.001 | 6,206.500 | 6,769.200 | 9,067.300 | 159.96 | 1.0000 |
+| a3s-vec HNSW | 2,902.064 | 237,046.770 | 240,744.533 | 2,193.200 | 2,795.300 | 3,234.200 | 444.56 | 0.6000 |
+| zvec 0.7.0 HNSW | 2,720.001 | 82,119.333 | 86,154.840 | 340.300 | 464.400 | 571.100 | 2,722.18 | 0.5719 |
 
-At this corpus size and configuration, zvec's flat query p50 is 9.1x lower,
-and its HNSW query p50 is 5.3x lower; zvec's HNSW build is 2.9x shorter. On
-this particular query set a3s-vec's HNSW Recall@10 is 1.56 percentage points
-higher at `ef=64`, despite the higher latency, so latency comparisons must
-always retain the recall column. These results do not establish a
-universal engine ranking: they are one host, one corpus, one worker, and one
-parameter point. The HNSW build lifecycle also differs: a3s-vec maintains and
-checkpoints its graph during the index-creation transaction, while the zvec
-call has different persistence and post-insert lifecycle semantics. Repeat the
-run with identical durability and optimize policies before using it for a
-capacity decision.
+At this corpus size and configuration, zvec's median flat query p50 is about
+7.0x lower and its HNSW query p50 about 6.4x lower. Its median HNSW total
+build is about 2.8x shorter, while its flat load is about 1.1x shorter. The
+three zvec HNSW processes produced Recall@10 values from 0.5625 to 0.5781
+(median 0.5719); a3s-vec produced 0.6000 in all three, or 2.81 percentage
+points higher than the zvec median at this parameter point. Both recall
+values are too low to serve as a production target without increasing
+`ef`. These results do not establish a universal engine ranking: they are
+one host, one corpus, one worker, and one parameter point. The HNSW build
+lifecycle also differs: a3s-vec maintains and checkpoints its graph during
+the index-creation transaction, while the zvec call has different persistence
+and post-insert lifecycle semantics. Repeat the run with identical durability,
+optimize, and recall targets before using it for a capacity decision.
 
 Run the Rust side at smoke or selected scale with:
 
@@ -1123,8 +1135,9 @@ another structured estimate reaches three quarters, unless a scalar bitmap
 already narrows the eligible documents. Telemetry confirms that both broad rows
 selected the same exact scan path as their controls.
 
-A broader representative cross-project benchmark suite, larger corpora,
-long-duration/high-scale mixed read/write workloads, and allocator-aware/
-process-level memory accounting remain Phase 7 work. The cross-project smoke
-table and concurrent/mixed fixtures above provide bounded comparison and
-contention evidence; they are not a replacement for those larger-scale claims.
+A broader representative cross-project benchmark suite, long-duration/high-
+scale mixed read/write workloads, and allocator-aware/process-level memory
+accounting remain external qualification work. The refreshed same-host
+cross-project scale table and the concurrent/mixed fixtures above provide
+bounded comparison and contention evidence; they are not a replacement for
+those larger-scale claims.

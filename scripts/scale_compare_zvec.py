@@ -4,8 +4,12 @@
 The Rust side is ``cargo bench --bench scale_compare``.  This script uses the
 same corpus generator, query schedule, batch size, HNSW controls, and CSV
 columns so that a comparison can be repeated without relying on a manually
-copied table.  It is intentionally not part of the Rust release CI: zvec is an
-external Python/C++ package and its native wheel is platform-specific.
+copied table.  Index creation is explicitly limited to one zvec worker so it
+matches the Rust harness's ``RAYON_NUM_THREADS=1`` control.  zvec's graph
+builder can still be nondeterministic across processes; retain the recall and
+repeat count when recording results.  It is intentionally not part of the
+Rust release CI: zvec is an external Python/C++ package and its native wheel
+is platform-specific.
 """
 
 from __future__ import annotations
@@ -349,6 +353,7 @@ def run(config: Config, output: TextIO) -> None:
                     m=config.hnsw_m,
                     ef_construction=config.ef_construction,
                 ),
+                zvec.IndexOption(concurrency=1),
             )
             index_seconds = time.perf_counter() - started
             optimize_seconds = 0.0

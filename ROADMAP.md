@@ -131,11 +131,12 @@ which passed all ten jobs, including the lifecycle matrix. These checks do not r
 Intel runtime gate described below.
 
 The scale-comparison harness now has a reproducible 20-column CSV contract;
-the recorded 100,000-document run is documented in `BENCHMARKS.md`, and its
-Rust smoke row is validated in every hosted platform job. The zvec companion is
-kept opt-in because its native wheel is platform-specific; its measurements
-must retain the same recall and lifecycle controls before being used for a
-capacity decision.
+the recorded 100,000-document, three-process median is documented in
+`BENCHMARKS.md`, and its Rust smoke row is validated in every hosted platform
+job. The zvec companion is kept opt-in because its native wheel is
+platform-specific; it pins index concurrency to one worker and records
+process-to-process Recall@10 variation. Its measurements must retain the same
+recall and lifecycle controls before being used for a capacity decision.
 
 Phase 3's portable implementation gate is complete: per-handle deterministic
 fault injection covers all 18 write/sync/rename/prune boundaries, including
