@@ -19,10 +19,10 @@ with Cargo's portable default target features, while the zvec wheel contains
 its release native C++ backend. That shipped-portability versus native-wheel
 asymmetry is material for CPU-bound distance work, so these rows are a
 directional product comparison rather than a compiler-level apples-to-apples
-claim. Both use a vector-only schema, the same
-deterministic vector generator as `ann_recall`, 2,000 documents, 32
-dimensions, 48 top-10 queries, five measured rounds, cosine distance, and one
-query worker. zvec index creation is explicitly set to
+claim. Both use a vector-only schema, the same deterministic vector generator
+as `ann_recall`, 2,000 documents, 32 dimensions, 32 top-10 queries, three
+measured rounds, batches of 512, cosine distance, and one query worker. zvec
+index creation is explicitly set to
 `IndexOption(concurrency=1)`; the query and Rust Rayon worker controls are
 also pinned to one. Index construction is timed separately from query
 execution; queries include one warmup and result decoding is limited to
@@ -33,15 +33,17 @@ than an SLO.
 
 | Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| a3s-vec flat | 34.617 | 0 | 34.617 | 707.9 | 798.4 | 937.6 | 1,384.78 | 1.0000 |
-| zvec 0.7.0 flat | 60.772 | 0 | 60.772 | 182.4 | 280.2 | 324.8 | 4,922.33 | 1.0000 |
-| a3s-vec HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 34.617 | 465.543 | 498.991 | 212.6 | 239.2 | 292.2 | 4,574.25 | 1.0000 |
-| zvec 0.7.0 HNSW (same nominal controls) | 60.772 | 127.337 | 188.109 | 182.4 | 281.1 | 317.5 | 4,931.69 | 1.0000 |
+| a3s-vec flat | 33.564 | 0 | 33.564 | 88.6 | 93.7 | 136.3 | 11,048.32 | 1.0000 |
+| zvec 0.7.0 flat | 58.135 | 0 | 58.135 | 161.1 | 275.7 | 435.5 | 5,394.47 | 1.0000 |
+| a3s-vec HNSW (`m=16`, `ef_construction=96`, `ef=64`) | 33.564 | 394.229 | 429.689 | 187.4 | 213.9 | 264.5 | 5,178.44 | 1.0000 |
+| zvec 0.7.0 HNSW (same nominal controls) | 58.135 | 129.571 | 189.094 | 159.6 | 289.5 | 436.0 | 5,284.57 | 1.0000 |
 
-On this current small fixture, zvec's median query latency is about 3.9x
-lower for flat and 1.2x lower for HNSW. Its HNSW index-build time is about
-3.7x lower and its total build time about 2.7x lower. Recall is identical at
-this scale. The earlier 2026-09-02 table is intentionally superseded: it
+On this current small fixture, a3s-vec's median Flat query p50 is about 1.8x
+lower, while zvec's HNSW query p50 is about 1.2x lower. zvec's HNSW
+index-build time is about 3.0x lower and its total build time about 2.3x
+lower. Recall is identical at this scale. The a3s-vec rows include the
+borrowed exact-score kernel and one-query-norm path added after the earlier
+2026-09-02 table is intentionally superseded: it
 used implicit zvec index concurrency and therefore did not enforce the
 one-worker comparison. The two engines also have different persistence and
 index lifecycle semantics, and process-to-process timing variance remains
@@ -85,14 +87,17 @@ SLOs.
 
 | Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| a3s-vec flat | 2,902.064 | 0 | 2,902.064 | 43,422.800 | 46,618.100 | 55,666.600 | 22.82 | 1.0000 |
+| a3s-vec flat | 2,767.024 | 0 | 2,767.024 | 34,581.500 | 36,223.000 | 37,494.600 | 28.94 | 1.0000 |
 | zvec 0.7.0 flat | 2,720.001 | 0 | 2,720.001 | 6,206.500 | 6,769.200 | 9,067.300 | 159.96 | 1.0000 |
-| a3s-vec HNSW | 2,902.064 | 237,046.770 | 240,744.533 | 2,193.200 | 2,795.300 | 3,234.200 | 444.56 | 0.6000 |
+| a3s-vec HNSW | 2,767.024 | 185,429.317 | 188,288.828 | 1,725.400 | 2,499.600 | 2,666.600 | 550.80 | 0.6000 |
 | zvec 0.7.0 HNSW | 2,720.001 | 82,119.333 | 86,154.840 | 340.300 | 464.400 | 571.100 | 2,722.18 | 0.5719 |
 
 At this corpus size and configuration, zvec's median flat query p50 is about
-7.0x lower and its HNSW query p50 about 6.4x lower. Its median HNSW total
-build is about 2.8x shorter, while its flat load is about 1.1x shorter. The
+5.6x lower and its HNSW query p50 about 5.1x lower. Its median HNSW total
+build is about 2.2x shorter, while the load times are within 2% of one
+another. Relative to the prior a3s-vec measurement, the borrowed exact-score
+kernel reduced flat p50 by 20.4%, HNSW p50 by 21.3%, HNSW total build by
+21.8%, and raised HNSW QPS by 23.9%, with identical recall. The
 three zvec HNSW processes produced Recall@10 values from 0.5625 to 0.5781
 (median 0.5719); a3s-vec produced 0.6000 in all three, or 2.81 percentage
 points higher than the zvec median at this parameter point. Both recall

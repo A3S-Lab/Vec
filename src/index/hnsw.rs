@@ -7,7 +7,9 @@ use self::search::{
 };
 use super::ordinal_map::OrdinalMap;
 use super::ordinals::OrdinalTable;
-use super::quantization::{score_dense, QuantizedVector};
+use super::quantization::{
+    dense_query_norm, score_dense_with_query_norm, score_with_query_norm, QuantizedVector,
+};
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
 use std::collections::BTreeSet;
@@ -142,10 +144,15 @@ impl HnswIndex {
         if vectors.is_empty() {
             return RoaringTreemap::new();
         }
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         self.candidates_by(ordinals, requested_ef, topk, &|ordinal| {
             vectors
                 .get(ordinal)
-                .map(|vector| super::quantization::score(query, vector, metric))
+                .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
         })
     }
 
@@ -193,6 +200,11 @@ impl HnswIndex {
         if vectors.is_empty() || filter.eligible_count == 0 || result_limit == 0 {
             return RoaringTreemap::new();
         }
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         self.filtered_candidates_by(
             ordinals,
             result_limit,
@@ -201,7 +213,7 @@ impl HnswIndex {
             &|ordinal| {
                 vectors
                     .get(ordinal)
-                    .map(|vector| super::quantization::score(query, vector, metric))
+                    .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
             },
         )
     }
@@ -346,6 +358,11 @@ fn prune_edges(
     let Some(query) = vectors.get(node) else {
         return;
     };
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
     let mut scored: Vec<(u64, f64)> = layer
         .get(node)
         .into_iter()
@@ -353,7 +370,7 @@ fn prune_edges(
         .filter_map(|candidate| {
             Some((
                 *candidate,
-                score_dense(query, vectors.get(*candidate)?, metric),
+                score_dense_with_query_norm(query, vectors.get(*candidate)?, metric, query_norm),
             ))
         })
         .collect();

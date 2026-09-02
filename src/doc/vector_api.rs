@@ -3,7 +3,7 @@
 use super::vector_codec::{encode_fp16, f64_to_f32, fp16_to_f32, validate_vector};
 use super::{type_error, Doc, VectorValue};
 use crate::error::Result;
-use crate::types::DataType;
+use crate::types::{DataType, MetricType};
 use std::collections::BTreeMap;
 
 impl VectorValue {
@@ -83,6 +83,75 @@ impl VectorValue {
         }
     }
 
+    /// Scores a dense query against this vector without materializing a
+    /// converted `Vec<f64>` for every candidate document.
+    ///
+    /// The collection executor intentionally keeps its authoritative score in
+    /// `f64`.  This helper only changes how the stored coordinates are
+    /// traversed; it does not narrow the arithmetic or alter metric semantics.
+    pub(crate) fn dense_score(
+        &self,
+        query: &[f64],
+        query_norm: f64,
+        metric: MetricType,
+    ) -> Option<f64> {
+        let dimension = match self {
+            Self::Fp16(values) => values.len(),
+            Self::Fp32(values) => values.len(),
+            Self::Fp64(values) => values.len(),
+            Self::Int4(values) | Self::Int8(values) => values.len(),
+            Self::Int16(values) => values.len(),
+            Self::Binary32(_)
+            | Self::Binary64(_)
+            | Self::SparseFp16 { .. }
+            | Self::SparseFp32 { .. } => return None,
+        };
+        if query.len() != dimension {
+            return None;
+        }
+        match self {
+            Self::Fp16(values) => Some(score_dense_iter(
+                query,
+                query_norm,
+                values.len(),
+                values.iter().map(|value| f64::from(fp16_to_f32(*value))),
+                metric,
+            )),
+            Self::Fp32(values) => Some(score_dense_iter(
+                query,
+                query_norm,
+                values.len(),
+                values.iter().map(|value| f64::from(*value)),
+                metric,
+            )),
+            Self::Fp64(values) => Some(score_dense_iter(
+                query,
+                query_norm,
+                values.len(),
+                values.iter().copied(),
+                metric,
+            )),
+            Self::Int4(values) | Self::Int8(values) => Some(score_dense_iter(
+                query,
+                query_norm,
+                values.len(),
+                values.iter().map(|value| f64::from(*value)),
+                metric,
+            )),
+            Self::Int16(values) => Some(score_dense_iter(
+                query,
+                query_norm,
+                values.len(),
+                values.iter().map(|value| f64::from(*value)),
+                metric,
+            )),
+            Self::Binary32(_)
+            | Self::Binary64(_)
+            | Self::SparseFp16 { .. }
+            | Self::SparseFp32 { .. } => None,
+        }
+    }
+
     pub fn to_sparse_f64(&self) -> Option<BTreeMap<u32, f64>> {
         match self {
             Self::SparseFp16 { indices, values } => {
@@ -151,6 +220,47 @@ impl VectorValue {
 
     pub(crate) fn validate(&self) -> Result<()> {
         validate_vector(self)
+    }
+}
+
+fn score_dense_iter(
+    query: &[f64],
+    query_norm: f64,
+    dimension: usize,
+    values: impl Iterator<Item = f64>,
+    metric: MetricType,
+) -> f64 {
+    debug_assert_eq!(query.len(), dimension);
+    match metric {
+        MetricType::L2 => -query
+            .iter()
+            .copied()
+            .zip(values)
+            .map(|(left, right)| {
+                let difference = left - right;
+                difference * difference
+            })
+            .sum::<f64>(),
+        MetricType::Cosine => {
+            let (dot, value_norm) = query
+                .iter()
+                .copied()
+                .zip(values)
+                .fold((0.0, 0.0), |(dot, value_norm), (left, right)| {
+                    (dot + left * right, value_norm + right * right)
+                });
+            if query_norm == 0.0 || value_norm == 0.0 {
+                0.0
+            } else {
+                dot / (query_norm * value_norm.sqrt())
+            }
+        }
+        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
+            .iter()
+            .copied()
+            .zip(values)
+            .map(|(left, right)| left * right)
+            .sum::<f64>(),
     }
 }
 
@@ -322,5 +432,90 @@ impl Doc {
             }
             Some(_) => Err(type_error(name, DataType::SparseVectorFp16)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VectorValue;
+    use crate::types::MetricType;
+
+    fn reference_score(query: &[f64], values: &[f64], metric: MetricType) -> f64 {
+        match metric {
+            MetricType::L2 => -query
+                .iter()
+                .zip(values)
+                .map(|(left, right)| {
+                    let difference = *left - *right;
+                    difference * difference
+                })
+                .sum::<f64>(),
+            MetricType::Cosine => {
+                let dot = query
+                    .iter()
+                    .zip(values)
+                    .map(|(left, right)| *left * *right)
+                    .sum::<f64>();
+                let query_norm = query.iter().map(|value| value * value).sum::<f64>().sqrt();
+                let value_norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
+                if query_norm == 0.0 || value_norm == 0.0 {
+                    0.0
+                } else {
+                    dot / (query_norm * value_norm)
+                }
+            }
+            MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
+                .iter()
+                .zip(values)
+                .map(|(left, right)| *left * *right)
+                .sum(),
+        }
+    }
+
+    #[test]
+    fn borrowed_dense_scoring_matches_materialized_reference() {
+        let query = [0.25_f64, -0.5, 0.75, 0.125, -1.0];
+        let values = [-0.75_f64, -0.25, 0.5, 1.0, 0.125];
+        let query_norm = query.iter().map(|value| value * value).sum::<f64>().sqrt();
+        let fp16 = VectorValue::encode_fp16(&[-0.75_f32, -0.25, 0.5, 1.0, 0.125])
+            .expect("FP16 vector must encode");
+        let vectors = [
+            fp16,
+            VectorValue::Fp32(vec![-0.75_f32, -0.25, 0.5, 1.0, 0.125]),
+            VectorValue::Fp64(values.to_vec()),
+            VectorValue::Int4(vec![-1, 0, 1, 2, 3]),
+            VectorValue::Int8(vec![-7, -2, 4, 8, 1]),
+            VectorValue::Int16(vec![-7, -2, 4, 8, 1]),
+        ];
+        for vector in vectors {
+            let materialized = vector.to_dense_f64().expect("vector must be dense");
+            for metric in [
+                MetricType::L2,
+                MetricType::Cosine,
+                MetricType::Ip,
+                MetricType::MipsL2,
+            ] {
+                let actual = vector
+                    .dense_score(&query, query_norm, metric)
+                    .expect("dense vector must be scoreable");
+                let expected = reference_score(&query, &materialized, metric);
+                assert!(
+                    (actual - expected).abs() <= f64::EPSILON,
+                    "metric={metric:?} vector={vector:?} actual={actual} expected={expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_dense_scoring_rejects_non_dense_and_dimension_mismatch() {
+        let query = [1.0_f64, 2.0];
+        let norm = 5.0_f64.sqrt();
+        assert!(VectorValue::Binary32(vec![0, 0, 0, 0])
+            .dense_score(&query, norm, MetricType::Ip)
+            .is_none());
+        assert!(VectorValue::Fp32(vec![1.0])
+            .dense_score(&query, norm, MetricType::Ip)
+            .is_none());
     }
 }

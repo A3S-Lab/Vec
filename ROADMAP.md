@@ -822,6 +822,16 @@ execution are implemented.
   single 64 MiB-bounded frame. Recovery tests cover schema-only replay and the
   scale benchmark now reaches 100,000-document HNSW builds without a WAL frame
   overflow.
+- Completed performance-kernel hardening on 2026-09-03: exact dense scans now
+  traverse borrowed native vector storage without allocating a converted
+  `f64` buffer per candidate, and cosine query norms are computed once per
+  query across Flat, HNSW, Vamana, and DiskANN full-vector paths. The
+  authoritative `f64` ranking contract is unchanged. On the documented
+  100,000 x 128 same-host fixture this reduced Flat p50 from 43.42 ms to
+  34.58 ms and HNSW p50 from 2.19 ms to 1.73 ms, while retaining Recall@10
+  (1.0000 Flat, 0.6000 HNSW). The result remains a directional benchmark
+  because zvec uses a native C++ wheel and a3s-vec uses the portable Rust
+  target by default.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
   `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative

@@ -5,7 +5,9 @@
 
 use super::ordinal_map::OrdinalMap;
 use super::ordinals::OrdinalTable;
-use super::quantization::{score, score_dense, QuantizedVector};
+use super::quantization::{
+    dense_query_norm, score_dense_with_query_norm, score_with_query_norm, QuantizedVector,
+};
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
 use std::collections::{BTreeSet, HashSet};
@@ -163,6 +165,11 @@ impl VamanaIndex {
         topk: usize,
         metric: MetricType,
     ) -> RoaringTreemap {
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         self.scored_candidates(
             vectors.len(),
             ordinals,
@@ -171,7 +178,7 @@ impl VamanaIndex {
             &|ordinal| {
                 vectors
                     .get(ordinal)
-                    .map(|vector| score(query, vector, metric))
+                    .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
             },
         )
     }
@@ -188,6 +195,11 @@ impl VamanaIndex {
         allowed: &RoaringTreemap,
         excluded: &RoaringTreemap,
     ) -> RoaringTreemap {
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         self.scored_filtered_candidates(
             vectors.len(),
             ordinals,
@@ -198,7 +210,7 @@ impl VamanaIndex {
             &|ordinal| {
                 vectors
                     .get(ordinal)
-                    .map(|vector| score(query, vector, metric))
+                    .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
             },
         )
     }
@@ -460,10 +472,15 @@ fn greedy_search(
     list_size: usize,
     metric: MetricType,
 ) -> GraphSearch {
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
     bounded_search(graph, ordinals, entry, list_size, &|ordinal| {
         vectors
             .get(ordinal)
-            .map(|vector| score_dense(query, vector, metric))
+            .map(|vector| score_dense_with_query_norm(query, vector, metric, query_norm))
     })
 }
 

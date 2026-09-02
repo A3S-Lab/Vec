@@ -106,9 +106,26 @@ impl QuantizedVector {
     }
 }
 
+#[cfg(test)]
 pub(super) fn score(query: &[f32], candidate: &QuantizedVector, metric: MetricType) -> f64 {
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
+    score_with_query_norm(query, candidate, metric, query_norm)
+}
+
+pub(super) fn score_with_query_norm(
+    query: &[f32],
+    candidate: &QuantizedVector,
+    metric: MetricType,
+    query_norm: f64,
+) -> f64 {
     match candidate {
-        QuantizedVector::F32(values) => score_dense(query, values, metric),
+        QuantizedVector::F32(values) => {
+            score_dense_with_query_norm(query, values, metric, query_norm)
+        }
         QuantizedVector::Fp16(values) => score_iter(
             query,
             values.len(),
@@ -116,12 +133,14 @@ pub(super) fn score(query: &[f32], candidate: &QuantizedVector, metric: MetricTy
                 .iter()
                 .map(|value| zvec_core::engine::simd::f16_to_f32(*value)),
             metric,
+            query_norm,
         ),
         QuantizedVector::Int8 { codes, scale } => score_iter(
             query,
             codes.len(),
             codes.iter().map(|code| f32::from(*code) * *scale),
             metric,
+            query_norm,
         ),
         QuantizedVector::Int4 {
             nibbles,
@@ -140,6 +159,7 @@ pub(super) fn score(query: &[f32], candidate: &QuantizedVector, metric: MetricTy
                 })
                 .take(*dimension),
             metric,
+            query_norm,
         ),
     }
 }
@@ -149,6 +169,7 @@ fn score_iter(
     dimension: usize,
     candidate: impl Iterator<Item = f32>,
     metric: MetricType,
+    query_norm: f64,
 ) -> f64 {
     if query.len() != dimension {
         return f64::NEG_INFINITY;
@@ -164,22 +185,18 @@ fn score_iter(
             })
             .sum::<f64>(),
         MetricType::Cosine => {
-            let (dot, query_norm, candidate_norm) = query.iter().copied().zip(candidate).fold(
-                (0.0, 0.0, 0.0),
-                |(dot, query_norm, candidate_norm), (left, right)| {
+            let (dot, candidate_norm) = query.iter().copied().zip(candidate).fold(
+                (0.0, 0.0),
+                |(dot, candidate_norm), (left, right)| {
                     let left = f64::from(left);
                     let right = f64::from(right);
-                    (
-                        dot + left * right,
-                        query_norm + left * left,
-                        candidate_norm + right * right,
-                    )
+                    (dot + left * right, candidate_norm + right * right)
                 },
             );
             if query_norm == 0.0 || candidate_norm == 0.0 {
                 0.0
             } else {
-                dot / (query_norm.sqrt() * candidate_norm.sqrt())
+                dot / (query_norm * candidate_norm.sqrt())
             }
         }
         MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
@@ -200,15 +217,33 @@ fn decoded_nibble(value: u8) -> f32 {
     }
 }
 
+pub(super) fn dense_query_norm(query: &[f32]) -> f64 {
+    query
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt()
+}
+
+#[cfg(test)]
 pub(super) fn score_dense(query: &[f32], candidate: &[f32], metric: MetricType) -> f64 {
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
+    score_dense_with_query_norm(query, candidate, metric, query_norm)
+}
+
+pub(super) fn score_dense_with_query_norm(
+    query: &[f32],
+    candidate: &[f32],
+    metric: MetricType,
+    query_norm: f64,
+) -> f64 {
     if query.len() != candidate.len() {
         return f64::NEG_INFINITY;
     }
-    let dot = query
-        .iter()
-        .zip(candidate)
-        .map(|(left, right)| f64::from(*left) * f64::from(*right))
-        .sum::<f64>();
     match metric {
         MetricType::L2 => -query
             .iter()
@@ -219,11 +254,11 @@ pub(super) fn score_dense(query: &[f32], candidate: &[f32], metric: MetricType) 
             })
             .sum::<f64>(),
         MetricType::Cosine => {
-            let query_norm = query
+            let dot = query
                 .iter()
-                .map(|value| f64::from(*value) * f64::from(*value))
-                .sum::<f64>()
-                .sqrt();
+                .zip(candidate)
+                .map(|(left, right)| f64::from(*left) * f64::from(*right))
+                .sum::<f64>();
             let candidate_norm = candidate
                 .iter()
                 .map(|value| f64::from(*value) * f64::from(*value))
@@ -235,7 +270,11 @@ pub(super) fn score_dense(query: &[f32], candidate: &[f32], metric: MetricType) 
                 dot / (query_norm * candidate_norm)
             }
         }
-        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => dot,
+        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
+            .iter()
+            .zip(candidate)
+            .map(|(left, right)| f64::from(*left) * f64::from(*right))
+            .sum::<f64>(),
     }
 }
 

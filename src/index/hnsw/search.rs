@@ -2,7 +2,7 @@
 
 use crate::index::ordinal_map::OrdinalMap;
 use crate::index::ordinals::OrdinalTable;
-use crate::index::quantization::score_dense;
+use crate::index::quantization::{dense_query_norm, score_dense_with_query_norm};
 use crate::types::MetricType;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
@@ -54,8 +54,13 @@ pub(super) fn greedy_search(
     metric: MetricType,
 ) -> u64 {
     let mut current = entry;
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
     let mut current_score = vectors.get(entry).map_or(f64::NEG_INFINITY, |vector| {
-        score_dense(query, vector, metric)
+        score_dense_with_query_norm(query, vector, metric, query_norm)
     });
     loop {
         let mut best = scored_node(current, current_score, ordinals);
@@ -63,7 +68,11 @@ pub(super) fn greedy_search(
             let Some(vector) = vectors.get(neighbor) else {
                 continue;
             };
-            let candidate = scored_node(neighbor, score_dense(query, vector, metric), ordinals);
+            let candidate = scored_node(
+                neighbor,
+                score_dense_with_query_norm(query, vector, metric, query_norm),
+                ordinals,
+            );
             if candidate > best {
                 best = candidate;
             }
@@ -112,10 +121,15 @@ pub(super) fn search_layer(
     ef: usize,
     metric: MetricType,
 ) -> Vec<u64> {
+    let query_norm = if metric == MetricType::Cosine {
+        dense_query_norm(query)
+    } else {
+        0.0
+    };
     bounded_graph_search(layer, entries, ef, ordinals, |ordinal| {
         vectors
             .get(ordinal)
-            .map(|vector| score_dense(query, vector, metric))
+            .map(|vector| score_dense_with_query_norm(query, vector, metric, query_norm))
     })
 }
 

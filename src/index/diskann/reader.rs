@@ -5,7 +5,7 @@ use crate::config::IoBackend;
 use crate::error::{Error, Result};
 use crate::index::ordinals::OrdinalTable;
 use crate::index::product_quantization::{AdcTable, ProductCodebook};
-use crate::index::quantization::score_dense;
+use crate::index::quantization::{dense_query_norm, score_dense_with_query_norm};
 use crate::storage::RandomAccessReader;
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
@@ -136,6 +136,11 @@ impl FieldReader {
             .as_ref()
             .map(|codebook| codebook.table(query, metric))
             .transpose()?;
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         let mut session = ReadSession::new(self);
         let search = greedy_search(
             &mut session,
@@ -145,6 +150,7 @@ impl FieldReader {
             list_size,
             metric,
             table.as_ref(),
+            query_norm,
         )?;
         Ok(ReadResult {
             candidates: search.candidates.into_iter().collect(),
@@ -176,6 +182,11 @@ impl FieldReader {
             .as_ref()
             .map(|codebook| codebook.table(query, metric))
             .transpose()?;
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         let mut session = ReadSession::new(self);
         let search = greedy_search(
             &mut session,
@@ -185,6 +196,7 @@ impl FieldReader {
             traversal_limit.min(self.node_count).max(1),
             metric,
             table.as_ref(),
+            query_norm,
         )?;
         let mut scored = Vec::new();
         for ordinal in search
@@ -194,7 +206,13 @@ impl FieldReader {
             .filter(|ordinal| allowed.contains(*ordinal) && !excluded.contains(*ordinal))
             .collect::<BTreeSet<_>>()
         {
-            let score = score_node(session.node(ordinal)?, query, metric, table.as_ref())?;
+            let score = score_node(
+                session.node(ordinal)?,
+                query,
+                metric,
+                table.as_ref(),
+                query_norm,
+            )?;
             scored.push(ScoredOrdinal { ordinal, score });
         }
         sort_scored(&mut scored, ordinals);
@@ -368,6 +386,7 @@ impl<'a> ReadSession<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn greedy_search(
     session: &mut ReadSession<'_>,
     ordinals: &OrdinalTable,
@@ -376,9 +395,10 @@ fn greedy_search(
     list_size: usize,
     metric: MetricType,
     table: Option<&AdcTable>,
+    query_norm: f64,
 ) -> Result<GraphSearch> {
     let limit = list_size.max(1);
-    let entry_score = score_node(session.node(entry)?, query, metric, table)?;
+    let entry_score = score_node(session.node(entry)?, query, metric, table, query_norm)?;
     let mut pool = vec![ScoredOrdinal {
         ordinal: entry,
         score: entry_score,
@@ -405,7 +425,7 @@ fn greedy_search(
             {
                 continue;
             }
-            let score = score_node(session.node(neighbor)?, query, metric, table)?;
+            let score = score_node(session.node(neighbor)?, query, metric, table, query_norm)?;
             pool.push(ScoredOrdinal {
                 ordinal: neighbor,
                 score,
@@ -429,9 +449,17 @@ fn score_node(
     query: &[f32],
     metric: MetricType,
     table: Option<&AdcTable>,
+    query_norm: f64,
 ) -> Result<f64> {
     table.map_or_else(
-        || Ok(score_dense(query, &node.vector, metric)),
+        || {
+            Ok(score_dense_with_query_norm(
+                query,
+                &node.vector,
+                metric,
+                query_norm,
+            ))
+        },
         |table| {
             table
                 .score(&node.code)

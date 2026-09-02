@@ -27,7 +27,7 @@ struct ScoredCandidate<'a> {
 }
 
 enum ResolvedQueryVector {
-    Dense(Vec<f64>),
+    Dense { values: Vec<f64>, norm: f64 },
     Binary(Vec<u8>),
     Sparse(BTreeMap<u32, f64>),
 }
@@ -138,42 +138,6 @@ pub(super) fn score_to_f32(value: f64) -> Result<f32> {
 #[allow(clippy::cast_precision_loss)]
 pub(super) fn count_to_f64(value: usize) -> f64 {
     value as f64
-}
-
-fn dense_score(query: &[f64], vector: &VectorValue, metric: MetricType) -> Option<f64> {
-    let values = vector.to_dense_f64()?;
-    if values.len() != query.len() {
-        return None;
-    }
-    Some(match metric {
-        MetricType::L2 => -query
-            .iter()
-            .zip(values.iter())
-            .map(|(left, right)| {
-                let difference = *left - *right;
-                difference * difference
-            })
-            .sum::<f64>(),
-        MetricType::Cosine => {
-            let dot = query
-                .iter()
-                .zip(values.iter())
-                .map(|(left, right)| *left * *right)
-                .sum::<f64>();
-            let query_norm = query.iter().map(|value| value * value).sum::<f64>().sqrt();
-            let value_norm = values.iter().map(|value| value * value).sum::<f64>().sqrt();
-            if query_norm == 0.0 || value_norm == 0.0 {
-                0.0
-            } else {
-                dot / (query_norm * value_norm)
-            }
-        }
-        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
-            .iter()
-            .zip(values.iter())
-            .map(|(left, right)| *left * *right)
-            .sum(),
-    })
 }
 
 fn binary_score(query: &[u8], vector: &VectorValue) -> Option<f64> {
@@ -334,9 +298,11 @@ fn execute_vector(
 
 fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<ResolvedQueryVector> {
     if let Some(vector) = &query.vector {
-        return Ok(ResolvedQueryVector::Dense(
-            vector.iter().map(|value| f64::from(*value)).collect(),
-        ));
+        let values: Vec<f64> = vector.iter().map(|value| f64::from(*value)).collect();
+        return Ok(ResolvedQueryVector::Dense {
+            norm: dense_query_norm(&values),
+            values,
+        });
     }
     if let Some(vector) = &query.binary_vector {
         return Ok(ResolvedQueryVector::Binary(vector.clone()));
@@ -364,7 +330,10 @@ fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Resol
         ))
     })?;
     if let Some(vector) = vector.to_dense_f64() {
-        return Ok(ResolvedQueryVector::Dense(vector));
+        return Ok(ResolvedQueryVector::Dense {
+            norm: dense_query_norm(&vector),
+            values: vector,
+        });
     }
     if let Some(vector) = vector.to_sparse_f64() {
         return Ok(ResolvedQueryVector::Sparse(vector));
@@ -395,8 +364,8 @@ fn score_vector_document<'a>(
         return Ok(());
     };
     let score = match query_vector {
-        ResolvedQueryVector::Dense(query) => {
-            let Some(score) = dense_score(query, vector, metric) else {
+        ResolvedQueryVector::Dense { values, norm } => {
+            let Some(score) = vector.dense_score(values, *norm, metric) else {
                 return Ok(());
             };
             score
@@ -424,6 +393,10 @@ fn score_vector_document<'a>(
         return Ok(());
     }
     result.push(score, doc)
+}
+
+fn dense_query_norm(values: &[f64]) -> f64 {
+    values.iter().map(|value| value * value).sum::<f64>().sqrt()
 }
 
 fn sparse_score(

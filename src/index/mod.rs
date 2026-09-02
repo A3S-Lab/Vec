@@ -33,7 +33,7 @@ use ivf::IvfIndex;
 use ordinal_map::OrdinalMap;
 pub(crate) use ordinals::OrdinalScores;
 use ordinals::{OrdinalSet, OrdinalTable};
-use quantization::{score, QuantizedVector};
+use quantization::{dense_query_norm, score_with_query_norm, QuantizedVector};
 use rabitq_index::{HnswRabitqIndex, IvfRabitqIndex};
 use roaring::RoaringTreemap;
 use scalar::{ScalarCandidates, ScalarIndexRegistry};
@@ -769,6 +769,11 @@ impl VectorIndex {
         metric: MetricType,
         ordinals: &OrdinalTable,
     ) -> RoaringTreemap {
+        let query_norm = if metric == MetricType::Cosine {
+            dense_query_norm(query)
+        } else {
+            0.0
+        };
         let mut scored: Vec<(u64, f64)> = ids
             .iter()
             .filter_map(|ordinal| {
@@ -776,7 +781,10 @@ impl VectorIndex {
                     .delta
                     .get(&ordinal)
                     .or_else(|| self.base.vectors.get(ordinal))?;
-                Some((ordinal, score(query, vector, metric)))
+                Some((
+                    ordinal,
+                    score_with_query_norm(query, vector, metric, query_norm),
+                ))
             })
             .collect();
         scored.sort_by(|left, right| {
