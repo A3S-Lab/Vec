@@ -68,6 +68,9 @@ expansion pass, while broad structured queries deliberately switch to the exact
 scan path when candidate-set work is unlikely to pay for itself. These are
 local regression measurements—not a cross-project zvec benchmark. Full
 methodology and repeated observations live in [BENCHMARKS.md](BENCHMARKS.md).
+The public API release gate is the deterministic [feature matrix](BENCHMARKS.md#public-feature-matrix-and-performance-gate),
+which checks every query route and reports p50/p95/p99 latency for the sync,
+ANN, sidecar, mutation, and Tokio paths.
 
 ## Quick start
 
@@ -484,11 +487,14 @@ cargo +1.75.0 test --locked --features async
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+cargo test --locked --test feature_matrix
 ```
 
 Reproducible performance fixtures:
 
 ```sh
+cargo bench --locked --bench feature_matrix --features async
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
 cargo bench --bench ann_recall
 cargo bench --bench filtered_ann
 cargo bench --bench scalar_filter

@@ -41,6 +41,29 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo +stable doc --locked --no-deps --all-features
 
+  performance:
+    name: Public feature performance matrix
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Run smoke matrix and capture CSV
+        env:
+          A3S_VEC_BENCH_SCALE: smoke
+        run: |
+          mkdir -p target/performance
+          cargo +stable bench --locked --bench feature_matrix --features async --quiet \
+            | tee target/performance/feature-matrix.csv
+      - name: Upload feature matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: a3s-vec-feature-matrix-${{ github.sha }}
+          path: target/performance/feature-matrix.csv
+          if-no-files-found: error
+          retention-days: 30
+
   msrv:
     name: Rust 1.75 MSRV
     runs-on: ubuntu-24.04
@@ -104,7 +127,7 @@ jobs:
   release-candidate:
     name: Versioned release candidate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [quality, msrv, recovery-fuzz, platform]
+    needs: [quality, performance, msrv, recovery-fuzz, platform]
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository

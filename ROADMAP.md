@@ -98,7 +98,7 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 233 passing unit/integration tests plus four doctests;
+all-feature baseline has 236 passing unit/integration tests plus four doctests;
 default and
 no-default-feature suites are separate gates. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
@@ -735,6 +735,14 @@ execution are implemented.
   health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
   x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
   deployment target.
+- Completed in the engine: a public feature matrix (`tests/feature_matrix.rs`)
+  covers CRUD, projection, exact dense/sparse and source-ID queries, scalar/
+  FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
+  health, cache/sidecar readers, all six ANN families, and the explicit binary
+  query boundary. `benches/feature_matrix.rs` adds asserted p50/p95/p99 and
+  throughput rows for synchronous, ANN, sidecar, mutation, and all three Tokio
+  query routes. The smoke-scale CSV is uploaded by CI and is a correctness
+  gate; same-host default-scale values are recorded in `BENCHMARKS.md`.
 - Completed cross-project integration on 2026-09-02: A3S Code commit
   `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
   `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
@@ -768,8 +776,10 @@ execution are implemented.
 **Release gate**
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, unit/integration/fuzz
-  smoke tests, recovery suite, benchmark report, and Intel macOS 12 runtime
-  smoke all pass. No feature is advertised unless its gate has evidence.
+  smoke tests, recovery suite, `cargo bench --locked --bench feature_matrix
+  --features async` (smoke scale in CI), benchmark report, and Intel macOS 12
+  runtime smoke all pass. No feature is advertised unless its gate has
+  evidence.
 
 ## Deliberate boundaries
 

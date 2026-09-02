@@ -9,6 +9,87 @@ concurrency levels.
 Environment for the 2026-08-30 and 2026-08-31 measurements: Apple M5, 16 GiB
 memory, Darwin arm64, Rust/Cargo 1.98.0.
 
+## Public feature matrix and performance gate
+
+The release gate now has one small, deterministic matrix for the public
+collection surface. `tests/feature_matrix.rs` contains three integration tests:
+
+* the CRUD, projection, exact dense/sparse, source-ID, scalar/FTS, hybrid,
+  group-by, iterator, schema-evolution, flush, reopen, and health routes are
+  checked against a bounded fixture;
+* HNSW, IVF/SOAR, HNSW RaBitQ, IVF RaBitQ, L2 Vamana, and L2 DiskANN/PQ are
+  compared with the exact oracle at exhaustive controls; and
+* the read-only cache/sidecar path, health state, and the deliberately
+  unsupported binary-query boundary are asserted explicitly.
+
+Run the focused matrix or the complete suite with:
+
+```sh
+cargo test --locked --test feature_matrix
+cargo test --locked --all-features
+```
+
+`benches/feature_matrix.rs` executes every successful query route (all four
+dense metrics, dense/sparse source-ID, sparse, indexed FTS, scalar-filtered
+dense, hybrid RRF, group-by, fetch, iterator, statistics/health), mutation and
+flush controls, all six ANN families, both reopened DiskANN sidecar readers,
+and all three Tokio query wrappers. Each sample asserts a non-empty or
+exactly-sized result, so a disconnected implementation fails the benchmark.
+It emits CSV with nearest-rank p50/p95/p99 latency, total work, and work per
+second. The default fixture is 512 documents x 16 dimensions, 16 queries, and
+three rounds; CI uses the smaller smoke scale:
+
+```sh
+cargo bench --locked --bench feature_matrix --features async
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
+```
+
+The following is a representative default-scale run on 2026-09-02 (Windows
+11 x86_64, Intel Xeon w5-2445, 128 GiB, Rust/Cargo 1.97.1). Values are local
+regression indicators, not portable SLOs; compare repeated runs on the same
+host and keep recall/correctness as the acceptance gate. All latency columns
+are microseconds per operation, and the benchmark's CSV also reports
+`work_per_second`.
+
+| Operation | Samples | p50_us | p95_us | p99_us |
+| --- | ---: | ---: | ---: | ---: |
+| dense_l2 | 48 | 42.2 | 69.6 | 75.3 |
+| dense_ip | 48 | 41.7 | 42.6 | 43.0 |
+| dense_cosine | 48 | 46.1 | 46.8 | 47.4 |
+| dense_mips_l2 | 48 | 41.5 | 42.4 | 42.8 |
+| dense_source_id_l2 | 48 | 41.3 | 42.0 | 43.6 |
+| dense_source_id_ip | 48 | 41.2 | 41.8 | 41.9 |
+| dense_source_id_cosine | 48 | 47.1 | 60.3 | 122.3 |
+| dense_source_id_mips_l2 | 48 | 41.7 | 43.2 | 79.6 |
+| sparse | 48 | 83.0 | 85.6 | 86.3 |
+| sparse_source_id | 48 | 81.4 | 84.8 | 89.9 |
+| fts_indexed | 48 | 53.6 | 54.3 | 56.1 |
+| dense_scalar_filter | 48 | 277.9 | 304.8 | 338.4 |
+| multi_rrf | 48 | 119.0 | 125.2 | 139.6 |
+| group_by | 48 | 42.0 | 43.1 | 44.1 |
+| fetch_projection | 48 | 1.6 | 1.8 | 1.8 |
+| snapshot_iterator | 3 | 471.9 | 483.9 | 483.9 |
+| stats_health | 48 | 1.0 | 1.1 | 1.6 |
+| partial_update | 3 | 1,591.8 | 1,643.0 | 1,643.0 |
+| flush | 3 | 15,198.5 | 15,919.7 | 15,919.7 |
+| dense_async | 48 | 85.7 | 128.4 | 255.3 |
+| multi_async | 48 | 96.4 | 123.9 | 138.2 |
+| group_by_async | 48 | 78.2 | 95.8 | 106.6 |
+| ann_hnsw | 48 | 62.5 | 69.1 | 83.1 |
+| ann_ivf_soar | 48 | 36.5 | 49.8 | 55.4 |
+| ann_hnsw_rabitq | 48 | 60.3 | 76.4 | 85.0 |
+| ann_ivf_rabitq | 48 | 42.5 | 50.0 | 61.3 |
+| ann_vamana | 48 | 111.7 | 114.8 | 124.7 |
+| ann_diskann_pq | 48 | 130.6 | 139.4 | 149.1 |
+| diskann_positioned_reopen_query | 3 | 6,484.5 | 7,014.6 | 7,014.6 |
+| diskann_mmap_reopen_query | 3 | 6,484.7 | 6,638.4 | 6,638.4 |
+
+The smoke job uploads this CSV as a CI artifact and gates the release-candidate
+job. It intentionally checks correctness and captures metrics without applying
+a hardware-specific latency threshold. `ann_recall`, `filtered_ann`,
+`structured_fts`, and the other historical fixtures below remain the sources
+for recall, candidate-bound, planner, reopen, and larger-corpus comparisons.
+
 ## Query recall and latency
 
 `benches/ann_recall.rs` creates 2,000 vectors with 32 dimensions and runs 48

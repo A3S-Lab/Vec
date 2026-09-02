@@ -91,6 +91,10 @@ harness = false
 name = "structured_fts"
 harness = false
 
+[[bench]]
+name = "feature_matrix"
+harness = false
+
 [lints.rust]
 unsafe_code = "deny"
 
