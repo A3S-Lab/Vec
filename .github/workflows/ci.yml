@@ -21,6 +21,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
+      - name: Check zvec companion syntax
+        run: python3 -m py_compile scripts/scale_compare_zvec.py
       - name: Lint default features
         run: cargo +stable clippy --locked --all-targets -- -D warnings
       - name: Lint all features
