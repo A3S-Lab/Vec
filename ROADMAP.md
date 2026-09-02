@@ -101,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 260 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 258 unit/integration tests
+all-feature baseline has 263 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 260 unit/integration tests
 plus four doctests, and the feature gates remain separate. Formatting,
 default/all-feature Clippy with `-D warnings`, and rustdoc are green. The full
 default-feature suite
@@ -114,6 +114,13 @@ and arm64, Windows x86_64, and macOS arm64 and Intel, while separate jobs gate
 Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
+
+**Verification refresh (2026-09-03):** Vec commit `2d73ef9` independently
+passes the all-feature and no-default suites, all compatibility examples,
+formatting, all-target checks, all-feature Clippy, locked packaging, and the
+53-row feature/concurrent/mixed benchmark validators on the local Windows
+x86_64 host. These checks do not replace the hosted platform artifacts or the
+actual macOS 12 Intel runtime gate described below.
 
 Phase 3's portable implementation gate is complete: per-handle deterministic
 fault injection covers all 18 write/sync/rename/prune boundaries, including
