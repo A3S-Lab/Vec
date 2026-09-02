@@ -101,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-the all-feature baseline has 249 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 246 unit/integration tests,
+all-feature baseline has 256 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 253 unit/integration tests,
 and the feature gates remain separate. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
