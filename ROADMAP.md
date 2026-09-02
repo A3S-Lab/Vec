@@ -744,6 +744,13 @@ execution are implemented.
   `cargo publish --dry-run --locked` verify version `0.1.0`. After every hosted
   gate passes on `main`, CI uploads the verified crate, SHA-256 checksum, and a
   source-revision manifest as one versioned release-candidate artifact.
+- Completed external-gate automation: a manual workflow accepts an exact
+  revision only on a self-hosted runner labeled `a3s-macos-12`. Its reusable
+  script rejects any host that is not actual macOS 12 on Intel x86-64, runs the
+  locked format, Clippy, default/all-feature, recovery, async, DiskANN, example,
+  rustdoc, and package gates offline, and emits checksummed machine-readable
+  evidence. No qualifying runner is currently registered, so this automation
+  does not close the hardware gate by itself.
 - Remaining release work: an actual macOS 12 Intel runtime result from an
   external runner and publication of the formal tagged artifact against that
   same revision. Logical collection accounting is not advertised as a process-RSS

@@ -1,0 +1,46 @@
+name: macOS 12 Intel Runtime Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact 40-character Vec commit to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos12-intel-${{ inputs.revision }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Actual macOS 12 Intel runtime
+    runs-on: [self-hosted, macOS, X64, a3s-macos-12]
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Check out the requested revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.revision }}
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Populate the locked dependency cache
+        run: cargo +stable fetch --locked
+      - name: Run the host-fenced offline qualification
+        env:
+          EXPECTED_REVISION: ${{ inputs.revision }}
+        run: scripts/qualify_macos12_intel.sh
+      - name: Upload machine-readable runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: a3s-vec-macos12-intel-${{ inputs.revision }}
+          path: target/macos12-intel-evidence/
+          if-no-files-found: error
+          retention-days: 90
