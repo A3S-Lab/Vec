@@ -60,6 +60,10 @@ to Vec commit
 [`019fdb929`](https://github.com/A3S-Lab/Vec/commit/019fdb929a57dee1803691e6def60df3946d9561).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+The engine revision documented and tested by this repository is now
+[`9483f146`](https://github.com/A3S-Lab/Vec/commit/9483f146ac9e36ff624d544ebfff787e25c5794e);
+the older adapter pin remains deliberate until Code's promotion workflow is
+qualified against that revision.
 
 ## 3. Module layout
 

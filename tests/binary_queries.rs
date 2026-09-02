@@ -207,6 +207,10 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
         ids(&collection.query(&built64).expect("built Binary64 query")),
         ["doc-0", "doc-1", "doc-2"]
     );
+    let encoded64 = serde_json::to_string(&built64).expect("serialize Binary64 builder query");
+    let decoded64: SearchQuery =
+        serde_json::from_str(&encoded64).expect("deserialize Binary64 builder query");
+    assert_eq!(decoded64, built64);
 
     let mut branch = SubQuery::new().expect("binary sub-query");
     branch.set_field_name("bits32").expect("sub-query field");
@@ -231,6 +235,10 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
         .set_binary_vector(&[0; 8])
         .expect("Binary64 sub-query vector");
     branch64.set_num_candidates(5).expect("candidate count");
+    let encoded_branch64 = serde_json::to_string(&branch64).expect("serialize Binary64 sub-query");
+    let decoded_branch64: SubQuery =
+        serde_json::from_str(&encoded_branch64).expect("deserialize Binary64 sub-query");
+    assert_eq!(decoded_branch64, branch64);
     let mut multi64 = MultiQuery::new().expect("Binary64 multi-query");
     multi64
         .add_sub_query(&branch64)
@@ -259,6 +267,11 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
 
     let grouped64 = GroupBySearchQuery::binary("bits64", "category", &[0; 8], 2, 2)
         .expect("Binary64 group-by query");
+    let encoded_grouped64 =
+        serde_json::to_string(&grouped64).expect("serialize Binary64 group-by query");
+    let decoded_grouped64: GroupBySearchQuery =
+        serde_json::from_str(&encoded_grouped64).expect("deserialize Binary64 group-by query");
+    assert_eq!(decoded_grouped64, grouped64);
     let groups64 = collection.group_by(&grouped64).expect("Binary64 group-by");
     assert_eq!(
         grouped_ids(&groups64).get("a"),
@@ -276,6 +289,65 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
         binary64_hits.iter().map(Doc::get_score).collect::<Vec<_>>(),
         [0.0, -1.0, -2.0, -8.0, -8.0]
     );
+
+    let mut projected64 = binary64.clone();
+    projected64
+        .set_include_vector(true)
+        .expect("Binary64 include vector");
+    projected64
+        .set_include_doc_id(true)
+        .expect("Binary64 include document id");
+    projected64
+        .set_output_fields(&["category", "bits64"])
+        .expect("Binary64 output projection");
+    let projected64_hits = collection
+        .query(&projected64)
+        .expect("projected Binary64 query");
+    assert_eq!(ids(&projected64_hits), ids(&binary64_hits));
+    assert!(projected64_hits.iter().all(|doc| doc.doc_id().is_some()));
+    assert!(projected64_hits.iter().all(|doc| doc
+        .get_vector_binary64("bits64")
+        .expect("Binary64 getter")
+        .is_some()));
+    assert!(projected64_hits
+        .iter()
+        .all(|doc| doc.vector("bits32").is_none()));
+    assert!(projected64_hits
+        .iter()
+        .all(|doc| doc.vector("dense").is_none()));
+
+    let mut radius64 = binary64.clone();
+    radius64.set_radius(1.0).expect("Binary64 L2 radius");
+    assert_eq!(
+        ids(&collection.query(&radius64).expect("Binary64 radius query")),
+        ["doc-0", "doc-1"]
+    );
+
+    let mut grouped64_projected = grouped64.clone();
+    grouped64_projected
+        .set_filter("category == 'b'")
+        .expect("Binary64 group filter");
+    grouped64_projected
+        .set_include_vector(true)
+        .expect("Binary64 group include vector");
+    grouped64_projected
+        .set_output_fields(&["category", "bits64"])
+        .expect("Binary64 group projection");
+    let projected_groups64 = collection
+        .group_by(&grouped64_projected)
+        .expect("projected Binary64 group-by");
+    assert_eq!(projected_groups64.len(), 1);
+    let projected_group_docs = projected_groups64
+        .get("b")
+        .expect("filtered Binary64 group");
+    assert_eq!(projected_group_docs.len(), 2);
+    assert!(projected_group_docs.iter().all(|doc| doc
+        .get_vector_binary64("bits64")
+        .expect("group Binary64 getter")
+        .is_some()));
+    assert!(projected_group_docs
+        .iter()
+        .all(|doc| doc.vector("bits32").is_none() && doc.vector("dense").is_none()));
 
     let stats = collection.stats().expect("collection stats");
     let flat = stats
@@ -389,6 +461,13 @@ fn binary_query_contract_rejects_ambiguous_mismatched_and_ann_payloads() {
     assert_eq!(error.code, ErrorCode::InvalidArgument);
     assert!(error.message.contains("expected 4, got 3"));
 
+    let wrong_length64 = SearchQuery::binary("bits64", &[0; 7], 1).expect("typed Binary64 query");
+    let error = collection
+        .query(&wrong_length64)
+        .expect_err("Binary64 byte length mismatch");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(error.message.contains("expected 8, got 7"));
+
     let dense = SearchQuery::new("bits32", &[0.0; 32], 1).expect("dense query");
     assert_eq!(
         collection
@@ -406,12 +485,34 @@ fn binary_query_contract_rejects_ambiguous_mismatched_and_ann_payloads() {
         ErrorCode::InvalidArgument
     );
 
+    let mut switched = SearchQuery::new("dense", &[0.0, 1.0], 1).expect("dense query");
+    assert!(switched.has_vector());
+    switched
+        .set_binary_vector(&[0; 8])
+        .expect("route switch to Binary64 must be valid");
+    assert!(switched.vector.is_none());
+    assert_eq!(switched.binary_vector.as_deref(), Some(&[0; 8][..]));
+    switched
+        .set_query_vector(&[0.0, 1.0])
+        .expect("route switch back to dense must be valid");
+    assert!(switched.binary_vector.is_none());
+    assert!(switched.vector.is_some());
+
     let mut cosine = SearchQuery::binary("bits32", &[0; 4], 1).expect("binary query");
     cosine.params.insert("metric".into(), json!("cosine"));
     let error = collection
         .query(&cosine)
         .expect_err("binary cosine must be rejected");
     assert_eq!(error.code, ErrorCode::NotSupported);
+    let mut cosine64 = SearchQuery::binary("bits64", &[0; 8], 1).expect("Binary64 query");
+    cosine64.params.insert("metric".into(), json!("cosine"));
+    assert_eq!(
+        collection
+            .query(&cosine64)
+            .expect_err("Binary64 cosine must be rejected")
+            .code,
+        ErrorCode::NotSupported
+    );
 
     let mut ambiguous = SearchQuery::binary("bits32", &[0; 4], 1).expect("binary query");
     ambiguous.vector = Some(vec![0.0; 32]);

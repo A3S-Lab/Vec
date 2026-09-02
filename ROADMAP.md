@@ -763,9 +763,10 @@ execution are implemented.
   covers CRUD, projection, exact dense/sparse/binary and source-ID queries, scalar/
   FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
   health, cache/sidecar readers, all six ANN families, and explicit unsupported
-  binary-ANN boundaries. `benches/feature_matrix.rs` adds 49 asserted
-  p50/p95/p99 and throughput rows, including Binary32/64 exact, source-ID,
-  scalar-filter, multi-query, group-by, and Tokio paths. The smoke-scale CSV is
+  binary-ANN boundaries. `benches/feature_matrix.rs` adds 53 asserted
+  p50/p95/p99 and throughput rows, including Binary32/64 exact, radius,
+  projection, source-ID, scalar-filter, multi-query, group-by, and Tokio paths.
+  The smoke-scale CSV is
   uploaded by CI and is a correctness
   gate; same-host default-scale values are recorded in `BENCHMARKS.md`.
 - Completed cross-project integration on 2026-09-02: A3S Code commit

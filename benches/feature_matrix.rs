@@ -391,6 +391,49 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
+    let mut binary32_radius = binary32.clone();
+    binary32_radius
+        .set_radius(1.0)
+        .expect("Binary32 radius must be valid");
+    measure("binary32_radius", config, samples, |sample| {
+        let mut query = binary32_radius.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 4))
+            .expect("Binary32 radius query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary32 radius query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let mut binary32_projection = binary32.clone();
+    binary32_projection
+        .set_include_vector(true)
+        .expect("Binary32 include-vector control must be valid");
+    binary32_projection
+        .set_include_doc_id(true)
+        .expect("Binary32 include-doc-id control must be valid");
+    binary32_projection
+        .set_output_fields(&["category", "bits32"])
+        .expect("Binary32 projection must be valid");
+    measure("binary32_projection", config, samples, |sample| {
+        let mut query = binary32_projection.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 4))
+            .expect("Binary32 projection query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary32 projection query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        assert!(result.iter().all(|doc| {
+            doc.doc_id().is_some()
+                && doc.get_vector_binary32("bits32").ok().flatten().is_some()
+                && doc.vector("bits64").is_none()
+        }));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
     let binary64 = SearchQuery::binary("bits64", &binary_for(17, 8), 10)
         .expect("Binary64 query must be valid");
     measure("binary64_exact", config, samples, |sample| {
@@ -402,6 +445,49 @@ fn measure_full_routes(collection: &Collection, config: Config) {
             .query(black_box(&query))
             .expect("Binary64 exact query must succeed");
         assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let mut binary64_radius = binary64.clone();
+    binary64_radius
+        .set_radius(1.0)
+        .expect("Binary64 radius must be valid");
+    measure("binary64_radius", config, samples, |sample| {
+        let mut query = binary64_radius.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 8))
+            .expect("Binary64 radius query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary64 radius query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+
+    let mut binary64_projection = binary64.clone();
+    binary64_projection
+        .set_include_vector(true)
+        .expect("Binary64 include-vector control must be valid");
+    binary64_projection
+        .set_include_doc_id(true)
+        .expect("Binary64 include-doc-id control must be valid");
+    binary64_projection
+        .set_output_fields(&["category", "bits64"])
+        .expect("Binary64 projection must be valid");
+    measure("binary64_projection", config, samples, |sample| {
+        let mut query = binary64_projection.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 8))
+            .expect("Binary64 projection query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("Binary64 projection query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        assert!(result.iter().all(|doc| {
+            doc.doc_id().is_some()
+                && doc.get_vector_binary64("bits64").ok().flatten().is_some()
+                && doc.vector("bits32").is_none()
+        }));
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
@@ -980,7 +1066,11 @@ fn assert_complete_matrix() {
         "sparse",
         "sparse_source_id",
         "binary32_exact",
+        "binary32_radius",
+        "binary32_projection",
         "binary64_exact",
+        "binary64_radius",
+        "binary64_projection",
         "binary_source_id",
         "binary64_source_id",
         "binary_scalar_filter",

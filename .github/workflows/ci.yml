@@ -69,7 +69,7 @@ jobs:
               rows++
             }
             END {
-              if (rows != 49 || bad) exit 1
+              if (rows != 53 || bad) exit 1
               for (name in seen) if (seen[name] != 1) exit 1
             }
           ' target/performance/feature-matrix.csv

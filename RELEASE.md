@@ -24,9 +24,10 @@ The release-facing contract has the following boundaries:
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
-  boundary against deterministic fixtures. Its smoke-scale performance CSV is
-  a required hosted CI artifact; same-host p50/p95/p99 baselines are recorded
-  in [`BENCHMARKS.md`](BENCHMARKS.md).
+  boundary against deterministic fixtures. Binary32/Binary64 radius and
+  projection/include-doc-id combinations also have asserted matrix rows. Its
+  smoke-scale performance CSV is a required hosted CI artifact; same-host
+  p50/p95/p99 baselines are recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
 - The locked dependency graph passes `cargo audit --deny unsound`: no known
   vulnerability or unsoundness advisory is present at the candidate revision.
   The audit still reports four upstream maintenance warnings (`bincode`,

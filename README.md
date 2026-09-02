@@ -39,6 +39,11 @@ as bounded diagnostics; they cannot change public retrieval results. The
 complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
+The current engine and feature-matrix evidence in this repository are at
+[`9483f146`](https://github.com/A3S-Lab/Vec/commit/9483f146ac9e36ff624d544ebfff787e25c5794e).
+Code intentionally keeps the older `019fdb929` shadow pin until its promotion
+workflow is qualified against the newer engine revision.
+
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
 That lets the planner compose bitmaps and candidates without building
 query-sized primary-key maps, then resolve only the exact top-k documents.
@@ -478,7 +483,7 @@ that ownership claim.
 | Collection resource admission | Implemented for retained documents/logical bytes, cumulative query candidates, write batches, and metadata-only rejection telemetry |
 | DiskANN query reader | Portable positioned reads or a validated immutable anonymous mmap snapshot, plus optional Tokio blocking-pool query entry points; native async file reads and direct file-backed mmap remain roadmap |
 | Product quantization / RaBitQ | PQ implemented for DiskANN / RaBitQ implemented for HNSW and IVF |
-| Binary vector query execution | Binary32/Binary64 exact L2/Hamming implemented across direct, source-ID, filtered, radius, multi-query, group-by, persistence, and optional Tokio paths; binary ANN remains unsupported |
+| Binary vector query execution | Binary32/Binary64 exact L2/Hamming implemented across direct, source-ID, filtered, radius, projection/include-doc-id, multi-query, group-by, persistence, and optional Tokio paths; binary ANN remains unsupported |
 | Alibaba C++ binary-format compatibility | Requires an explicit future importer/exporter |
 
 `a3s-vec` follows zvec's Rust vocabulary where it is useful, but it is not a

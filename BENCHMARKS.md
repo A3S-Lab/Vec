@@ -21,8 +21,9 @@ collection surface. `tests/feature_matrix.rs` contains three integration tests:
   DiskANN/PQ (L2, inner product, cosine, and MIPS-L2) are compared with the
   exact oracle at exhaustive controls; and
 * Binary32/Binary64 exact L2/Hamming execution is checked across direct,
-  source-ID, filtered, multi-query, group-by, persistence, and optional Tokio
-  paths; unsupported binary ANN controls remain explicit; and
+  source-ID, filtered, radius, projection, multi-query, group-by, persistence,
+  and optional Tokio paths; unsupported binary ANN controls remain explicit;
+  and
 * the read-only cache/sidecar path and health state are asserted explicitly.
 
 Run the focused matrix or the complete suite with:
@@ -34,8 +35,9 @@ cargo test --locked --all-features
 
 `benches/feature_matrix.rs` executes every successful query route (all four
 dense metrics, include-doc-id, dense/sparse/Binary32/Binary64 source-ID, sparse,
-Binary32/Binary64 exact, indexed FTS, scalar-filtered dense/Binary32/Binary64,
-hybrid RRF, Binary32/Binary64 multi-query, dense/Binary32/Binary64 group-by,
+Binary32/Binary64 exact and radius/projection combinations, indexed FTS,
+scalar-filtered dense/Binary32/Binary64, hybrid RRF,
+  Binary32/Binary64 multi-query, dense/Binary32/Binary64 group-by,
 fetch, iterator, and statistics/health), mutation and flush controls, all six
 ANN families across their supported metrics, both reopened DiskANN sidecar
 readers, and the Tokio query wrappers, including Binary32/Binary64 exact
@@ -74,7 +76,11 @@ query operations; the CSV's `work_per_sample` makes that distinction explicit.
 | sparse | 48 | 94.4 | 137.0 | 141.3 | 105,932.2 |
 | sparse_source_id | 48 | 89.6 | 103.0 | 108.8 | 111,607.1 |
 | binary32_exact | 48 | 30.4 | 32.1 | 38.4 | 328,947.4 |
+| binary32_radius | 48 | 15.1 | 20.9 | 23.0 | 132,450.3 |
+| binary32_projection | 48 | 36.8 | 54.9 | 68.0 | 271,739.1 |
 | binary64_exact | 48 | 33.0 | 42.9 | 46.3 | 303,030.3 |
+| binary64_radius | 48 | 18.1 | 22.6 | 27.6 | 110,497.2 |
+| binary64_projection | 48 | 38.6 | 62.6 | 66.9 | 259,067.4 |
 | binary_source_id | 48 | 28.1 | 28.7 | 29.0 | 355,871.9 |
 | binary64_source_id | 48 | 32.0 | 47.1 | 101.7 | 312,500.0 |
 | binary_scalar_filter | 48 | 274.5 | 323.5 | 327.4 | 36,429.9 |
