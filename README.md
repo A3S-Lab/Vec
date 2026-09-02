@@ -40,15 +40,14 @@ complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The current engine and benchmark evidence in this repository are at
-[`d6b8345`](https://github.com/A3S-Lab/Vec/commit/d6b83458e0a1042a59e877d5df1511297b60f2fa),
-with the complete hosted gate recorded in
+[`e27524d`](https://github.com/A3S-Lab/Vec/commit/e27524dc318b6acbd293192bef8a684321c0ad9e).
+Its revision-bound hosted gate is
+[CI run 33695231554](https://github.com/A3S-Lab/Vec/actions/runs/33695231554);
+the preceding methodology gate is retained in
 [CI run 33690839419](https://github.com/A3S-Lab/Vec/actions/runs/33690839419).
-The underlying engine gate is retained in
-[CI run 33686399240](https://github.com/A3S-Lab/Vec/actions/runs/33686399240);
-the newer revision qualifies the cross-project benchmark methodology and
-records the borrowed exact-score kernel's measured improvement.
-Code intentionally keeps the older `019fdb929` shadow pin until its promotion
-workflow is qualified against the newer engine revision.
+The current revision also records the borrowed exact-score kernel's measured
+improvement. Code intentionally keeps the older `019fdb929` shadow pin until
+its promotion workflow is qualified against the newer engine revision.
 
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
 That lets the planner compose bitmaps and candidates without building
