@@ -15,6 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+const MIN_RECALL_AT_10: f64 = 0.80;
+
 #[derive(Clone, Copy, Debug)]
 struct Config {
     documents: usize,
@@ -253,7 +255,7 @@ fn main() {
         assert!(p50 <= p95 && p95 <= p99);
         let recall = count_to_f64(measurement.hits) / count_to_f64(total * 10);
         let qps = count_to_f64(total) / measurement.elapsed.as_secs_f64();
-        assert!(recall.is_finite() && (0.0..=1.0).contains(&recall));
+        assert!(recall.is_finite() && (MIN_RECALL_AT_10..=1.0).contains(&recall));
         assert!(qps.is_finite() && qps > 0.0);
         println!(
             "hnsw,{workers},{},{},{},{},{index_build_ms:.3},{recall:.4},{:.2},{:.2},{:.2},{qps:.2}",

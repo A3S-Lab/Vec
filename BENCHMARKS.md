@@ -109,7 +109,8 @@ set for the configured number of rounds. The report includes index build time,
 Recall@10 against a flat oracle, nearest-rank p50/p95/p99 per-query latency,
 and wall-clock QPS. The default fixture is 2,000 documents x 32 dimensions,
 48 queries, and five rounds. CI uses the smoke scale (96 x 8, eight queries,
-two rounds) and validates the CSV with `.github/check_concurrent.awk`.
+two rounds), requires Recall@10 >= 0.80, and validates the CSV with
+`.github/check_concurrent.awk`.
 
 ```sh
 cargo bench --locked --bench concurrent_queries --quiet
@@ -129,7 +130,7 @@ with a stable flat oracle; vector-index mutation is measured separately by the
 `incremental_write` fixture. Each row reports index-build time, read and write
 p50/p95/p99 latency, read/write wall-clock QPS, Recall@10, final revision, and
 logical accounted bytes. CI uses the smoke scale and validates the 19-column
-CSV with `.github/check_mixed.awk`.
+CSV with `.github/check_mixed.awk`; both CI gates require Recall@10 >= 0.80.
 
 ```sh
 cargo bench --locked --bench mixed_workload --quiet
