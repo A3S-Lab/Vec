@@ -14,7 +14,12 @@ memory, Darwin arm64, Rust/Cargo 1.98.0.
 This is a supplemental, same-host API comparison refreshed on 2026-09-03. It
 is not the release gate and is not a substitute for a VectorDBBench run at
 production scale. The a3s-vec side uses its Rust API and the zvec side uses
-the zvec 0.7.0 Python/native binding. Both use a vector-only schema, the same
+the zvec 0.7.0 Python/native binding. Unless noted otherwise, a3s-vec is built
+with Cargo's portable default target features, while the zvec wheel contains
+its release native C++ backend. That shipped-portability versus native-wheel
+asymmetry is material for CPU-bound distance work, so these rows are a
+directional product comparison rather than a compiler-level apples-to-apples
+claim. Both use a vector-only schema, the same
 deterministic vector generator as `ann_recall`, 2,000 documents, 32
 dimensions, 48 top-10 queries, five measured rounds, cosine distance, and one
 query worker. zvec index creation is explicitly set to
@@ -40,9 +45,14 @@ this scale. The earlier 2026-09-02 table is intentionally superseded: it
 used implicit zvec index concurrency and therefore did not enforce the
 one-worker comparison. The two engines also have different persistence and
 index lifecycle semantics, and process-to-process timing variance remains
-material. The a3s-vec release `ann_recall` gate uses its authoritative HNSW
-refiner; this cross-project smoke run disables refinement in both engines so
-that the query controls are closer. It must not be read as a replacement for
+material. The a3s-vec executor always exact-reranks authoritative vectors as
+a correctness invariant. The zvec harness sets `is_using_refiner=False`; zvec's
+optional refiner requires a separate flat reference index and is not enabled
+by this fixture. Consequently the HNSW rows are not a strict same-refiner
+comparison and should be treated as directional. Flat is closer to an
+exact-vs-exact comparison, but its numeric kernels and storage layouts still
+differ. The a3s-vec release `ann_recall` gate uses its authoritative HNSW
+refiner; this cross-project smoke run must not be read as a replacement for
 the release-gate numbers above.
 
 ## Larger-corpus scale comparison
@@ -60,9 +70,12 @@ The following three-process median was collected on 2026-09-03 on the same
 Windows x86_64 Intel Xeon w5-2445 host (128 GiB RAM). The fixture has 100,000
 documents x 128 dimensions, 32 queries, three measured rounds, batches of
 512, one query/build worker, cosine distance, and HNSW `m=16`,
-`ef_construction=96`, `ef=64`. Refinement and zvec post-optimize were
-disabled. The zvec harness passes `IndexOption(concurrency=1)`; the a3s-vec
-harness uses `RAYON_NUM_THREADS=1`. The a3s-vec run uses manual durability;
+`ef_construction=96`, `ef=64`. zvec post-optimize and its optional
+`is_using_refiner` path were disabled. The zvec harness passes
+`IndexOption(concurrency=1)`; the a3s-vec harness uses `RAYON_NUM_THREADS=1`.
+The a3s-vec executor still exact-reranks authoritative vectors after
+candidate generation, so HNSW latency is directional rather than a strict
+same-refiner comparison. The a3s-vec run uses manual durability;
 `insert_ms` includes the initial insert-plus-flush/checkpoint boundary in
 both harnesses, while index lifecycle timings are reported separately.
 Percentiles are based on 96 samples per process. zvec's HNSW graph is not
@@ -85,7 +98,8 @@ three zvec HNSW processes produced Recall@10 values from 0.5625 to 0.5781
 points higher than the zvec median at this parameter point. Both recall
 values are too low to serve as a production target without increasing
 `ef`. These results do not establish a universal engine ranking: they are
-one host, one corpus, one worker, and one parameter point. The HNSW build
+one host, one corpus, one worker, one compiler/runtime pairing, and one
+parameter point. The HNSW build
 lifecycle also differs: a3s-vec maintains and checkpoints its graph during
 the index-creation transaction, while the zvec call has different persistence
 and post-insert lifecycle semantics. Repeat the run with identical durability,
