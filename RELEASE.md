@@ -21,6 +21,11 @@ The release-facing contract has the following boundaries:
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
   against the package's `0.1.0` identity.
+- The public feature matrix checks every advertised query/lifecycle route,
+  all six ANN families, cache/sidecar reopen, and the explicit binary-query
+  boundary against deterministic fixtures. Its smoke-scale performance CSV is
+  a required hosted CI artifact; same-host p50/p95/p99 baselines are recorded
+  in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Reproducible candidate artifact
 
@@ -39,6 +44,9 @@ The same package can be reproduced locally without changing external state:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
+cargo test --locked --test feature_matrix
+cargo bench --locked --bench feature_matrix --features async
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench feature_matrix --features async
 cargo doc --locked --no-deps --all-features
 cargo package --locked --offline
 cargo publish --dry-run --locked
