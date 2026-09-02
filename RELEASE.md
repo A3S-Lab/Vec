@@ -27,6 +27,12 @@ The release-facing contract has the following boundaries:
   boundary against deterministic fixtures. Its smoke-scale performance CSV is
   a required hosted CI artifact; same-host p50/p95/p99 baselines are recorded
   in [`BENCHMARKS.md`](BENCHMARKS.md).
+- The locked dependency graph passes `cargo audit --deny unsound`: no known
+  vulnerability or unsoundness advisory is present at the candidate revision.
+  The audit still reports four upstream maintenance warnings (`bincode`,
+  `bitmaps`, `fxhash`, and `paste`); they are non-blocking because no patched
+  release or unsound finding is currently available for those paths, and the
+  exact versions remain pinned in `Cargo.lock`.
 - `SearchQueryBuilder` dense and pure-FTS routes are executed against the same
   collection oracles, and `include_doc_id` is checked for deterministic,
   generation-local ordinals across projections and reopen.
@@ -47,6 +53,7 @@ The same package can be reproduced locally without changing external state:
 ```text
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo audit --deny unsound
 cargo test --locked --all-features
 cargo test --locked --test feature_matrix
 cargo bench --locked --bench feature_matrix --features async

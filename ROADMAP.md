@@ -101,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 256 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 253 unit/integration tests,
+all-feature baseline has 257 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 254 unit/integration tests,
 and the feature gates remain separate. Formatting, default/all-feature
 Clippy with `-D warnings`, and rustdoc are green. The full default-feature suite
 also passes on the declared Rust 1.75 MSRV after constraining the broad Rayon
@@ -763,7 +763,7 @@ execution are implemented.
   covers CRUD, projection, exact dense/sparse/binary and source-ID queries, scalar/
   FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
   health, cache/sidecar readers, all six ANN families, and explicit unsupported
-  binary-ANN boundaries. `benches/feature_matrix.rs` adds 44 asserted
+  binary-ANN boundaries. `benches/feature_matrix.rs` adds 49 asserted
   p50/p95/p99 and throughput rows, including Binary32/64 exact, source-ID,
   scalar-filter, multi-query, group-by, and Tokio paths. The smoke-scale CSV is
   uploaded by CI and is a correctness

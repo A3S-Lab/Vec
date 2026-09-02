@@ -173,7 +173,7 @@ result.
 - Dense, sparse, and packed-binary queries accept either an explicit payload
   or a source document ID. Source-ID queries use the same exact scoring,
   filtering, radius, projection, persistence, and optional Tokio execution
-  paths.
+  paths; Binary32 and Binary64 are covered independently through each route.
 - Binary32 and Binary64 exact searches use L2 over bit coordinates: the exposed
   score is the negative XOR Hamming count. Flat L2 is supported; other binary
   metrics and binary ANN indexes return `NotSupported`.
@@ -492,6 +492,7 @@ Run checks inside this crate:
 
 ```sh
 cargo fmt --all -- --check
+cargo audit --deny unsound
 cargo test
 cargo test --no-default-features
 cargo test --all-features

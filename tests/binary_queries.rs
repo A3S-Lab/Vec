@@ -17,13 +17,15 @@ fn schema() -> CollectionSchema {
     bits32
         .set_index_params(&IndexParams::flat(MetricType::L2).expect("Flat L2 index"))
         .expect("Binary32 Flat index");
+    let mut bits64 =
+        FieldSchema::new("bits64", DataType::VectorBinary64, false, 64).expect("Binary64 schema");
+    bits64
+        .set_index_params(&IndexParams::flat(MetricType::L2).expect("Flat L2 index"))
+        .expect("Binary64 Flat index");
     CollectionSchema::builder("binary-query-contract")
         .add_field(category)
         .add_field(bits32)
-        .add_field(
-            FieldSchema::new("bits64", DataType::VectorBinary64, false, 64)
-                .expect("Binary64 schema"),
-        )
+        .add_field(bits64)
         .add_field(FieldSchema::new("dense", DataType::VectorFp32, false, 2).expect("dense schema"))
         .build()
         .expect("binary query schema")
@@ -142,6 +144,18 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
         ["doc-2", "doc-3"]
     );
 
+    let mut filtered64 =
+        SearchQuery::binary("bits64", &[0; 8], 5).expect("filtered Binary64 query");
+    filtered64
+        .set_filter("category == 'b'")
+        .expect("Binary64 scalar filter");
+    assert_eq!(
+        ids(&collection
+            .query(&filtered64)
+            .expect("filtered Binary64 query")),
+        ["doc-2", "doc-3"]
+    );
+
     let mut radius = SearchQuery::binary("bits32", &[0, 0, 0, 0], 5).expect("radius binary query");
     radius.set_radius(1.0).expect("L2 radius");
     assert_eq!(
@@ -158,6 +172,16 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
                 .unwrap()
         )
     );
+    let source64 = SearchQuery::by_id("bits64", "doc-0", 5).expect("Binary64 source-id query");
+    let direct64 = SearchQuery::binary("bits64", &[0; 8], 5).expect("Binary64 direct query");
+    assert_eq!(
+        ranking(
+            &collection
+                .query(&source64)
+                .expect("Binary64 source-id query")
+        ),
+        ranking(&collection.query(&direct64).expect("Binary64 direct query"))
+    );
 
     let built = SearchQuery::builder()
         .field_name("bits32")
@@ -172,6 +196,17 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
     let encoded = serde_json::to_string(&built).expect("serialize binary query");
     let decoded: SearchQuery = serde_json::from_str(&encoded).expect("deserialize binary query");
     assert_eq!(decoded, built);
+
+    let built64 = SearchQuery::builder()
+        .field_name("bits64")
+        .binary_vector(&[0; 8])
+        .topk(3)
+        .build()
+        .expect("Binary64 builder route");
+    assert_eq!(
+        ids(&collection.query(&built64).expect("built Binary64 query")),
+        ["doc-0", "doc-1", "doc-2"]
+    );
 
     let mut branch = SubQuery::new().expect("binary sub-query");
     branch.set_field_name("bits32").expect("sub-query field");
@@ -188,6 +223,24 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
     let multi_hits = collection.multi_query(&multi).expect("binary multi-query");
     assert_eq!(ids(&multi_hits), ["doc-0", "doc-1", "doc-2"]);
 
+    let mut branch64 = SubQuery::new().expect("Binary64 sub-query");
+    branch64
+        .set_field_name("bits64")
+        .expect("Binary64 sub-query field");
+    branch64
+        .set_binary_vector(&[0; 8])
+        .expect("Binary64 sub-query vector");
+    branch64.set_num_candidates(5).expect("candidate count");
+    let mut multi64 = MultiQuery::new().expect("Binary64 multi-query");
+    multi64
+        .add_sub_query(&branch64)
+        .expect("add Binary64 branch");
+    multi64.set_topk(3).expect("Binary64 multi top-k");
+    let multi64_hits = collection
+        .multi_query(&multi64)
+        .expect("Binary64 multi-query");
+    assert_eq!(ids(&multi64_hits), ["doc-0", "doc-1", "doc-2"]);
+
     let grouped = GroupBySearchQuery::binary("bits32", "category", &[0, 0, 0, 0], 2, 2)
         .expect("binary group-by query");
     let encoded = serde_json::to_string(&grouped).expect("serialize binary group-by query");
@@ -201,6 +254,18 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
     );
     assert_eq!(
         grouped_ids(&groups).get("b"),
+        Some(&vec!["doc-2".to_string(), "doc-3".to_string()])
+    );
+
+    let grouped64 = GroupBySearchQuery::binary("bits64", "category", &[0; 8], 2, 2)
+        .expect("Binary64 group-by query");
+    let groups64 = collection.group_by(&grouped64).expect("Binary64 group-by");
+    assert_eq!(
+        grouped_ids(&groups64).get("a"),
+        Some(&vec!["doc-0".to_string(), "doc-1".to_string()])
+    );
+    assert_eq!(
+        grouped_ids(&groups64).get("b"),
         Some(&vec!["doc-2".to_string(), "doc-3".to_string()])
     );
 
@@ -221,17 +286,32 @@ fn binary_exact_routes_are_typed_deterministic_and_persistent() {
     assert_eq!(flat.index_type, IndexType::Flat);
     assert_eq!(flat.state, "ready");
     assert_eq!(flat.document_count, 5);
+    let flat64 = stats
+        .indexes
+        .iter()
+        .find(|index| index.name == "bits64")
+        .expect("Binary64 Flat stats");
+    assert_eq!(flat64.index_type, IndexType::Flat);
+    assert_eq!(flat64.state, "ready");
+    assert_eq!(flat64.document_count, 5);
 
     #[cfg(feature = "async")]
     assert_async_parity(&collection, &direct, &multi, &grouped);
+    #[cfg(feature = "async")]
+    assert_async_parity(&collection, &direct64, &multi64, &grouped64);
 
     let expected = ranking(&direct_hits);
+    let expected64 = ranking(&binary64_hits);
     collection.flush().expect("flush collection");
     collection.close().expect("close collection");
     let reopened = Collection::open(path_string, None).expect("reopen collection");
     assert_eq!(
         ranking(&reopened.query(&direct).expect("reopened binary query")),
         expected
+    );
+    assert_eq!(
+        ranking(&reopened.query(&direct64).expect("reopened Binary64 query")),
+        expected64
     );
     reopened.close().expect("close reopened collection");
 }
@@ -502,4 +582,77 @@ fn binary32_and_binary64_match_an_independent_hamming_oracle() {
             );
         }
     }
+}
+
+#[test]
+fn binary_mutations_and_filtered_delete_survive_reopen() {
+    let temporary = tempdir().expect("temporary directory");
+    let path = temporary.path().join("mutations");
+    let path_string = path.to_str().expect("UTF-8 collection path");
+    let collection = Collection::create(path_string, &schema(), None).expect("create collection");
+    let docs = fixture_docs();
+    collection
+        .insert(&docs.iter().collect::<Vec<_>>())
+        .expect("insert fixture");
+
+    let mut updated_doc = Doc::with_pk("doc-4").expect("patch document");
+    updated_doc
+        .add_vector_binary32("bits32", &[0; 4])
+        .expect("Binary32 patch");
+    updated_doc
+        .add_vector_binary64("bits64", &[0; 8])
+        .expect("Binary64 patch");
+    let updated = collection.update(&[&updated_doc]).expect("binary update");
+    assert_eq!(updated.success_count, 1);
+    let stored = collection.fetch(&["doc-4"]).expect("updated document");
+    assert_eq!(
+        stored[0]
+            .get_vector_binary32("bits32")
+            .expect("Binary32 getter"),
+        Some(vec![0; 4])
+    );
+    assert_eq!(
+        stored[0]
+            .get_vector_binary64("bits64")
+            .expect("Binary64 getter"),
+        Some(vec![0; 8])
+    );
+
+    let replacement = fixture_doc("doc-1", "replaced", [u8::MAX; 4], [u8::MAX; 8]);
+    let upserted = collection.upsert(&[&replacement]).expect("binary upsert");
+    assert_eq!(upserted.success_count, 1);
+    assert_eq!(
+        collection.fetch(&["doc-1"]).expect("upserted document")[0]
+            .get_string("category")
+            .expect("category getter"),
+        Some("replaced".to_string())
+    );
+
+    let deleted = collection.delete(&["doc-3"]).expect("binary delete");
+    assert_eq!(deleted.success_count, 1);
+    collection
+        .delete_by_filter("category == 'c'")
+        .expect("filtered binary delete");
+    assert_eq!(collection.count().expect("count after deletes"), 3);
+    collection.flush().expect("flush mutations");
+    collection.close().expect("close collection");
+
+    let reopened = Collection::open(path_string, None).expect("reopen collection");
+    assert_eq!(reopened.count().expect("reopened count"), 3);
+    assert!(reopened
+        .fetch(&["doc-3", "doc-4"])
+        .expect("deleted fetch")
+        .is_empty());
+    let replaced = reopened.fetch(&["doc-1"]).expect("replaced fetch");
+    assert_eq!(
+        replaced[0]
+            .get_vector_binary64("bits64")
+            .expect("reopened Binary64 getter"),
+        Some(vec![u8::MAX; 8])
+    );
+    let hits = reopened
+        .query(&SearchQuery::binary("bits64", &[0; 8], 5).expect("reopened Binary64 query"))
+        .expect("reopened binary search");
+    assert_eq!(ids(&hits), ["doc-0", "doc-2", "doc-1"]);
+    reopened.close().expect("close reopened collection");
 }

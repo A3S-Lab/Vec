@@ -56,6 +56,23 @@ jobs:
           mkdir -p target/performance
           cargo +stable bench --locked --bench feature_matrix --features async --quiet \
             | tee target/performance/feature-matrix.csv
+      - name: Verify complete matrix metrics
+        shell: bash
+        run: |
+          awk -F, '
+            /^#/ { next }
+            $1 == "operation" { next }
+            NF != 10 { bad = 1; next }
+            {
+              if ($6 <= 0 || $6 > $7 || $7 > $8 || $9 <= 0) bad = 1
+              seen[$1]++
+              rows++
+            }
+            END {
+              if (rows != 49 || bad) exit 1
+              for (name in seen) if (seen[name] != 1) exit 1
+            }
+          ' target/performance/feature-matrix.csv
       - name: Upload feature matrix
         uses: actions/upload-artifact@v4
         with:

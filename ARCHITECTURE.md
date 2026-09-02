@@ -830,6 +830,11 @@ compatible pins for broad Rayon and `rmp` dependency ranges. Jieba's current
 dependency chain contains Rust 2024-edition manifests and therefore requires a
 newer Cargo; that feature-specific compiler floor remains explicit until the
 dependency is replaced or its minimum version is raised for the whole crate.
+The locked graph is checked with `cargo audit --deny unsound`; the current
+audit has no vulnerability or unsoundness findings. Four transitive crates are
+reported as unmaintained (`bincode`, `bitmaps`, `fxhash`, and `paste`) and are
+kept at explicit lockfile versions until compatible maintained replacements are
+available.
 
 ## 10. Non-negotiable quality gates
 

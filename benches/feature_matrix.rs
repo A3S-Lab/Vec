@@ -11,9 +11,21 @@ use a3s_vec::{
     FieldSchema, Fts, GroupBySearchQuery, HnswQueryParams, IndexParams, IoBackend, IvfQueryParams,
     IvfRabitqQueryParams, MetricType, MultiQuery, SearchQuery, SubQuery,
 };
+use std::collections::BTreeSet;
 use std::hint::black_box;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+static MEASURED_OPERATIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn record_operation(name: &str) {
+    MEASURED_OPERATIONS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("benchmark operation registry must not be poisoned")
+        .push(name.to_string());
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Config {
@@ -149,6 +161,11 @@ fn full_schema(dimensions: usize) -> CollectionSchema {
     bits32
         .set_index_params(&IndexParams::flat(MetricType::L2).expect("binary Flat index"))
         .expect("Binary32 Flat index");
+    let mut bits64 =
+        FieldSchema::new("bits64", DataType::VectorBinary64, false, 64).expect("Binary64 schema");
+    bits64
+        .set_index_params(&IndexParams::flat(MetricType::L2).expect("binary Flat index"))
+        .expect("Binary64 Flat index");
     CollectionSchema::builder("feature-matrix-bench")
         .add_field(category)
         .add_field(bucket)
@@ -167,10 +184,7 @@ fn full_schema(dimensions: usize) -> CollectionSchema {
                 .expect("sparse schema"),
         )
         .add_field(bits32)
-        .add_field(
-            FieldSchema::new("bits64", DataType::VectorBinary64, false, 64)
-                .expect("Binary64 schema"),
-        )
+        .add_field(bits64)
         .build()
         .expect("full schema must be valid")
 }
@@ -225,6 +239,7 @@ fn measure<F>(name: &str, config: Config, samples: usize, mut operation: F) -> M
 where
     F: FnMut(usize) -> u64,
 {
+    record_operation(name);
     assert!(samples > 0, "{name} must collect at least one sample");
     let _ = operation(usize::MAX);
     let mut durations = Vec::with_capacity(samples);
@@ -399,6 +414,15 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         assert_eq!(result.len(), 10.min(config.documents));
         u64::try_from(result.len()).expect("result count fits u64")
     });
+    let binary64_source =
+        SearchQuery::by_id("bits64", "doc-00017", 10).expect("Binary64 source-ID query");
+    measure("binary64_source_id", config, samples, |_| {
+        let result = collection
+            .query(black_box(&binary64_source))
+            .expect("Binary64 source-ID query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
 
     let mut binary_filtered = binary32.clone();
     binary_filtered
@@ -412,6 +436,21 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         let result = collection
             .query(black_box(&query))
             .expect("filtered binary query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.len()).expect("result count fits u64")
+    });
+    let mut binary64_filtered = binary64.clone();
+    binary64_filtered
+        .set_filter("category == 'even'")
+        .expect("Binary64 scalar filter must be valid");
+    measure("binary64_scalar_filter", config, samples, |sample| {
+        let mut query = binary64_filtered.clone();
+        query
+            .set_binary_vector(&binary_for(sample % config.documents, 8))
+            .expect("filtered Binary64 query vector must be valid");
+        let result = collection
+            .query(black_box(&query))
+            .expect("filtered Binary64 query must succeed");
         assert!(!result.is_empty());
         u64::try_from(result.len()).expect("result count fits u64")
     });
@@ -507,6 +546,31 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
+    let mut binary64_branch = SubQuery::new().expect("Binary64 sub-query must be valid");
+    binary64_branch
+        .set_field_name("bits64")
+        .expect("Binary64 sub-query field must be valid");
+    binary64_branch
+        .set_binary_vector(&binary_for(17, 8))
+        .expect("Binary64 sub-query vector must be valid");
+    binary64_branch
+        .set_num_candidates(16)
+        .expect("Binary64 candidate count must be valid");
+    let mut binary64_multi = MultiQuery::new().expect("Binary64 multi-query must be valid");
+    binary64_multi
+        .set_topk(10)
+        .expect("Binary64 multi top-k must be valid");
+    binary64_multi
+        .add_sub_query(&binary64_branch)
+        .expect("Binary64 branch must be added");
+    measure("binary64_multi", config, samples, |_| {
+        let result = collection
+            .multi_query(black_box(&binary64_multi))
+            .expect("Binary64 multi-query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("Binary64 multi result count fits u64")
+    });
+
     let grouped = GroupBySearchQuery::new(
         "embedding",
         "category",
@@ -533,6 +597,18 @@ fn measure_full_routes(collection: &Collection, config: Config) {
         assert!(!result.is_empty());
         u64::try_from(result.values().map(Vec::len).sum::<usize>())
             .expect("binary group result count fits u64")
+    });
+
+    let binary64_grouped =
+        GroupBySearchQuery::binary("bits64", "category", &binary_for(17, 8), 2, 3)
+            .expect("Binary64 group query must be valid");
+    measure("binary64_group_by", config, samples, |_| {
+        let result = collection
+            .group_by(black_box(&binary64_grouped))
+            .expect("Binary64 group query must succeed");
+        assert!(!result.is_empty());
+        u64::try_from(result.values().map(Vec::len).sum::<usize>())
+            .expect("Binary64 group result count fits u64")
     });
 
     measure("fetch_projection", config, samples, |_| {
@@ -839,6 +915,16 @@ fn measure_async(collection: &Collection, config: Config) {
         u64::try_from(result.len()).expect("result count fits u64")
     });
 
+    let binary64 = SearchQuery::binary("bits64", &binary_for(17, 8), 10)
+        .expect("async Binary64 query must be valid");
+    measure("binary64_async", config, samples, |_| {
+        let result = runtime
+            .block_on(collection.query_async(black_box(&binary64)))
+            .expect("async Binary64 query must succeed");
+        assert_eq!(result.len(), 10.min(config.documents));
+        u64::try_from(result.len()).expect("Binary64 async result count fits u64")
+    });
+
     let mut branch = SubQuery::new().expect("async sub-query must be valid");
     branch
         .set_field_name("embedding")
@@ -880,6 +966,92 @@ fn measure_async(collection: &Collection, config: Config) {
     });
 }
 
+fn assert_complete_matrix() {
+    const BASE_OPERATIONS: &[&str] = &[
+        "dense_l2",
+        "dense_ip",
+        "dense_cosine",
+        "dense_mips_l2",
+        "dense_include_doc_id",
+        "dense_source_id_l2",
+        "dense_source_id_ip",
+        "dense_source_id_cosine",
+        "dense_source_id_mips_l2",
+        "sparse",
+        "sparse_source_id",
+        "binary32_exact",
+        "binary64_exact",
+        "binary_source_id",
+        "binary64_source_id",
+        "binary_scalar_filter",
+        "binary64_scalar_filter",
+        "fts_indexed",
+        "dense_scalar_filter",
+        "multi_rrf",
+        "binary_multi",
+        "binary64_multi",
+        "group_by",
+        "binary_group_by",
+        "binary64_group_by",
+        "fetch_projection",
+        "snapshot_iterator",
+        "stats_health",
+        "partial_update",
+        "flush",
+        "ann_hnsw",
+        "ann_ivf_soar",
+        "ann_hnsw_rabitq",
+        "ann_ivf_rabitq",
+        "ann_vamana",
+        "ann_vamana_ip",
+        "ann_vamana_cosine",
+        "ann_vamana_mips_l2",
+        "ann_diskann_pq",
+        "ann_diskann_ip_pq",
+        "ann_diskann_cosine_pq",
+        "ann_diskann_mips_l2_pq",
+        "diskann_positioned_reopen_query",
+        "diskann_mmap_reopen_query",
+    ];
+    let expected = BASE_OPERATIONS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<BTreeSet<_>>();
+    #[cfg(feature = "async")]
+    let expected = {
+        let mut expected = expected;
+        expected.extend(
+            [
+                "dense_async",
+                "binary_async",
+                "binary64_async",
+                "multi_async",
+                "group_by_async",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        expected
+    };
+
+    let measured = MEASURED_OPERATIONS
+        .get()
+        .expect("benchmark must record at least one operation")
+        .lock()
+        .expect("benchmark operation registry must not be poisoned")
+        .clone();
+    let actual = measured.iter().cloned().collect::<BTreeSet<_>>();
+    assert_eq!(
+        measured.len(),
+        actual.len(),
+        "benchmark operation names must be unique"
+    );
+    assert_eq!(
+        actual, expected,
+        "feature matrix must cover every expected operation"
+    );
+}
+
 fn main() {
     let config = Config::from_environment();
     println!("# a3s-vec feature matrix; scale={config:?}; each row is an asserted operation");
@@ -906,4 +1078,5 @@ fn main() {
 
     measure_ann_modes(config);
     measure_reopen_and_sidecar(config);
+    assert_complete_matrix();
 }
