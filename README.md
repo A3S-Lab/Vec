@@ -77,7 +77,10 @@ local regression measurements—not a cross-project zvec benchmark. Full
 methodology and repeated observations live in [BENCHMARKS.md](BENCHMARKS.md).
 The public API release gate is the deterministic [feature matrix](BENCHMARKS.md#public-feature-matrix-and-performance-gate),
 which checks every query route and reports p50/p95/p99 latency for the sync,
-ANN, sidecar, mutation, and Tokio paths.
+ANN, sidecar, mutation, and Tokio paths. The companion
+[concurrent-reader and mixed-workload fixtures](BENCHMARKS.md#mixed-readwrite-contention)
+gate read contention, read/write contention, Recall@10, QPS, and logical
+accounting on the same revision.
 
 ## Quick start
 
