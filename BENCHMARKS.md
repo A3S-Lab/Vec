@@ -263,8 +263,8 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
-The latest complete hosted run is [CI run 33678040480](https://github.com/A3S-Lab/Vec/actions/runs/33678040480)
-for revision `9031943b53577e14f805692a3bfb3a3237b5072f`. All ten jobs passed,
+The latest complete hosted run is [CI run 33686399240](https://github.com/A3S-Lab/Vec/actions/runs/33686399240)
+for revision `9ed701ae72e45f7b8f7be9c7db943ed4b64f93f4`. All ten jobs passed,
 including the versioned release-candidate package. The following compact
 extraction comes from its revision-bound platform artifacts. It uses the smoke
 fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
@@ -274,11 +274,11 @@ last column is the 8-reader mixed-workload read/write p50.
 
 | Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Linux arm64 | 16.527 | 41.190 | 22.935 | 37,439.81 | 78.39 / 97.84 |
-| Linux x86_64 | 18.288 | 51.888 | 26.951 | 23,939.11 | 159.71 / 181.52 |
-| macOS arm64 | 17.042 | 37.583 | 18.875 | 45,391.42 | 144.21 / 214.08 |
-| macOS Intel (hosted macOS 15) | 48.477 | 97.974 | 51.028 | 27,602.11 | 758.48 / 846.10 |
-| Windows x86_64 | 44.900 | 56.000 | 31.300 | 24,578.99 | 1,088.00 / 1,109.90 |
+| Linux arm64 | 16.271 | 41.229 | 22.822 | 52,476.24 | 62.88 / 104.63 |
+| Linux x86_64 | 16.833 | 70.954 | 26.243 | 26,806.92 | 128.46 / 108.42 |
+| macOS arm64 | 16.584 | 37.708 | 18.041 | 28,046.08 | 57.08 / 500.29 |
+| macOS Intel (hosted macOS 15) | 66.245 | 86.812 | 69.043 | 25,891.36 | 350.48 / 1,289.78 |
+| Windows x86_64 | 47.800 | 58.700 | 32.500 | 25,163.66 | 941.90 / 943.60 |
 
 Every contention row retained Recall@10 = 1.0000. The artifact also contains
 the full 53-row feature matrix and all percentile/throughput columns; the
