@@ -108,6 +108,22 @@ On Unix, validate a Rust CSV before recording it:
 awk -F, -f .github/check_scale_compare.awk scale-compare.csv
 ```
 
+On Windows PowerShell, write the native command output as UTF-8 first; the
+default `>` redirection in Windows PowerShell is UTF-16 and cannot be parsed by
+the Unix validator:
+
+```powershell
+$env:A3S_VEC_BENCH_SCALE = "smoke"
+$env:RAYON_NUM_THREADS = "1"
+cargo bench --locked --bench scale_compare --quiet |
+  Set-Content -Encoding utf8 target/scale-compare.csv
+wsl bash -lc 'cd /mnt/d/code/a3s-vec && awk -F, -f .github/check_scale_compare.awk target/scale-compare.csv'
+```
+
+The hosted Windows job uses Bash redirection and therefore already emits
+UTF-8. The same capture rule applies to the feature, concurrent, and mixed
+workload CSVs when they are validated through WSL.
+
 The same validator accepts the zvec companion CSV (`engine` must be either
 `a3s-vec` or `zvec`), so both sides can be checked before a comparison is
 recorded.
@@ -173,11 +189,55 @@ The same CSV contract used by CI can be checked locally with
 unique and every dimension, work, percentile, throughput, and work-per-sample
 column to be a finite positive number with monotonic p50/p95/p99 values.
 
+## Lifecycle, resource, and maintenance matrix
+
+`benches/lifecycle_matrix.rs` covers the management plane that is not a query
+route: collection creation, batch insert, update, upsert, delete, filtered
+delete, schema add/rename/alter/drop, index create/drop/rebuild/optimize,
+flush, cache-hit reopen, resource-limit rejection, stats/health, and explicit
+maintenance ownership. Each of its 16 rows asserts the operation's result and
+reports nearest-rank p50/p95/p99 latency, total work, and work per second in a
+10-column CSV. The smoke output is validated by
+`.github/check_lifecycle_matrix.awk` and is uploaded with the other hosted
+performance artifacts.
+
+```sh
+cargo bench --locked --bench lifecycle_matrix
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench lifecycle_matrix
+```
+
+A representative Windows x86_64 smoke run (96 documents × 8 dimensions, two
+samples, one process) produced the following p50 values; the checked CSV also
+contains p95/p99 and throughput for every row:
+
+| Operation | p50 (µs) | Work/sample |
+| --- | ---: | ---: |
+| create_collection | 15,614 | 1 |
+| insert_batch | 4,584 | 96 |
+| update | 3,491 | 1 |
+| upsert | 3,780 | 1 |
+| delete | 3,086 | 1 |
+| delete_by_filter | 3,770 | 48 |
+| create_index | 19,120 | 96 |
+| drop_index | 10,576 | 96 |
+| rebuild_index | 12,996 | 96 |
+| optimize | 16,440 | 96 |
+| schema_evolution | 41,765 | 4 |
+| flush | 11,135 | 1 |
+| reopen | 1,509 | 96 |
+| resource_rejection | 19 | 1 |
+| stats_health | 10 | 1 |
+| maintenance_start_close | 225 | 1 |
+
+These values are management-plane regression indicators, not portable SLOs;
+repeat them on the same host when comparing revisions. Logical accounted bytes
+remain an engine-owned estimate and are not a process-RSS measurement.
+
 ## Cross-platform smoke performance evidence
 
 The CI platform matrix runs the same smoke-scale feature, concurrent-reader,
-mixed-read/write, and scale benches on Linux x86_64, Linux arm64, Windows
-x86_64, macOS arm64, and macOS Intel. Each platform validates its four CSVs
+mixed-read/write, scale, and lifecycle benches on Linux x86_64, Linux arm64,
+Windows x86_64, macOS arm64, and macOS Intel. Each platform validates its five CSVs
 with the same AWK gates and uploads them as a revision-bound artifact named
 `a3s-vec-platform-performance-<platform>-<revision>`. This catches platform-
 specific regressions in latency, throughput, ANN recall, and mixed-workload

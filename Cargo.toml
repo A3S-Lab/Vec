@@ -114,6 +114,10 @@ harness = false
 name = "scale_compare"
 harness = false
 
+[[bench]]
+name = "lifecycle_matrix"
+harness = false
+
 [lints.rust]
 unsafe_code = "deny"
 

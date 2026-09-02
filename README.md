@@ -80,8 +80,9 @@ which checks every query route and reports p50/p95/p99 latency for the sync,
 ANN, sidecar, mutation, and Tokio paths. The companion
 [concurrent-reader and mixed-workload fixtures](BENCHMARKS.md#mixed-readwrite-contention)
 gate read contention, read/write contention, Recall@10, QPS, and logical
-accounting on the same revision. The CI platform matrix repeats all four
-smoke benches on Linux x86/ARM, Windows x86, and macOS ARM/Intel; its hosted
+accounting on the same revision. The lifecycle matrix additionally measures
+management operations, resource admission, and maintenance ownership. The CI
+platform matrix repeats all five smoke benches on Linux x86/ARM, Windows x86, and macOS ARM/Intel; its hosted
 Intel result is portability evidence, not the required macOS 12 runtime gate.
 For a larger same-host engine comparison, use the [scale harness](BENCHMARKS.md#larger-corpus-scale-comparison),
 which drives a3s-vec and an opt-in zvec companion with the same deterministic
@@ -530,6 +531,8 @@ cargo bench --locked --bench mixed_workload
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench mixed_workload
 cargo bench --locked --bench scale_compare
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench scale_compare
+cargo bench --locked --bench lifecycle_matrix
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench lifecycle_matrix
 cargo bench --bench ann_recall
 cargo bench --bench filtered_ann
 cargo bench --bench scalar_filter

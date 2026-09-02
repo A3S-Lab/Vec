@@ -11,7 +11,7 @@ not replace an earlier correctness gate.
 
 ## Current implementation status
 
-**2026-09-02:** Phase 1's query/write contract hardening, Phase 3's core
+**2026-09-03:** Phase 1's query/write contract hardening, Phase 3's core
 recovery transaction, and Phase 4's in-memory ANN gate are implemented. Query
 routes, dense dimensions, sparse
 indices, JSON adapter values, schema defaults, and replacement upserts are
@@ -121,8 +121,9 @@ passes the all-feature and no-default suites (debug and release), the Rust
 all-target checks, all-feature Clippy, locked packaging, and the complete
 local benchmark sweep: the 53-row feature matrix, concurrent readers, mixed
 read/write contention, scale comparison, ANN recall, filtered ANN, scalar
-filters, indexed FTS, incremental writes, reopen, n-gram FTS, and structured
-FTS. Their CSVs contain finite metrics and the four gate validators pass on the
+filters, indexed FTS, incremental writes, reopen, n-gram FTS, structured FTS,
+and the lifecycle/resource/maintenance matrix. Their CSVs contain finite
+metrics and the five gate validators pass on the
 local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
 [CI run 33670661773](https://github.com/A3S-Lab/Vec/actions/runs/33670661773),
@@ -768,7 +769,7 @@ execution are implemented.
 - Add Linux/macOS arm64/macOS x86_64/Windows CI, including macOS 12 Intel.
 - Publish README, migration notes, API docs, and a versioned release artifact.
 
-**Progress through 2026-09-02**
+**Progress through 2026-09-03**
 
 - Completed in the engine: typed per-handle limits for retained document count,
   deterministic authoritative-plus-derived accounted bytes, cumulative query
@@ -781,8 +782,9 @@ execution are implemented.
   health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
   x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
   deployment target. The platform matrix also runs and validates the feature,
-  concurrent-reader, and mixed-read/write smoke CSVs on every hosted OS and
-  architecture, retaining one revision-bound artifact per platform.
+  concurrent-reader, mixed-read/write, scale, and lifecycle smoke CSVs on every
+  hosted OS and architecture, retaining one revision-bound artifact per
+  platform.
 - Completed in the engine: a public feature matrix (`tests/feature_matrix.rs`)
   covers CRUD, projection, exact dense/sparse/binary and source-ID queries, scalar/
   FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
@@ -793,6 +795,12 @@ execution are implemented.
   The smoke-scale CSV is
   uploaded by CI and is a correctness
   gate; same-host default-scale values are recorded in `BENCHMARKS.md`.
+- Completed in the engine: `benches/lifecycle_matrix.rs` covers the management
+  plane (create/insert/update/upsert/delete/filter-delete, schema evolution,
+  index lifecycle, flush/reopen, resource rejection, stats/health, and
+  maintenance ownership) with 16 asserted p50/p95/p99 and throughput rows.
+  Its smoke CSV is validated by `.github/check_lifecycle_matrix.awk` and is
+  retained alongside the other revision-bound platform artifacts.
 - Completed in the engine: `benches/concurrent_queries.rs` starts synchronized
   1/2/4/8-worker HNSW readers and records index-build time, flat-oracle
   Recall@10, nearest-rank p50/p95/p99 query latency, and wall-clock QPS. The
@@ -834,7 +842,7 @@ execution are implemented.
   revision only on a self-hosted runner labeled `a3s-macos-12`. Its reusable
   script rejects any host that is not actual macOS 12 on Intel x86-64, runs the
   locked format, Clippy, default/all-feature, recovery, async, DiskANN, example,
-  rustdoc, package, and all four smoke-scale performance fixtures with the
+  rustdoc, package, and all five smoke-scale performance fixtures with the
   hosted CSV validators offline, and emits checksummed machine-readable
   evidence. No qualifying runner is currently registered, so this automation
   does not close the hardware gate by itself.
@@ -848,8 +856,8 @@ execution are implemented.
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, unit/integration/fuzz
   smoke tests, recovery suite, `cargo bench --locked --bench feature_matrix
-  --features async`, `concurrent_queries`, `mixed_workload`, and
-  `scale_compare` (smoke scale in CI), benchmark report, and Intel macOS 12
+  --features async`, `concurrent_queries`, `mixed_workload`, `scale_compare`,
+  and `lifecycle_matrix` (smoke scale in CI), benchmark report, and Intel macOS 12
   runtime smoke all pass. No feature is advertised unless its gate has
   evidence.
 

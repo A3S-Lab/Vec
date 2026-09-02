@@ -828,12 +828,14 @@ The external Intel gate has a separate manual workflow. It accepts an exact
 or revision-mismatched hosts before testing. After a locked dependency fetch,
 formatting, strict Clippy, default/all-feature tests, examples, rustdoc, and
 package verification run offline, it executes and validates the feature-matrix,
-concurrent-reader, mixed-workload, and scale-comparison smoke benchmarks. The workflow uploads a
-checksummed crate, the four performance CSVs, and a machine-readable
+concurrent-reader, mixed-workload, scale-comparison, and lifecycle-matrix
+smoke benchmarks. The workflow uploads a checksummed crate, the five
+performance CSVs (including management-plane lifecycle, resource, and
+maintenance metrics), and a machine-readable
 host/revision report, so a newer hosted Intel image cannot be mistaken for
 Monterey evidence.
 
-The ordinary CI platform matrix runs those same four smoke benchmarks on
+The ordinary CI platform matrix runs those same five smoke benchmarks on
 Linux x86_64/arm64, Windows x86_64, and macOS arm64/Intel, with one validated,
 revision-bound CSV artifact per platform. This is cross-platform regression
 evidence; the hosted macOS Intel image still does not satisfy the macOS 12

@@ -26,9 +26,9 @@ The release-facing contract has the following boundaries:
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
   boundary against deterministic fixtures. Binary32/Binary64 radius and
   projection/include-doc-id combinations also have asserted matrix rows. Its
-  smoke-scale feature-matrix, concurrent-reader, mixed-workload, and
-  scale-comparison performance CSVs are required hosted CI artifacts; same-host
-  p50/p95/p99 baselines are
+  smoke-scale feature-matrix, concurrent-reader, mixed-workload,
+  scale-comparison, and lifecycle-matrix performance CSVs are required hosted
+  CI artifacts; same-host p50/p95/p99 baselines are
   recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
 - The locked dependency graph passes `cargo audit --deny unsound`: no known
   vulnerability or unsoundness advisory is present at the candidate revision.
@@ -50,11 +50,12 @@ revision-bound Actions artifact:
 - `a3s-vec-0.1.0.crate.sha256`;
 - `a3s-vec-0.1.0.release.json`, which records the package version, source
   revision, workflow run, and build runner.
-- `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`, and
-  `scale-compare.csv`,
-  which record the smoke-scale correctness/performance gates.
+- `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
+  `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the
+  smoke-scale correctness/performance gates, including management-plane
+  lifecycle, resource, and maintenance operations.
 - One `a3s-vec-platform-performance-<platform>-<revision>` directory for each
-  hosted platform, containing the same four validated smoke CSVs. These
+  hosted platform, containing the same five validated smoke CSVs. These
   artifacts show whether the metrics and recall gate hold across the supported
   OS/architecture matrix; the hosted Intel image is not macOS 12.
 
@@ -74,6 +75,8 @@ cargo bench --locked --bench mixed_workload
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench mixed_workload
 cargo bench --locked --bench scale_compare
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench scale_compare
+cargo bench --locked --bench lifecycle_matrix
+A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench lifecycle_matrix
 cargo doc --locked --no-deps --all-features
 cargo package --locked --offline
 cargo publish --dry-run --locked
@@ -88,7 +91,7 @@ an actual macOS 12 Intel runtime.
   `a3s-macos-12` label, then manually dispatch
   `macOS 12 Intel Runtime Qualification` with the exact candidate commit. The
   workflow's host-fenced script runs the locked exact/FTS, recovery, async,
-  DiskANN, example, rustdoc, package, and all four smoke-scale performance
+  DiskANN, example, rustdoc, package, and all five smoke-scale performance
   fixtures (with the same CSV validators as hosted CI) offline. A deployment
   target or newer hosted Intel image is insufficient.
 - Attach that machine-readable result to the release record and verify the
