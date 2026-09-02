@@ -61,9 +61,9 @@ to Vec commit
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`daf69cd7`](https://github.com/A3S-Lab/Vec/commit/daf69cd7cd794d9d6f25d9f2ba2ed465f4adee2b),
+[`1be075a2`](https://github.com/A3S-Lab/Vec/commit/1be075a2026ace8ae666e4670acb01f2949e7e30),
 with the complete hosted gate recorded in
-[CI run 33628336581](https://github.com/A3S-Lab/Vec/actions/runs/33628336581);
+[CI run 33648352510](https://github.com/A3S-Lab/Vec/actions/runs/33648352510);
 the older adapter pin remains deliberate until Code's promotion workflow is
 qualified against that revision.
 
@@ -827,6 +827,12 @@ concurrent-reader, and mixed-workload smoke benchmarks. The workflow uploads a
 checksummed crate, the three performance CSVs, and a machine-readable
 host/revision report, so a newer hosted Intel image cannot be mistaken for
 Monterey evidence.
+
+The ordinary CI platform matrix runs those same three smoke benchmarks on
+Linux x86_64/arm64, Windows x86_64, and macOS arm64/Intel, with one validated,
+revision-bound CSV artifact per platform. This is cross-platform regression
+evidence; the hosted macOS Intel image still does not satisfy the macOS 12
+runtime gate.
 
 The default Cargo feature set is empty and its normal/build dependency graph
 does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit

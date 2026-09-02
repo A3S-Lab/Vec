@@ -40,9 +40,9 @@ complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The current engine and feature-matrix evidence in this repository are at
-[`daf69cd7`](https://github.com/A3S-Lab/Vec/commit/daf69cd7cd794d9d6f25d9f2ba2ed465f4adee2b),
+[`1be075a2`](https://github.com/A3S-Lab/Vec/commit/1be075a2026ace8ae666e4670acb01f2949e7e30),
 with the complete hosted gate recorded in
-[CI run 33628336581](https://github.com/A3S-Lab/Vec/actions/runs/33628336581).
+[CI run 33648352510](https://github.com/A3S-Lab/Vec/actions/runs/33648352510).
 Code intentionally keeps the older `019fdb929` shadow pin until its promotion
 workflow is qualified against the newer engine revision.
 
@@ -80,7 +80,9 @@ which checks every query route and reports p50/p95/p99 latency for the sync,
 ANN, sidecar, mutation, and Tokio paths. The companion
 [concurrent-reader and mixed-workload fixtures](BENCHMARKS.md#mixed-readwrite-contention)
 gate read contention, read/write contention, Recall@10, QPS, and logical
-accounting on the same revision.
+accounting on the same revision. The CI platform matrix repeats all three
+smoke benches on Linux x86/ARM, Windows x86, and macOS ARM/Intel; its hosted
+Intel result is portability evidence, not the required macOS 12 runtime gate.
 
 ## Quick start
 

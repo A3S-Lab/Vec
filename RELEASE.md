@@ -51,6 +51,10 @@ revision-bound Actions artifact:
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, and `mixed-workload.csv`,
   which record the smoke-scale correctness/performance gates.
+- One `a3s-vec-platform-performance-<platform>-<revision>` directory for each
+  hosted platform, containing the same three validated smoke CSVs. These
+  artifacts show whether the metrics and recall gate hold across the supported
+  OS/architecture matrix; the hosted Intel image is not macOS 12.
 
 The same package can be reproduced locally without changing external state:
 

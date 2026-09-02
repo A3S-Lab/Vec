@@ -100,6 +100,24 @@ The same CSV contract used by CI can be checked locally with
 unique and every dimension, work, percentile, throughput, and work-per-sample
 column to be a finite positive number with monotonic p50/p95/p99 values.
 
+## Cross-platform smoke performance evidence
+
+The CI platform matrix runs the same smoke-scale feature, concurrent-reader,
+and mixed-read/write benches on Linux x86_64, Linux arm64, Windows x86_64,
+macOS arm64, and macOS Intel. Each platform validates its three CSVs with the
+same AWK gates and uploads them as a revision-bound artifact named
+`a3s-vec-platform-performance-<platform>-<revision>`. This catches platform-
+specific regressions in latency, throughput, ANN recall, and mixed-workload
+revision/accounting behavior instead of treating a single Linux run as
+portable evidence.
+
+The hosted `macOS Intel` row is an Intel macOS 15 image compiled with a 12.0
+deployment target. It is useful portability evidence but is deliberately not
+the separate macOS 12 Intel runtime qualification required for a formal
+release. The platform smoke fixture is intentionally small; the default-scale
+same-host measurements below remain the source for trend comparisons, and
+process RSS/allocator attribution still requires an OS-specific harness.
+
 ## Concurrent query tail latency
 
 `benches/concurrent_queries.rs` complements the feature matrix with a shared

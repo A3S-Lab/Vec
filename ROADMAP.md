@@ -759,7 +759,9 @@ execution are implemented.
   recovery fuzzing plus a libFuzzer/AddressSanitizer smoke target, collection
   health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
   x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
-  deployment target.
+  deployment target. The platform matrix also runs and validates the feature,
+  concurrent-reader, and mixed-read/write smoke CSVs on every hosted OS and
+  architecture, retaining one revision-bound artifact per platform.
 - Completed in the engine: a public feature matrix (`tests/feature_matrix.rs`)
   covers CRUD, projection, exact dense/sparse/binary and source-ID queries, scalar/
   FTS/hybrid/group-by execution, iterator and schema evolution, flush/reopen,
