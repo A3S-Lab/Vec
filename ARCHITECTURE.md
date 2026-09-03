@@ -33,9 +33,9 @@ The engine is built around six invariants:
    exact flat-scan fallback and an exact re-ranking stage. Invalid or stale
    index state fails closed to the fallback path.
 6. **The portable path is the default.** The baseline uses stable Rust,
-   portable scalar code, and positioned file reads. Runtime AVX2/AVX-512, ARM
-   NEON, immutable mmap snapshots, and platform asynchronous I/O are optional
-   accelerators, never required for correctness.
+   portable scalar code, and positioned file reads. Runtime SIMD (currently
+   AVX2 on x86-64 and NEON on AArch64), immutable mmap snapshots, and platform
+   asynchronous I/O are optional accelerators, never required for correctness.
 
 ## 2. Cross-project adapter boundary
 
@@ -54,15 +54,15 @@ migration shadow:
   closed with the session. No Vec state is shared between sessions or persisted
   as serving data.
 
-The delivered adapter is pinned by the current Code candidate commit
-[`32a70cd7`](https://github.com/A3S-Lab/Code/commit/32a70cd7926fbdf3210fd0ee822b4f718cbee108) to Vec commit
-[`7e3b083e`](https://github.com/A3S-Lab/Vec/commit/7e3b083e36ab5aeb300b2c45d6d59280971087da).
+The delivered adapter is pinned by the current Code dependency commit
+[`708a85e3`](https://github.com/A3S-Lab/Code/commit/708a85e3ac070640ca5fb8173d0b06e6070152e7) to Vec commit
+[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`7e3b083e`](https://github.com/A3S-Lab/Vec/commit/7e3b083e36ab5aeb300b2c45d6d59280971087da),
+[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d),
 with the complete hosted gate recorded in
-[CI run 33763187419](https://github.com/A3S-Lab/Vec/actions/runs/33763187419).
+[CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017).
 The root Cloud compatibility lock remains a separate, older graph until its
 Code dependency and lock entry are promoted together.
 

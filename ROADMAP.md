@@ -115,7 +115,7 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-**Verification refresh (2026-09-03):** Vec revision `7e3b083e`
+**Verification refresh (2026-09-03):** Vec revision `13585ccd`
 passes the all-feature and no-default suites
 (debug and release), the Rust
 1.75 no-default release suite, all compatibility examples, formatting,
@@ -127,7 +127,7 @@ and the lifecycle/resource/maintenance matrix. Their CSVs contain finite
 metrics and the five gate validators pass on the
 local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
-[CI run 33763187419](https://github.com/A3S-Lab/Vec/actions/runs/33763187419),
+[CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017),
 which passed all ten jobs, including the lifecycle matrix and versioned
 release-candidate package. These checks do not replace the actual macOS 12
 Intel runtime gate described below.
@@ -850,9 +850,19 @@ execution are implemented.
   (1.0000 Flat, 0.6000 HNSW). The result remains a directional benchmark
   because zvec uses a native C++ wheel and a3s-vec uses the portable Rust
   target by default.
+- Completed HNSW traversal hardening on 2026-09-03: unquantized candidate
+  navigation uses the runtime-dispatched `f32` SIMD kernel, dense bounded
+  ordinal spaces use a compact visited bitset, and primary keys are resolved
+  only on exact score ties. Encoded-vector scoring, graph construction, and
+  final public re-ranking retain their authoritative arithmetic, with a safe
+  `f64` fallback for non-finite SIMD accumulators. Across three independent
+  100,000 x 128 runs, median HNSW p50 fell from 1,725.4 to 923.4 microseconds
+  (-46.5%), QPS rose 92.9%, and build time fell 23.6%, while Recall@10 stayed
+  at 0.6000. The same fixture still records zvec at 2.71x lower query p50 and
+  1.72x shorter build time, so this is not a performance-parity claim.
 - Completed cross-project integration on 2026-09-03: A3S Code candidate commit
-  `d833ce3efa59fc1682d4c70819212a1ea905b8af` pins Vec commit
-  `c758521c8dac97cc9b3cbcad199031238983883f` behind a Memory-authoritative
+  `708a85e3ac070640ca5fb8173d0b06e6070152e7` pins Vec commit
+  `13585ccd3f956f6cb7d669b2ee6acc7096fca03d` behind a Memory-authoritative
   workspace-retrieval shadow. Code admits one embedding batch, mirrors it once
   into a session-local temporary Vec collection, compares IDs, partitions,
   `f32` scores, and search accounting behind one publication gate, and exposes

@@ -110,6 +110,37 @@ the index-creation transaction, while the zvec call has different persistence
 and post-insert lifecycle semantics. Repeat the run with identical durability,
 optimize, and recall targets before using it for a capacity decision.
 
+### HNSW kernel follow-up (qualified revision 13585ccd)
+
+The qualified candidate keeps graph construction and final document re-ranking on
+the authoritative `f64` scorer, but uses the runtime-dispatched `f32` SIMD
+kernel only while traversing an unquantized HNSW graph. It also resolves
+primary keys lazily (only for exact score ties) and uses a bounded ordinal
+bitset for dense visited sets. Encoded-vector paths retain their existing
+representation-aware scorer, and non-finite SIMD accumulators fall back to
+the `f64` implementation. This is therefore a query-kernel optimization, not
+a change to the public score or Recall contract.
+
+Three independent 100,000-document observations were collected on the same
+Windows x86_64 Intel Xeon w5-2445 host (128 GiB RAM), with 128 dimensions,
+32 queries, three rounds, batch size 512, one worker, cosine distance, and
+HNSW `m=16`, `ef_construction=96`, `ef=64`. Values below are medians across
+the three runs; Recall@10 was 0.6000 in every run.
+
+| a3s-vec HNSW candidate | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Previous recorded revision | 2,767.024 | 185,429.317 | 188,288.828 | 1,725.400 | 2,499.600 | 2,666.600 | 550.80 | 0.6000 |
+| Qualified revision 13585ccd | 2,624.877 | 141,622.863 | 144,213.026 | 923.400 | 1,143.200 | 1,511.900 | 1,061.96 | 0.6000 |
+| Change | -5.1% | -23.6% | -23.4% | -46.5% | -54.3% | -43.3% | +92.9% | unchanged |
+
+The old and new rows use the same Rust harness and controls. The new query
+median is still about 2.71x slower than the zvec 0.7.0 HNSW row above
+(340.300 µs), and its build median is about 1.72x longer than zvec
+(82,119.333 ms). The remaining gap is expected from the native zvec wheel's
+CPU-specialized implementation and different graph/storage lifecycle; this
+optimization narrows the A3S query gap without trading away the exact
+re-ranking or the measured Recall.
+
 Run the Rust side at smoke or selected scale with:
 
 ```sh
@@ -282,8 +313,8 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
-The latest complete hosted run is [CI run 33763187419](https://github.com/A3S-Lab/Vec/actions/runs/33763187419)
-for revision `7e3b083e36ab5aeb300b2c45d6d59280971087da`. All ten jobs
+The latest complete hosted run is [CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)
+for revision `13585ccd3f956f6cb7d669b2ee6acc7096fca03d`. All ten jobs
 passed, including the versioned release-candidate package. The following compact
 extraction comes from its revision-bound platform artifacts. It uses the smoke
 fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
@@ -294,11 +325,11 @@ schema-evolution lifecycle p50.
 
 | Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 | Schema evolution p50 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Linux arm64 | 15.007 | 39.718 | 22.886 | 38,592.65 | 60.31 / 256.08 | 3,918.468 |
-| Linux x86_64 | 16.254 | 49.834 | 26.950 | 29,764.96 | 140.69 / 185.23 | 3,859.623 |
-| macOS arm64 | 14.542 | 34.750 | 18.083 | 10,660.23 | 61.33 / 256.08 | 11,758.083 |
-| macOS Intel (hosted macOS 15) | 54.317 | 77.734 | 66.580 | 24,099.91 | 90.84 / 742.96 | 38,575.593 |
-| Windows x86_64 | 26.300 | 54.400 | 32.000 | 18,910.01 | 129.10 / 989.00 | 20,183.100 |
+| Linux arm64 | 15.257 | 26.385 | 23.001 | 62,259.60 | 35.30 / 129.98 | 3,552.455 |
+| Linux x86_64 | 16.090 | 31.218 | 26.359 | 40,215.50 | 62.23 / 145.20 | 4,425.980 |
+| macOS arm64 | 14.542 | 24.666 | 19.875 | 49,420.07 | 32.42 / 228.38 | 11,748.875 |
+| macOS Intel (hosted macOS 15) | 52.375 | 52.133 | 63.000 | 40,652.36 | 717.19 / 751.23 | 31,467.990 |
+| Windows x86_64 | 25.300 | 31.300 | 31.900 | 40,067.61 | 967.40 / 1,045.60 | 20,194.200 |
 
 Every contention row retained Recall@10 = 1.0000. The artifact also contains
 the full 53-row feature matrix and all percentile/throughput columns; the

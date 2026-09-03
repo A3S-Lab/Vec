@@ -7,9 +7,9 @@ use std::collections::{BinaryHeap, HashSet};
 
 const DENSE_VISITED_MAX_SLOTS: usize = 1 << 24;
 
-/// Tracks graph membership with a compact ordinal bitset when the ordinal
-/// space is reasonably dense. Very sparse/retired ordinal spaces retain the
-/// hash-set fallback so a query cannot allocate an attacker-sized bitmap.
+/// Tracks graph membership with a compact ordinal bitset for bounded ordinal
+/// spaces. Large or unbounded spaces retain the hash-set fallback so a query
+/// cannot allocate an attacker-sized bitmap.
 enum VisitedSet {
     Dense(Vec<u64>),
     Sparse(HashSet<u64>),
