@@ -284,10 +284,10 @@ fn configure_rabitq(query: &mut SearchQuery) -> Result<IndexParams> {
 }
 ```
 
-Vamana graph saturation/occlusion tuning and standalone Vamana quantization
-remain explicit unsupported controls until they have verified execution
-implementations. Binary ANN and Alibaba's C++ wire format remain separate,
-documented boundaries. The exact binary route is an A3S extension based on
+Vamana now executes the `max_occlusion` RobustPrune candidate cap,
+`saturate` graph-fill control, and standalone FP16/INT8/INT4 index
+quantization with authoritative exact re-ranking. Binary ANN and Alibaba's
+C++ wire format remain separate, documented boundaries. The exact binary route is an A3S extension based on
 zvec's former binary squared-Euclidean/Hamming semantics; Alibaba removed its
 Hamming metric in [zvec PR #365](https://github.com/alibaba/zvec/pull/365), so
 this project does not claim current upstream binary-query compatibility.

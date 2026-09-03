@@ -436,7 +436,7 @@ fn diskann_accepts_numeric_metrics_and_rejects_invalid_pq_shapes() {
 }
 
 #[test]
-fn vamana_accepts_all_numeric_metrics_and_rejects_unimplemented_controls() {
+fn vamana_accepts_all_numeric_metrics_controls_and_scalar_quantization() {
     let error = IndexParams::vamana(MetricType::L2, 32, 100, 0.9)
         .expect_err("Vamana alpha below one must fail");
     assert_eq!(error.code, ErrorCode::InvalidArgument);
@@ -463,24 +463,37 @@ fn vamana_accepts_all_numeric_metrics_and_rejects_unimplemented_controls() {
         .with_parameter("max_occlusion", json!(4));
     let mut tuned_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
         .expect("vector schema must be valid");
-    let error = tuned_field
+    tuned_field
         .set_index_params(&tuned)
-        .expect_err("unimplemented Vamana pruning controls must fail");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!tuned_field.has_index());
+        .expect("Vamana max-occlusion control must be accepted");
+    assert!(tuned_field.has_index());
 
-    let mut quantized =
+    for quantize in [QuantizeType::Fp16, QuantizeType::Int8, QuantizeType::Int4] {
+        let mut quantized =
+            IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid");
+        quantized
+            .set_quantize_type(quantize)
+            .expect("quantization descriptor must be syntactically valid");
+        let mut quantized_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+            .expect("vector schema must be valid");
+        quantized_field
+            .set_index_params(&quantized)
+            .expect("scalar Vamana quantization must have an execution consumer");
+        assert!(quantized_field.has_index());
+    }
+
+    let mut rabitq =
         IndexParams::vamana(MetricType::L2, 32, 100, 1.2).expect("descriptor must be valid");
-    quantized
-        .set_quantize_type(QuantizeType::Int8)
+    rabitq
+        .set_quantize_type(QuantizeType::Rabitq)
         .expect("quantization descriptor must be syntactically valid");
-    let mut quantized_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
+    let mut rabitq_field = FieldSchema::new("embedding", DataType::VectorFp32, false, 3)
         .expect("vector schema must be valid");
-    let error = quantized_field
-        .set_index_params(&quantized)
-        .expect_err("Vamana quantization must fail until it has an execution consumer");
+    let error = rabitq_field
+        .set_index_params(&rabitq)
+        .expect_err("RaBitQ must use its dedicated Vamana-family index type");
     assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!quantized_field.has_index());
+    assert!(!rabitq_field.has_index());
 }
 
 #[test]

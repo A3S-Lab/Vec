@@ -27,7 +27,9 @@ impl DiskannIndex {
         alpha: f64,
         metric: MetricType,
     ) -> Result<Self> {
-        let graph = VamanaIndex::build(vectors, ordinals, max_degree, list_size, alpha, metric);
+        let graph = VamanaIndex::build(
+            vectors, ordinals, max_degree, list_size, alpha, 0, false, metric,
+        );
         let pq = (pq_chunk_num > 0)
             .then(|| ProductQuantizer::build(vectors, dimension, pq_chunk_num))
             .transpose()?;
@@ -125,7 +127,8 @@ impl DiskannIndex {
         pq_chunk_num: usize,
         alpha: f64,
     ) -> bool {
-        self.graph.validates(vectors, max_degree, list_size, alpha)
+        self.graph
+            .validates(vectors, max_degree, list_size, alpha, 0, false)
             && match (&self.pq, pq_chunk_num) {
                 (None, 0) => true,
                 (Some(pq), chunks) if chunks > 0 => pq.validates(vectors, dimension, chunks),

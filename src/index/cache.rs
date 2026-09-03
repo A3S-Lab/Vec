@@ -331,7 +331,20 @@ fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
             let Some(alpha) = finite_param(index, "alpha") else {
                 return false;
             };
-            vamana.validates(&index.base.vectors, max_degree, search_list_size, alpha)
+            let Some(max_occlusion) = nonnegative_param(index, "max_occlusion") else {
+                return false;
+            };
+            let Some(saturate) = boolean_param(index, "saturate") else {
+                return false;
+            };
+            vamana.validates(
+                &index.base.vectors,
+                max_degree,
+                search_list_size,
+                alpha,
+                max_occlusion,
+                saturate,
+            )
         }
     }
 }

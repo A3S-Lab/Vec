@@ -99,6 +99,8 @@ fn build_kind(
             positive_parameter(params, "max_degree")?,
             positive_parameter(params, "search_list_size")?,
             finite_parameter(params, "alpha")?,
+            nonnegative_parameter(params, "max_occlusion")?,
+            boolean_parameter(params, "saturate")?,
             params.metric_type,
         ))),
         _ => Err(Error::not_supported(format!(

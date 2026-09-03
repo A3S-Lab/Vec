@@ -101,8 +101,8 @@ bases sequentially. Unicode n-gram tokenization, ordered lowercase/folding/
 stemmer filters, OR/AND analyzed-term execution, and structured boolean/phrase
 queries are live. Selective conjunctions start with the shortest posting;
 broad structured expressions use a cost-aware exact scan fallback. The
-all-feature baseline has 268 passing unit/integration tests plus four doctests;
-the default and no-default feature suites each pass 263 unit/integration tests
+all-feature baseline has 270 passing unit/integration tests plus four doctests;
+the default and no-default feature suites each pass 267 unit/integration tests
 plus four doctests, and the feature gates remain separate. Formatting,
 default/all-feature Clippy with `-D warnings`, and rustdoc are green. The full
 default-feature suite
@@ -420,6 +420,12 @@ and direct file-backed mmap remain future work.
 - Completed: index-only FP16, symmetric INT8, and packed symmetric INT4
   encodings reduce candidate-vector storage while authoritative vectors remain
   lossless. Every ANN result is re-ranked with the existing f64 exact oracle.
+- Completed: Vamana accepts the zvec-compatible `max_occlusion` RobustPrune
+  candidate cap and `saturate` graph-fill control. Standalone FP16, INT8, and
+  INT4 Vamana indexes use the same validated scalar encodings and exact
+  authoritative re-ranking; RaBitQ remains restricted to its dedicated HNSW
+  and IVF index families. The controls are persisted in the derived cache and
+  covered by deterministic, reopen, and exhaustive-oracle tests.
 - Completed: fixed-seed HNSW, IVF, HNSW/IVF RaBitQ, Vamana, and DiskANN/PQ
   recall tests enforce bounded candidate counts and recall@10 thresholds.
   `cargo bench --bench ann_recall` provides a

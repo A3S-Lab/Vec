@@ -189,7 +189,28 @@ impl IndexParams {
         search_list_size: i32,
         alpha: f64,
     ) -> Result<Self> {
-        if max_degree <= 0 || search_list_size <= 0 || !alpha.is_finite() || alpha < 1.0 {
+        Self::vamana_with_options(metric, max_degree, search_list_size, alpha, 0, false)
+    }
+
+    /// Creates a Vamana graph descriptor with explicit `RobustPrune` controls.
+    ///
+    /// `max_occlusion` bounds the candidate set considered by `RobustPrune`;
+    /// zero keeps the historical unbounded behavior. `saturate` fills any
+    /// remaining out-edge slots after diversity pruning.
+    pub fn vamana_with_options(
+        metric: MetricType,
+        max_degree: i32,
+        search_list_size: i32,
+        alpha: f64,
+        max_occlusion: i32,
+        saturate: bool,
+    ) -> Result<Self> {
+        if max_degree <= 0
+            || search_list_size <= 0
+            || max_occlusion < 0
+            || !alpha.is_finite()
+            || alpha < 1.0
+        {
             return Err(Error::invalid_argument(
                 "Vamana parameters are out of range",
             ));
@@ -199,8 +220,9 @@ impl IndexParams {
         out.params
             .insert("search_list_size".into(), json!(search_list_size));
         out.params.insert("alpha".into(), json!(alpha));
-        out.params.insert("max_occlusion".into(), json!(0));
-        out.params.insert("saturate".into(), json!(false));
+        out.params
+            .insert("max_occlusion".into(), json!(max_occlusion));
+        out.params.insert("saturate".into(), json!(saturate));
         Ok(out)
     }
 
@@ -377,6 +399,26 @@ impl IndexParamsBuilder {
     }
     pub fn list_size(mut self, value: u32) -> Self {
         self.params.params.insert("list_size".into(), json!(value));
+        self
+    }
+    pub fn search_list_size(mut self, value: u32) -> Self {
+        self.params
+            .params
+            .insert("search_list_size".into(), json!(value));
+        self
+    }
+    pub fn alpha(mut self, value: f64) -> Self {
+        self.params.params.insert("alpha".into(), json!(value));
+        self
+    }
+    pub fn max_occlusion(mut self, value: u32) -> Self {
+        self.params
+            .params
+            .insert("max_occlusion".into(), json!(value));
+        self
+    }
+    pub fn saturate(mut self, value: bool) -> Self {
+        self.params.params.insert("saturate".into(), json!(value));
         self
     }
     pub fn pq_chunk_num(mut self, value: u32) -> Self {

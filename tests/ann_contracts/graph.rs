@@ -192,6 +192,53 @@ fn vamana_non_l2_metrics_match_the_exact_oracle() {
 }
 
 #[test]
+fn vamana_scalar_quantization_and_pruning_controls_survive_reopen() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("vamana-quantized");
+    let path_string = path.to_str().expect("UTF-8 path");
+    let collection =
+        Collection::create(path_string, &schema(), None).expect("collection must be created");
+    insert_docs(&collection, 128);
+
+    let mut query =
+        SearchQuery::new("embedding", &vector_for(37), 15).expect("query must be valid");
+    query
+        .params
+        .insert("metric".into(), serde_json::json!("cosine"));
+    let exact = collection.query(&query).expect("exact query must succeed");
+    let mut params = IndexParams::vamana_with_options(MetricType::Cosine, 16, 128, 1.2, 32, true)
+        .expect("Vamana options must be valid");
+    params
+        .set_quantize_type(QuantizeType::Int8)
+        .expect("scalar quantization must be valid");
+    collection
+        .create_index("embedding", &params)
+        .expect("quantized Vamana index must build");
+    query
+        .set_diskann_params(DiskannQueryParams::new(128))
+        .expect("Vamana query controls must be accepted");
+    let indexed = collection
+        .query(&query)
+        .expect("quantized Vamana query must succeed");
+    assert_same_ranking(&exact, &indexed);
+    collection.flush().expect("quantized Vamana cache must flush");
+    collection.close().expect("collection must close");
+
+    let reopened = Collection::open(path_string, None).expect("collection must reopen");
+    assert!(
+        reopened
+            .stats()
+            .expect("stats must be available")
+            .index_cache_hit
+    );
+    let restored = reopened
+        .query(&query)
+        .expect("reopened quantized Vamana query must succeed");
+    assert_same_ranking(&exact, &restored);
+    reopened.close().expect("reopened collection must close");
+}
+
+#[test]
 fn diskann_non_l2_full_vector_path_matches_after_sidecar_reopen() {
     for (label, metric) in [
         ("ip", MetricType::Ip),
@@ -332,4 +379,3 @@ fn non_l2_vamana_and_diskann_keep_bounded_candidate_work() {
         }
     }
 }
-

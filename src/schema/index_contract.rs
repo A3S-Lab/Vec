@@ -206,9 +206,9 @@ fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> R
             "Vamana supports L2, inner-product, cosine, and MIPS-L2 metrics",
         ));
     }
-    if params.quantize_type != QuantizeType::Undefined {
+    if params.quantize_type == QuantizeType::Rabitq {
         return Err(Error::not_supported(
-            "Vamana quantization is not implemented",
+            "RaBitQ quantization requires the HnswRabitq or IvfRabitq index type",
         ));
     }
     validate_parameter_names(
@@ -219,6 +219,7 @@ fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> R
             "alpha",
             "max_occlusion",
             "saturate",
+            "quantize_type",
         ],
     )?;
     positive_integer(params, "max_degree")?;
@@ -229,17 +230,9 @@ fn validate_vamana_configuration(data_type: DataType, params: &IndexParams) -> R
             "Vamana alpha must be finite and at least 1.0",
         ));
     }
-    if nonnegative_integer(params, "max_occlusion")? != 0 {
-        return Err(Error::not_supported(
-            "Vamana max_occlusion is not implemented",
-        ));
-    }
-    if boolean_parameter(params, "saturate")? {
-        return Err(Error::not_supported(
-            "Vamana graph saturation is not implemented",
-        ));
-    }
-    Ok(())
+    nonnegative_integer(params, "max_occlusion")?;
+    boolean_parameter(params, "saturate")?;
+    validate_redundant_quantize_parameter(params)
 }
 
 fn validate_ann_base(data_type: DataType, params: &IndexParams) -> Result<()> {

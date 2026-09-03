@@ -22,6 +22,10 @@ pub(super) struct VamanaIndex {
     default_list_size: usize,
     max_degree: usize,
     alpha: f64,
+    #[serde(default)]
+    max_occlusion: usize,
+    #[serde(default)]
+    saturate: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,12 +67,15 @@ impl VamanaIndex {
         self.alpha
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
         vectors: &OrdinalMap<QuantizedVector>,
         ordinals: &OrdinalTable,
         max_degree: usize,
         list_size: usize,
         alpha: f64,
+        max_occlusion: usize,
+        saturate: bool,
         metric: MetricType,
     ) -> Self {
         let decoded: OrdinalMap<Vec<f32>> = vectors
@@ -82,6 +89,8 @@ impl VamanaIndex {
                 default_list_size: list_size,
                 max_degree,
                 alpha,
+                max_occlusion,
+                saturate,
             };
         }
 
@@ -120,6 +129,8 @@ impl VamanaIndex {
                     max_degree,
                     metric,
                     mips_norm_bound,
+                    max_occlusion,
+                    saturate,
                 );
 
                 let neighbors = graph.get(ordinal).cloned().unwrap_or_default();
@@ -139,6 +150,8 @@ impl VamanaIndex {
                             max_degree,
                             metric,
                             mips_norm_bound,
+                            max_occlusion,
+                            saturate,
                         );
                     } else {
                         graph.insert(neighbor, candidates);
@@ -153,6 +166,8 @@ impl VamanaIndex {
             default_list_size: list_size,
             max_degree,
             alpha,
+            max_occlusion,
+            saturate,
         }
     }
 
@@ -304,12 +319,16 @@ impl VamanaIndex {
         max_degree: usize,
         list_size: usize,
         alpha: f64,
+        max_occlusion: usize,
+        saturate: bool,
     ) -> bool {
         if !vectors.validates(vectors.slot_count())
             || !self.graph.validates(vectors.slot_count())
             || self.max_degree != max_degree
             || self.default_list_size != list_size
             || self.alpha.to_bits() != alpha.to_bits()
+            || self.max_occlusion != max_occlusion
+            || self.saturate != saturate
             || max_degree == 0
             || list_size == 0
             || !alpha.is_finite()
@@ -402,6 +421,8 @@ fn robust_prune(
     max_degree: usize,
     metric: MetricType,
     mips_norm_bound: f64,
+    max_occlusion: usize,
+    saturate: bool,
 ) {
     let Some(source_vector) = vectors.get(source) else {
         return;
@@ -416,6 +437,38 @@ fn robust_prune(
         .collect();
     pool.sort_unstable();
     pool.dedup();
+    // DiskANN calls this bound `maxc`: it limits the candidate set before
+    // RobustPrune. A zero value preserves the historical A3S behavior and
+    // leaves the candidate set unbounded.
+    let mut saturation_pool = pool.clone();
+    if max_occlusion > 0 && pool.len() > max_occlusion {
+        pool.sort_unstable_by(|left, right| {
+            let left_distance = vectors.get(*left).map_or(f64::INFINITY, |vector| {
+                metric_distance(source_vector, vector, metric, mips_norm_bound)
+            });
+            let right_distance = vectors.get(*right).map_or(f64::INFINITY, |vector| {
+                metric_distance(source_vector, vector, metric, mips_norm_bound)
+            });
+            left_distance
+                .total_cmp(&right_distance)
+                .then_with(|| left.cmp(right))
+        });
+        pool.truncate(max_occlusion);
+        saturation_pool.clone_from(&pool);
+    }
+    if saturate {
+        saturation_pool.sort_unstable_by(|left, right| {
+            let left_distance = vectors.get(*left).map_or(f64::INFINITY, |vector| {
+                metric_distance(source_vector, vector, metric, mips_norm_bound)
+            });
+            let right_distance = vectors.get(*right).map_or(f64::INFINITY, |vector| {
+                metric_distance(source_vector, vector, metric, mips_norm_bound)
+            });
+            left_distance
+                .total_cmp(&right_distance)
+                .then_with(|| left.cmp(right))
+        });
+    }
     let mut selected = Vec::with_capacity(max_degree.min(pool.len()));
     let alpha_squared = alpha * alpha;
 
@@ -459,6 +512,17 @@ fn robust_prune(
                 * metric_distance(closest_vector, candidate_vector, metric, mips_norm_bound)
                 > metric_distance(source_vector, candidate_vector, metric, mips_norm_bound)
         });
+    }
+    if saturate && alpha > 1.0 && selected.len() < max_degree {
+        for candidate in saturation_pool {
+            if candidate == source || selected.contains(&candidate) {
+                continue;
+            }
+            selected.push(candidate);
+            if selected.len() == max_degree {
+                break;
+            }
+        }
     }
     graph.insert(source, selected);
 }
@@ -681,12 +745,35 @@ mod tests {
     #[test]
     fn two_pass_graph_is_deterministic_and_degree_bounded() {
         let (ordinals, vectors) = fixture();
-        let first = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, MetricType::L2);
-        let second = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, MetricType::L2);
+        let first = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, MetricType::L2);
+        let second = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, MetricType::L2);
         assert_eq!(first.graph, second.graph);
         assert_eq!(first.entry_ordinal, second.entry_ordinal);
         assert!(first.graph.values().all(|neighbors| neighbors.len() <= 12));
-        assert!(first.validates(&vectors, 12, 48, 1.2));
+        assert!(first.validates(&vectors, 12, 48, 1.2, 0, false));
+    }
+
+    #[test]
+    fn occlusion_cap_and_saturation_are_deterministic_and_bounded() {
+        let (ordinals, vectors) = fixture();
+        let capped = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 4, false, MetricType::L2);
+        let saturated =
+            VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 4, true, MetricType::L2);
+        let repeated =
+            VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 4, true, MetricType::L2);
+        assert_eq!(saturated.graph, repeated.graph);
+        assert!(capped.validates(&vectors, 12, 48, 1.2, 4, false));
+        assert!(saturated.validates(&vectors, 12, 48, 1.2, 4, true));
+        assert!(saturated
+            .graph
+            .values()
+            .all(|neighbors| neighbors.len() <= 12));
+        assert_ne!(capped.graph, saturated.graph);
+        assert!(saturated.graph.values().zip(capped.graph.values()).any(
+            |(with_saturation, without_saturation)| {
+                with_saturation.len() >= without_saturation.len()
+            }
+        ));
     }
 
     #[test]
@@ -698,10 +785,13 @@ mod tests {
             MetricType::Cosine,
             MetricType::MipsL2,
         ] {
-            let first = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
-            let second = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
+            let first = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, metric);
+            let second = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, metric);
             assert_eq!(first.graph, second.graph, "metric={metric:?}");
-            assert!(first.validates(&vectors, 12, 48, 1.2), "metric={metric:?}");
+            assert!(
+                first.validates(&vectors, 12, 48, 1.2, 0, false),
+                "metric={metric:?}"
+            );
             assert!(first.graph.values().all(|neighbors| {
                 neighbors
                     .iter()
@@ -716,7 +806,7 @@ mod tests {
     #[test]
     fn exhaustive_list_returns_every_ordinal() {
         let (ordinals, vectors) = fixture();
-        let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, MetricType::L2);
+        let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, MetricType::L2);
         let candidates = index.candidates(
             &vectors,
             &ordinals,
@@ -761,8 +851,9 @@ mod tests {
                 )
             })
             .collect();
-        let index = VamanaIndex::build(&vectors, &ordinals, 4, 6, 1.2, MetricType::Cosine);
-        assert!(index.validates(&vectors, 4, 6, 1.2));
+        let index =
+            VamanaIndex::build(&vectors, &ordinals, 4, 6, 1.2, 0, false, MetricType::Cosine);
+        assert!(index.validates(&vectors, 4, 6, 1.2, 0, false));
         assert!(index.graph.values().all(|neighbors| neighbors
             .iter()
             .copied()
@@ -792,7 +883,7 @@ mod tests {
         let excluded: RoaringTreemap = [40_u64].into_iter().collect();
         let query = [41.0, 8.0, 1.0];
         for metric in [MetricType::Ip, MetricType::Cosine, MetricType::MipsL2] {
-            let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, metric);
+            let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, metric);
             let actual = index.filtered_candidates(
                 &vectors,
                 &ordinals,
@@ -833,7 +924,7 @@ mod tests {
     #[test]
     fn filtered_search_keeps_navigation_bridges_and_exact_eligible_candidates() {
         let (ordinals, vectors) = fixture();
-        let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, MetricType::L2);
+        let index = VamanaIndex::build(&vectors, &ordinals, 12, 48, 1.2, 0, false, MetricType::L2);
         let allowed: RoaringTreemap = vectors.keys().filter(|ordinal| ordinal % 2 == 0).collect();
         let excluded: RoaringTreemap = [40_u64].into_iter().collect();
         let query = [41.0, 8.0, 1.0];
