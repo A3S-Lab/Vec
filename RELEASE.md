@@ -85,6 +85,16 @@ cargo publish --dry-run --locked
 The candidate artifact is not a crates.io publication and is not evidence of
 an actual macOS 12 Intel runtime.
 
+## Registry status
+
+The crates.io index currently contains `a3s-vec` `0.1.0`, published on
+2026-09-02. That package predates the current `41283f6315906a2737b5a8e8612ac876a8dc9c04`
+qualification revision and must not be treated as the current release
+candidate. `cargo publish --dry-run --locked` confirms the package metadata but
+aborts before upload because version `0.1.0` already exists. After the release
+gates below pass, publish a new semver version whose artifact, checksum, and
+source-revision manifest all bind to the qualified revision.
+
 ## Formal release blockers
 
 - Register an actual Intel Mac running macOS 12 as a repository runner with the
