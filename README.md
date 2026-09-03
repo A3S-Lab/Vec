@@ -220,7 +220,8 @@ result.
 - Scalar inverted indexes for equality, range, `IN`, null, wildcard, prefix,
   suffix, and boolean filter composition.
 
-Vamana accepts unquantized L2, inner-product, cosine, and MIPS-L2 vectors.
+Vamana accepts L2, inner-product, cosine, and MIPS-L2 vectors, with optional
+FP16, INT8, or INT4 index-only quantization and exact authoritative re-ranking.
 `IndexParams::diskann` uses the same metric-aware deterministic graph and
 enables corpus-trained PQ when `pq_chunk_num > 0`; zero selects full-vector
 graph scoring. A freshly built or rebuilt generation
@@ -488,7 +489,7 @@ that ownership claim.
 | --- | --- |
 | Flat, HNSW, IVF/SOAR | Implemented; SOAR postings use deterministic primary-plus-secondary assignment and unique-candidate probing |
 | HNSW/IVF RaBitQ | Implemented for L2, inner product, and cosine with 1-to-9-bit codes and exact re-ranking |
-| Metric-aware Vamana traversal and incremental overlays | Implemented for L2, inner product, cosine, and MIPS-L2 in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
+| Metric-aware Vamana traversal and incremental overlays | Implemented for L2, inner product, cosine, and MIPS-L2 with optional FP16/INT8/INT4 index quantization, in memory and through positioned or immutable mmap-snapshot sidecar reads after reopen |
 | Metric-aware DiskANN PQ/ADC and incremental overlays | Implemented for L2, inner product, cosine, and MIPS-L2 in memory and through positioned or immutable mmap-snapshot PQ-code reads after reopen |
 | Sector-aligned native Vamana/DiskANN file | Implemented |
 | Scalar inverted index | Implemented |
