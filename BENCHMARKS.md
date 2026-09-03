@@ -282,8 +282,8 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
-The latest complete hosted run is [CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584)
-for revision `c758521c8dac97cc9b3cbcad199031238983883f`. All ten jobs
+The latest complete hosted run is [CI run 33763187419](https://github.com/A3S-Lab/Vec/actions/runs/33763187419)
+for revision `7e3b083e36ab5aeb300b2c45d6d59280971087da`. All ten jobs
 passed, including the versioned release-candidate package. The following compact
 extraction comes from its revision-bound platform artifacts. It uses the smoke
 fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
@@ -294,11 +294,11 @@ schema-evolution lifecycle p50.
 
 | Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 | Schema evolution p50 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Linux arm64 | 15.112 | 40.009 | 22.993 | 54,326.01 | 93.89 / 109.73 | 3,014.302 |
-| Linux x86_64 | 16.040 | 46.728 | 26.409 | 30,664.98 | 111.57 / 183.97 | 4,210.561 |
-| macOS arm64 | 15.167 | 47.083 | 18.709 | 24,796.59 | 140.08 / 643.67 | 12,477.542 |
-| macOS Intel (hosted macOS 15) | 50.568 | 69.480 | 61.129 | 21,608.73 | 627.44 / 724.24 | 39,741.462 |
-| Windows x86_64 | 41.300 | 49.600 | 31.700 | 25,592.83 | 2,086.50 / 1,067.70 | 21,996.000 |
+| Linux arm64 | 15.007 | 39.718 | 22.886 | 38,592.65 | 60.31 / 256.08 | 3,918.468 |
+| Linux x86_64 | 16.254 | 49.834 | 26.950 | 29,764.96 | 140.69 / 185.23 | 3,859.623 |
+| macOS arm64 | 14.542 | 34.750 | 18.083 | 10,660.23 | 61.33 / 256.08 | 11,758.083 |
+| macOS Intel (hosted macOS 15) | 54.317 | 77.734 | 66.580 | 24,099.91 | 90.84 / 742.96 | 38,575.593 |
+| Windows x86_64 | 26.300 | 54.400 | 32.000 | 18,910.01 | 129.10 / 989.00 | 20,183.100 |
 
 Every contention row retained Recall@10 = 1.0000. The artifact also contains
 the full 53-row feature matrix and all percentile/throughput columns; the

@@ -55,14 +55,14 @@ migration shadow:
   as serving data.
 
 The delivered adapter is pinned by the current Code candidate commit
-[`d833ce3e`](https://github.com/A3S-Lab/Code/commit/d833ce3efa59fc1682d4c70819212a1ea905b8af) to Vec commit
-[`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f).
+[`32a70cd7`](https://github.com/A3S-Lab/Code/commit/32a70cd7926fbdf3210fd0ee822b4f718cbee108) to Vec commit
+[`7e3b083e`](https://github.com/A3S-Lab/Vec/commit/7e3b083e36ab5aeb300b2c45d6d59280971087da).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f),
+[`7e3b083e`](https://github.com/A3S-Lab/Vec/commit/7e3b083e36ab5aeb300b2c45d6d59280971087da),
 with the complete hosted gate recorded in
-[CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584).
+[CI run 33763187419](https://github.com/A3S-Lab/Vec/actions/runs/33763187419).
 The root Cloud compatibility lock remains a separate, older graph until its
 Code dependency and lock entry are promoted together.
 
