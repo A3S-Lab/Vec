@@ -282,9 +282,10 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
-The latest complete hosted run is [CI run 33686399240](https://github.com/A3S-Lab/Vec/actions/runs/33686399240)
-for revision `9ed701ae72e45f7b8f7be9c7db943ed4b64f93f4`. All ten jobs passed,
-including the versioned release-candidate package. The following compact
+The latest complete hosted run is [CI run 33696717206](https://github.com/A3S-Lab/Vec/actions/runs/33696717206)
+for documentation revision `80c6e26511361c43efb1a06cb05d831a2df941a2`
+over implementation `e27524dc318b6acbd293192bef8a684321c0ad9e`. All ten jobs
+passed, including the versioned release-candidate package. The following compact
 extraction comes from its revision-bound platform artifacts. It uses the smoke
 fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
 contention fixtures use 8 queries and 2 rounds), so it is a portability

@@ -115,8 +115,9 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-**Verification refresh (2026-09-03):** Vec revision `9ed701a` independently
-passes the all-feature and no-default suites (debug and release), the Rust
+**Verification refresh (2026-09-03):** Vec documentation revision `80c6e26`
+over implementation `e27524d` passes the all-feature and no-default suites
+(debug and release), the Rust
 1.75 no-default release suite, all compatibility examples, formatting,
 all-target checks, all-feature Clippy, locked packaging, and the complete
 local benchmark sweep: the 53-row feature matrix, concurrent readers, mixed
@@ -126,8 +127,9 @@ and the lifecycle/resource/maintenance matrix. Their CSVs contain finite
 metrics and the five gate validators pass on the
 local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
-[CI run 33686399240](https://github.com/A3S-Lab/Vec/actions/runs/33686399240),
-which passed all ten jobs, including the lifecycle matrix. These checks do not replace the actual macOS 12
+[CI run 33696717206](https://github.com/A3S-Lab/Vec/actions/runs/33696717206),
+which passed all ten jobs, including the lifecycle matrix and versioned
+release-candidate package. These checks do not replace the actual macOS 12
 Intel runtime gate described below.
 
 The scale-comparison harness now has a reproducible 20-column CSV contract;

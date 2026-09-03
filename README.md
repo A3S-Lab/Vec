@@ -39,11 +39,14 @@ as bounded diagnostics; they cannot change public retrieval results. The
 complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
-The current engine and benchmark evidence in this repository are at
-[`e27524d`](https://github.com/A3S-Lab/Vec/commit/e27524dc318b6acbd293192bef8a684321c0ad9e).
+The current engine and benchmark evidence in this repository are carried by
+documentation revision [`80c6e26`](https://github.com/A3S-Lab/Vec/commit/80c6e26511361c43efb1a06cb05d831a2df941a2)
+over implementation [`e27524d`](https://github.com/A3S-Lab/Vec/commit/e27524dc318b6acbd293192bef8a684321c0ad9e).
 Its revision-bound hosted gate is
-[CI run 33695231554](https://github.com/A3S-Lab/Vec/actions/runs/33695231554);
-the preceding methodology gate is retained in
+[CI run 33696717206](https://github.com/A3S-Lab/Vec/actions/runs/33696717206);
+the preceding implementation gate is retained in
+[CI run 33695231554](https://github.com/A3S-Lab/Vec/actions/runs/33695231554),
+and the preceding methodology gate is retained in
 [CI run 33690839419](https://github.com/A3S-Lab/Vec/actions/runs/33690839419).
 The current revision also records the borrowed exact-score kernel's measured
 improvement. Code intentionally keeps the older `019fdb929` shadow pin until
