@@ -874,7 +874,7 @@ execution are implemented.
 - Completed release-candidate hardening: the final public API review keeps the
   external kernel private, preserves `unsafe_code = "deny"`, and compile-checks
   `Send + Sync` across the owned public contract. `cargo package --locked` and
-  `cargo publish --dry-run --locked` verify version `0.1.0`. After every hosted
+  `cargo publish --dry-run --locked` verify version `0.1.1`. After every hosted
   gate passes on `main`, CI uploads the verified crate, SHA-256 checksum, and a
   source-revision manifest as one versioned release-candidate artifact.
 - Completed external-gate automation: a manual workflow accepts an exact
