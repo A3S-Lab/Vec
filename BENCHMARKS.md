@@ -131,7 +131,7 @@ the three runs; Recall@10 was 0.6000 in every run.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Previous recorded revision | 2,767.024 | 185,429.317 | 188,288.828 | 1,725.400 | 2,499.600 | 2,666.600 | 550.80 | 0.6000 |
 | Qualified revision 13585ccd | 2,624.877 | 141,622.863 | 144,213.026 | 923.400 | 1,143.200 | 1,511.900 | 1,061.96 | 0.6000 |
-| Change | -5.1% | -23.6% | -23.4% | -46.5% | -54.3% | -43.3% | +92.9% | unchanged |
+| Change | -5.1% | -23.6% | -23.4% | -46.5% | -54.3% | -43.3% | +92.8% | unchanged |
 
 The old and new rows use the same Rust harness and controls. The new query
 median is still about 2.71x slower than the zvec 0.7.0 HNSW row above
@@ -140,6 +140,13 @@ median is still about 2.71x slower than the zvec 0.7.0 HNSW row above
 CPU-specialized implementation and different graph/storage lifecycle; this
 optimization narrows the A3S query gap without trading away the exact
 re-ranking or the measured Recall.
+
+To isolate compiler target selection from engine design, three additional Flat
+runs used the same host and fixture with `RUSTFLAGS="-C target-cpu=native"`.
+Their median p50 was 29,988.7 microseconds, 13.3% below the portable a3s-vec
+row's 34,581.5 microseconds, but still 4.83x above zvec's 6,206.5 microseconds.
+Native code generation therefore explains part, not most, of the observed Flat
+gap. This control is diagnostic only and is not the portable release baseline.
 
 Run the Rust side at smoke or selected scale with:
 

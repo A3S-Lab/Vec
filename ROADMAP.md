@@ -857,7 +857,7 @@ execution are implemented.
   final public re-ranking retain their authoritative arithmetic, with a safe
   `f64` fallback for non-finite SIMD accumulators. Across three independent
   100,000 x 128 runs, median HNSW p50 fell from 1,725.4 to 923.4 microseconds
-  (-46.5%), QPS rose 92.9%, and build time fell 23.6%, while Recall@10 stayed
+  (-46.5%), QPS rose 92.8%, and build time fell 23.6%, while Recall@10 stayed
   at 0.6000. The same fixture still records zvec at 2.71x lower query p50 and
   1.72x shorter build time, so this is not a performance-parity claim.
 - Completed cross-project integration on 2026-09-03: A3S Code candidate commit
