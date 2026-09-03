@@ -89,7 +89,7 @@ cargo publish --dry-run --locked
 The candidate artifact is not a crates.io publication and is not evidence of
 an actual macOS 12 Intel runtime.
 
-The latest revision-bound candidate was produced by
+The qualified engine revision's reproducible candidate was produced by
 [CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)
 for revision `13585ccd3f956f6cb7d669b2ee6acc7096fca03d`. Its machine-readable
 manifest binds the package and runner, and the uploaded crate checksum is
