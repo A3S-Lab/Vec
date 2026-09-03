@@ -115,7 +115,7 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-**Verification refresh (2026-09-03):** Vec revision `33d4fd1`
+**Verification refresh (2026-09-03):** Vec revision `41283f631`
 passes the all-feature and no-default suites
 (debug and release), the Rust
 1.75 no-default release suite, all compatibility examples, formatting,
@@ -127,7 +127,7 @@ and the lifecycle/resource/maintenance matrix. Their CSVs contain finite
 metrics and the five gate validators pass on the
 local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
-[CI run 33703130686](https://github.com/A3S-Lab/Vec/actions/runs/33703130686),
+[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979),
 which passed all ten jobs, including the lifecycle matrix and versioned
 release-candidate package. These checks do not replace the actual macOS 12
 Intel runtime gate described below.
@@ -840,9 +840,9 @@ execution are implemented.
   (1.0000 Flat, 0.6000 HNSW). The result remains a directional benchmark
   because zvec uses a native C++ wheel and a3s-vec uses the portable Rust
   target by default.
-- Completed cross-project integration on 2026-09-02: A3S Code commit
-  `4163d8e3a1a96bbae430dc987005acaa362efb30` pins Vec commit
-  `019fdb929a57dee1803691e6def60df3946d9561` behind a Memory-authoritative
+- Completed cross-project integration on 2026-09-03: A3S Code candidate commit
+  `ffc5f874` pins Vec commit
+  `41283f6315906a2737b5a8e8612ac876a8dc9c04` behind a Memory-authoritative
   workspace-retrieval shadow. Code admits one embedding batch, mirrors it once
   into a session-local temporary Vec collection, compares IDs, partitions,
   `f32` scores, and search accounting behind one publication gate, and exposes

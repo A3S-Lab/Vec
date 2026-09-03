@@ -30,8 +30,9 @@ stale, or not selective enough.
 ## A3S Code integration
 
 The engine is now consumed by A3S Code through a session-local migration shadow.
-Code commit [`4163d8e3`](https://github.com/A3S-Lab/Code/commit/4163d8e3a1a96bbae430dc987005acaa362efb30)
-pins Vec commit [`019fdb929`](https://github.com/A3S-Lab/Vec/commit/019fdb929a57dee1803691e6def60df3946d9561).
+The current Code main candidate is commit
+[`ffc5f874`](https://github.com/A3S-Lab/Code/commit/ffc5f874), which pins Vec
+commit [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
 The adapter mirrors each already-admitted embedding batch once into a temporary
 collection and compares the Vec result with the A3S Memory result, while Memory
 remains the only serving authority. Shadow failures are isolated and surfaced
@@ -40,16 +41,15 @@ complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The current engine and benchmark evidence in this repository are carried by
-revision [`33d4fd1`](https://github.com/A3S-Lab/Vec/commit/33d4fd1e97d4e589e815bf8c9a6ac83e7dbb36f2).
+revision [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
 Its revision-bound hosted gate is
-[CI run 33703130686](https://github.com/A3S-Lab/Vec/actions/runs/33703130686);
-the preceding implementation gate is retained in
-[CI run 33695231554](https://github.com/A3S-Lab/Vec/actions/runs/33695231554),
-and the preceding methodology gate is retained in
-[CI run 33690839419](https://github.com/A3S-Lab/Vec/actions/runs/33690839419).
+[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979);
+the preceding implementation and methodology gates remain available in the
+repository history.
 The current revision also records the borrowed exact-score kernel's measured
-improvement. Code intentionally keeps the older `019fdb929` shadow pin until
-its promotion workflow is qualified against the newer engine revision.
+improvement. The root compatibility lock may retain an older Code submodule
+pin until its Cloud promotion workflow is updated as one exact component graph;
+the Code candidate itself has been validated against this revision.
 
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
 That lets the planner compose bitmaps and candidates without building

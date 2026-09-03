@@ -54,18 +54,17 @@ migration shadow:
   closed with the session. No Vec state is shared between sessions or persisted
   as serving data.
 
-The delivered adapter is pinned by Code commit
-[`4163d8e3`](https://github.com/A3S-Lab/Code/commit/4163d8e3a1a96bbae430dc987005acaa362efb30)
-to Vec commit
-[`019fdb929`](https://github.com/A3S-Lab/Vec/commit/019fdb929a57dee1803691e6def60df3946d9561).
+The delivered adapter is pinned by the current Code candidate commit
+[`ffc5f874`](https://github.com/A3S-Lab/Code/commit/ffc5f874) to Vec commit
+[`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`9ed701a`](https://github.com/A3S-Lab/Vec/commit/9ed701ae72e45f7b8f7be9c7db943ed4b64f93f4),
+[`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04),
 with the complete hosted gate recorded in
-[CI run 33686399240](https://github.com/A3S-Lab/Vec/actions/runs/33686399240);
-the older adapter pin remains deliberate until Code's promotion workflow is
-qualified against that revision.
+[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979).
+The root Cloud compatibility lock remains a separate, older graph until its
+Code dependency and lock entry are promoted together.
 
 ## 3. Module layout
 
