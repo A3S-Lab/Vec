@@ -282,22 +282,23 @@ release. The platform smoke fixture is intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 
-The latest complete hosted run is [CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979)
-for revision `41283f6315906a2737b5a8e8612ac876a8dc9c04`. All ten jobs
+The latest complete hosted run is [CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584)
+for revision `c758521c8dac97cc9b3cbcad199031238983883f`. All ten jobs
 passed, including the versioned release-candidate package. The following compact
 extraction comes from its revision-bound platform artifacts. It uses the smoke
 fixture (96 documents, 8 dimensions, 6 feature-matrix queries, 2 rounds; the
 contention fixtures use 8 queries and 2 rounds), so it is a portability
 snapshot rather than a production SLO. Latencies are p50 microseconds; the
-last column is the 8-reader mixed-workload read/write p50.
+last columns are the 8-reader mixed-workload read/write p50 and the parallel
+schema-evolution lifecycle p50.
 
-| Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Linux arm64 | 16.271 | 41.229 | 22.822 | 52,476.24 | 62.88 / 104.63 |
-| Linux x86_64 | 16.833 | 70.954 | 26.243 | 26,806.92 | 128.46 / 108.42 |
-| macOS arm64 | 16.584 | 37.708 | 18.041 | 28,046.08 | 57.08 / 500.29 |
-| macOS Intel (hosted macOS 15) | 66.245 | 86.812 | 69.043 | 25,891.36 | 350.48 / 1,289.78 |
-| Windows x86_64 | 47.800 | 58.700 | 32.500 | 25,163.66 | 941.90 / 943.60 |
+| Platform | Dense cosine p50 | HNSW p50 | Indexed FTS p50 | 8-reader HNSW QPS | Mixed read/write p50 | Schema evolution p50 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux arm64 | 15.112 | 40.009 | 22.993 | 54,326.01 | 93.89 / 109.73 | 3,014.302 |
+| Linux x86_64 | 16.040 | 46.728 | 26.409 | 30,664.98 | 111.57 / 183.97 | 4,210.561 |
+| macOS arm64 | 15.167 | 47.083 | 18.709 | 24,796.59 | 140.08 / 643.67 | 12,477.542 |
+| macOS Intel (hosted macOS 15) | 50.568 | 69.480 | 61.129 | 21,608.73 | 627.44 / 724.24 | 39,741.462 |
+| Windows x86_64 | 41.300 | 49.600 | 31.700 | 25,592.83 | 2,086.50 / 1,067.70 | 21,996.000 |
 
 Every contention row retained Recall@10 = 1.0000. The artifact also contains
 the full 53-row feature matrix and all percentile/throughput columns; the

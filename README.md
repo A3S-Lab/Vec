@@ -31,8 +31,8 @@ stale, or not selective enough.
 
 The engine is now consumed by A3S Code through a session-local migration shadow.
 The current Code main candidate is commit
-[`17113af`](https://github.com/A3S-Lab/Code/commit/17113af42d34cb95f2fa018a1999dc2d29623bc8), which pins Vec
-commit [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
+[`d833ce3e`](https://github.com/A3S-Lab/Code/commit/d833ce3efa59fc1682d4c70819212a1ea905b8af), which pins Vec
+commit [`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f).
 The adapter mirrors each already-admitted embedding batch once into a temporary
 collection and compares the Vec result with the A3S Memory result, while Memory
 remains the only serving authority. Shadow failures are isolated and surfaced
@@ -41,9 +41,9 @@ complete ownership, mapping, resource, and rollback contract is documented in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 The current engine and benchmark evidence in this repository are carried by
-revision [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
+revision [`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f).
 Its revision-bound hosted gate is
-[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979);
+[CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584);
 the preceding implementation and methodology gates remain available in the
 repository history.
 The current revision also records the borrowed exact-score kernel's measured

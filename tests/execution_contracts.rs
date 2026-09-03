@@ -583,6 +583,18 @@ fn schema_evolution_concurrency_backfills_and_validates_atomically() {
         vec![Some("general".to_string()), Some("general".to_string())]
     );
 
+    let bounded = FieldSchema::new("bounded", DataType::String, false, 0)
+        .expect("bounded schema must be valid");
+    collection
+        .add_column_with_options(
+            &bounded,
+            Some("'bounded'"),
+            AddColumnOption {
+                concurrency: u32::MAX,
+            },
+        )
+        .expect("an oversized worker request must be safely bounded");
+
     let optional = FieldSchema::new("optional", DataType::String, true, 0)
         .expect("optional schema must be valid");
     collection

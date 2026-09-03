@@ -77,3 +77,24 @@ fn document_generation_clone_shares_the_persistent_tree() {
     assert_eq!(next.len(), 257);
     assert!(Arc::ptr_eq(&original["doc-0128"], &next["doc-0128"]));
 }
+
+#[test]
+fn schema_worker_count_is_bounded_and_skips_needless_pools() {
+    assert_eq!(
+        super::schema_worker_count(0, 10).expect("zero is valid"),
+        None
+    );
+    assert_eq!(
+        super::schema_worker_count(u32::MAX, 0).expect("empty work is valid"),
+        None
+    );
+    assert_eq!(
+        super::schema_worker_count(u32::MAX, 1).expect("single item is valid"),
+        None
+    );
+    if let Some(workers) = super::schema_worker_count(u32::MAX, usize::MAX)
+        .expect("large requests must be safely bounded")
+    {
+        assert!(workers <= super::MAX_SCHEMA_WORKERS);
+    }
+}

@@ -858,11 +858,17 @@ impl CollectionSchemaBuilder {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AddColumnOption {
+    /// Requested schema-backfill workers. Zero keeps the deterministic serial
+    /// path; positive values are bounded by work size, host parallelism, and
+    /// the engine's worker ceiling.
     pub concurrency: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AlterColumnOption {
+    /// Requested candidate-schema validation workers. Zero keeps the
+    /// deterministic serial path; positive values use the same bounded pool
+    /// as [`AddColumnOption::concurrency`].
     pub concurrency: u32,
 }
 

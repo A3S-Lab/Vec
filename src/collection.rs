@@ -40,6 +40,11 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
 use validation::{normalize_doc, parse_default_expression, validate_doc};
 
+/// Hard ceiling for a schema-evolution worker pool. Schema changes are
+/// collection-local maintenance work; allowing an untrusted `u32` directly
+/// into Rayon could otherwise reserve thousands of workers for a small batch.
+const MAX_SCHEMA_WORKERS: usize = 256;
+
 /// Public collection statistics (the fields used by the official SDK are kept
 /// first; additional counters are additive).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -725,19 +730,18 @@ fn transform_documents_with_concurrency(
         let result = transform(&mut next).map(|()| next);
         (id.clone(), result)
     };
-    let transformed: Vec<(String, Result<Doc>)> = if concurrency == 0 {
-        entries.iter().map(transform_one).collect()
-    } else {
-        let threads = usize::try_from(concurrency)
-            .map_err(|_| Error::resource_exhausted("schema concurrency exceeds this platform"))?;
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .map_err(|error| {
-                Error::resource_exhausted(format!("build schema worker pool: {error}"))
-            })?;
-        pool.install(|| entries.par_iter().map(transform_one).collect())
-    };
+    let transformed: Vec<(String, Result<Doc>)> =
+        if let Some(threads) = schema_worker_count(concurrency, entries.len())? {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .map_err(|error| {
+                    Error::resource_exhausted(format!("build schema worker pool: {error}"))
+                })?;
+            pool.install(|| entries.par_iter().map(transform_one).collect())
+        } else {
+            entries.iter().map(transform_one).collect()
+        };
     let mut output = DocumentMap::new();
     for (id, result) in transformed {
         output.insert(id, Arc::new(result?));
@@ -755,14 +759,12 @@ fn validate_documents_with_concurrency(
 ) -> Result<()> {
     let entries: Vec<Arc<Doc>> = docs.values().cloned().collect();
     let validate_one = |doc: &Arc<Doc>| validate_doc(schema, doc, true);
-    if concurrency == 0 {
+    let Some(threads) = schema_worker_count(concurrency, entries.len())? else {
         for doc in &entries {
             validate_one(doc)?;
         }
         return Ok(());
-    }
-    let threads = usize::try_from(concurrency)
-        .map_err(|_| Error::resource_exhausted("schema concurrency exceeds this platform"))?;
+    };
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
@@ -772,6 +774,25 @@ fn validate_documents_with_concurrency(
         result?;
     }
     Ok(())
+}
+
+/// Resolves a requested schema worker count without allowing the public `u32`
+/// option to turn into an unbounded process-level thread request. A zero
+/// request retains the serial path; small collections and single-core hosts
+/// also avoid creating a private pool. The effective count is bounded by the
+/// amount of work, host parallelism, and a conservative engine ceiling.
+fn schema_worker_count(concurrency: u32, work_items: usize) -> Result<Option<usize>> {
+    if concurrency == 0 || work_items < 2 {
+        return Ok(None);
+    }
+    let requested = usize::try_from(concurrency)
+        .map_err(|_| Error::resource_exhausted("schema concurrency exceeds this platform"))?;
+    let available = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let threads = requested
+        .min(work_items)
+        .min(available)
+        .min(MAX_SCHEMA_WORKERS);
+    Ok((threads > 1).then_some(threads))
 }
 
 fn commit_schema_change(

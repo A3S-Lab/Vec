@@ -14,8 +14,9 @@ The release-facing contract has the following boundaries:
   controls and index/query combinations fail with typed errors before
   mutation.
 - Schema backfills and candidate-schema validation accept a bounded typed
-  worker count through `AddColumnOption`/`AlterColumnOption`; publication stays
-  atomic and deterministic across worker counts.
+  worker count through `AddColumnOption`/`AlterColumnOption`; the effective pool
+  is capped by work size, host parallelism, and 256 workers, while publication
+  stays atomic and deterministic across worker counts.
 - Public embedding and query-executor ports require `Send + Sync`. The
   `public_api_contract` integration test also enforces `Send + Sync` for the
   owned public handles, schemas, queries, values, statistics, and errors.
@@ -91,7 +92,7 @@ an actual macOS 12 Intel runtime.
 ## Registry status
 
 The crates.io index currently contains `a3s-vec` `0.1.0`, published on
-2026-09-02. That package predates the current `41283f6315906a2737b5a8e8612ac876a8dc9c04`
+2026-09-02. That package predates the current `c758521c8dac97cc9b3cbcad199031238983883f`
 qualification revision and must not be treated as the current release
 candidate. `cargo publish --dry-run --locked` confirms the package metadata but
 aborts before upload because version `0.1.0` already exists. After the release

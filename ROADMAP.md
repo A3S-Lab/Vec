@@ -115,7 +115,7 @@ Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
 uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
 requires a self-hosted or external runner.
 
-**Verification refresh (2026-09-03):** Vec revision `41283f631`
+**Verification refresh (2026-09-03):** Vec revision `c758521c`
 passes the all-feature and no-default suites
 (debug and release), the Rust
 1.75 no-default release suite, all compatibility examples, formatting,
@@ -127,7 +127,7 @@ and the lifecycle/resource/maintenance matrix. Their CSVs contain finite
 metrics and the five gate validators pass on the
 local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
-[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979),
+[CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584),
 which passed all ten jobs, including the lifecycle matrix and versioned
 release-candidate package. These checks do not replace the actual macOS 12
 Intel runtime gate described below.
@@ -760,7 +760,8 @@ execution are implemented.
   revision agreement and every index generation.
 - Completed on 2026-09-03: `AddColumnOption::concurrency` and
   `AlterColumnOption::concurrency` use a collection-local bounded Rayon pool
-  for backfill and candidate-schema validation. Results are reduced in
+  (work-size, host-parallelism, and 256-worker ceilings) for backfill and
+  candidate-schema validation. Results are reduced in
   primary-key order, worker-pool construction failures are typed, and an
   invalidability change (for example nullable-to-required data with missing
   values) is rejected before WAL publication. The execution-contract suite
@@ -850,8 +851,8 @@ execution are implemented.
   because zvec uses a native C++ wheel and a3s-vec uses the portable Rust
   target by default.
 - Completed cross-project integration on 2026-09-03: A3S Code candidate commit
-  `17113af42d34cb95f2fa018a1999dc2d29623bc8` pins Vec commit
-  `41283f6315906a2737b5a8e8612ac876a8dc9c04` behind a Memory-authoritative
+  `d833ce3efa59fc1682d4c70819212a1ea905b8af` pins Vec commit
+  `c758521c8dac97cc9b3cbcad199031238983883f` behind a Memory-authoritative
   workspace-retrieval shadow. Code admits one embedding batch, mirrors it once
   into a session-local temporary Vec collection, compares IDs, partitions,
   `f32` scores, and search accounting behind one publication gate, and exposes

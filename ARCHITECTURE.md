@@ -55,14 +55,14 @@ migration shadow:
   as serving data.
 
 The delivered adapter is pinned by the current Code candidate commit
-[`17113af`](https://github.com/A3S-Lab/Code/commit/17113af42d34cb95f2fa018a1999dc2d29623bc8) to Vec commit
-[`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
+[`d833ce3e`](https://github.com/A3S-Lab/Code/commit/d833ce3efa59fc1682d4c70819212a1ea905b8af) to Vec commit
+[`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 The engine revision documented and tested by this repository is now
-[`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04),
+[`c758521c`](https://github.com/A3S-Lab/Vec/commit/c758521c8dac97cc9b3cbcad199031238983883f),
 with the complete hosted gate recorded in
-[CI run 33705867979](https://github.com/A3S-Lab/Vec/actions/runs/33705867979).
+[CI run 33756531584](https://github.com/A3S-Lab/Vec/actions/runs/33756531584).
 The root Cloud compatibility lock remains a separate, older graph until its
 Code dependency and lock entry are promoted together.
 
@@ -378,7 +378,8 @@ Public DiskANN mmap/backend-selection controls and tokenizer extras without an
 execution consumer remain absent or return `NotSupported` before mutation.
 Unknown deserialized keys return `InvalidArgument`. Non-zero segment sizing
 returns `NotSupported`; add/alter schema concurrency uses a bounded local
-worker pool and retains deterministic, atomic publication. Ready ANN, scalar, and FTS
+worker pool (capped by work size, host parallelism, and 256 workers) and retains
+deterministic, atomic publication. Ready ANN, scalar, and FTS
 generations appear in index telemetry and increment their respective query
 counters.
 Ready ANN entries also report `estimated_payload_bytes`, a deterministic
