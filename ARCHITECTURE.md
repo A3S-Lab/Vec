@@ -55,7 +55,7 @@ migration shadow:
   as serving data.
 
 The delivered adapter is pinned by the current Code candidate commit
-[`ffc5f874`](https://github.com/A3S-Lab/Code/commit/ffc5f874) to Vec commit
+[`17113af`](https://github.com/A3S-Lab/Code/commit/17113af42d34cb95f2fa018a1999dc2d29623bc8) to Vec commit
 [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
 Its cross-SDK wire mapping, promotion gates, and rollback procedure live in
 [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).

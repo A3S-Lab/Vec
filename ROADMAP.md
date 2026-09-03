@@ -841,7 +841,7 @@ execution are implemented.
   because zvec uses a native C++ wheel and a3s-vec uses the portable Rust
   target by default.
 - Completed cross-project integration on 2026-09-03: A3S Code candidate commit
-  `ffc5f874` pins Vec commit
+  `17113af42d34cb95f2fa018a1999dc2d29623bc8` pins Vec commit
   `41283f6315906a2737b5a8e8612ac876a8dc9c04` behind a Memory-authoritative
   workspace-retrieval shadow. Code admits one embedding batch, mirrors it once
   into a session-local temporary Vec collection, compares IDs, partitions,

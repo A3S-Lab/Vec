@@ -31,7 +31,7 @@ stale, or not selective enough.
 
 The engine is now consumed by A3S Code through a session-local migration shadow.
 The current Code main candidate is commit
-[`ffc5f874`](https://github.com/A3S-Lab/Code/commit/ffc5f874), which pins Vec
+[`17113af`](https://github.com/A3S-Lab/Code/commit/17113af42d34cb95f2fa018a1999dc2d29623bc8), which pins Vec
 commit [`41283f631`](https://github.com/A3S-Lab/Vec/commit/41283f6315906a2737b5a8e8612ac876a8dc9c04).
 The adapter mirrors each already-admitted embedding batch once into a temporary
 collection and compares the Vec result with the A3S Memory result, while Memory
