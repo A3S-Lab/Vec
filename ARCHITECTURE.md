@@ -376,8 +376,9 @@ inverted indexes own equality,
 optional ordered range, and optional string wildcard/prefix/suffix postings.
 Public DiskANN mmap/backend-selection controls and tokenizer extras without an
 execution consumer remain absent or return `NotSupported` before mutation.
-Unknown deserialized keys return `InvalidArgument`. Non-zero segment sizing and
-add/alter concurrency return `NotSupported`. Ready ANN, scalar, and FTS
+Unknown deserialized keys return `InvalidArgument`. Non-zero segment sizing
+returns `NotSupported`; add/alter schema concurrency uses a bounded local
+worker pool and retains deterministic, atomic publication. Ready ANN, scalar, and FTS
 generations appear in index telemetry and increment their respective query
 counters.
 Ready ANN entries also report `estimated_payload_bytes`, a deterministic

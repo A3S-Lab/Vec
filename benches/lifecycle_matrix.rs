@@ -6,9 +6,9 @@
 //! cannot hide a slow or disconnected lifecycle operation.
 
 use a3s_vec::{
-    AlterColumnOption, Collection, CollectionMaintenanceOptions, CollectionOptions,
-    CollectionResourceLimits, CollectionSchema, DataType, Doc, Durability, ErrorCode, FieldSchema,
-    IndexParams, MetricType,
+    AddColumnOption, AlterColumnOption, Collection, CollectionMaintenanceOptions,
+    CollectionOptions, CollectionResourceLimits, CollectionSchema, DataType, Doc, Durability,
+    ErrorCode, FieldSchema, IndexParams, MetricType,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};

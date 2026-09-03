@@ -31,6 +31,7 @@ pub use maintenance::{
     CollectionMaintenanceRuntime,
 };
 pub use mutation::{DocWriteResult, WriteResult};
+use rayon::prelude::*;
 pub use resource::CollectionResourceLimits;
 use resource::ResourceUsage;
 use serde::{Deserialize, Serialize};
@@ -488,11 +489,6 @@ impl Collection {
         option: AddColumnOption,
     ) -> Result<()> {
         self.ensure_open()?;
-        if option.concurrency != 0 {
-            return Err(Error::not_supported(
-                "add-column concurrency has no parallel schema executor",
-            ));
-        }
         let _writer = self
             .inner
             .writer
@@ -510,13 +506,13 @@ impl Collection {
             .map(|expression| parse_default_expression(expression, field_schema.data_type))
             .transpose()?;
         if let Some(value) = default {
-            next.docs = Arc::new(transform_documents(&next.docs, |doc| {
-                doc.set_field_value(&field_schema.name, value.clone())
-            })?);
+            next.docs = Arc::new(transform_documents_with_concurrency(
+                &next.docs,
+                option.concurrency,
+                |doc| doc.set_field_value(&field_schema.name, value.clone()),
+            )?);
         }
-        for doc in next.docs.values() {
-            validate_doc(&next.schema, doc, true)?;
-        }
+        validate_documents_with_concurrency(&next.schema, &next.docs, option.concurrency)?;
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -623,11 +619,6 @@ impl Collection {
         option: AlterColumnOption,
     ) -> Result<()> {
         self.ensure_open()?;
-        if option.concurrency != 0 {
-            return Err(Error::not_supported(
-                "alter-column concurrency has no parallel schema executor",
-            ));
-        }
         let _writer = self
             .inner
             .writer
@@ -653,6 +644,8 @@ impl Collection {
             ));
         }
         *target = field_schema.clone();
+        next.schema.validate()?;
+        validate_documents_with_concurrency(&next.schema, &next.docs, option.concurrency)?;
         let config = state.config.clone();
         let mut storage = self
             .inner
@@ -707,15 +700,78 @@ fn ensure_same_generation(current: &CollectionState, expected: &CollectionState)
 
 fn transform_documents(
     docs: &DocumentMap,
-    mut transform: impl FnMut(&mut Doc) -> Result<()>,
+    transform: impl Fn(&mut Doc) -> Result<()> + Send + Sync,
 ) -> Result<DocumentMap> {
-    let mut transformed = DocumentMap::new();
-    for (id, doc) in docs {
+    transform_documents_with_concurrency(docs, 0, transform)
+}
+
+/// Applies a schema backfill using an optional, collection-local Rayon pool.
+///
+/// The input `OrdMap` is first materialized in its deterministic key order and
+/// the transformed results are collected in that same order before rebuilding
+/// the persistent map.  This keeps revision contents and error selection
+/// deterministic while allowing callers to bound the worker count explicitly.
+fn transform_documents_with_concurrency(
+    docs: &DocumentMap,
+    concurrency: u32,
+    transform: impl Fn(&mut Doc) -> Result<()> + Send + Sync,
+) -> Result<DocumentMap> {
+    let entries: Vec<(String, Arc<Doc>)> = docs
+        .iter()
+        .map(|(id, doc)| (id.clone(), Arc::clone(doc)))
+        .collect();
+    let transform_one = |(id, doc): &(String, Arc<Doc>)| {
         let mut next = doc.as_ref().clone();
-        transform(&mut next)?;
-        transformed.insert(id.clone(), Arc::new(next));
+        let result = transform(&mut next).map(|()| next);
+        (id.clone(), result)
+    };
+    let transformed: Vec<(String, Result<Doc>)> = if concurrency == 0 {
+        entries.iter().map(transform_one).collect()
+    } else {
+        let threads = usize::try_from(concurrency)
+            .map_err(|_| Error::resource_exhausted("schema concurrency exceeds this platform"))?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(|error| {
+                Error::resource_exhausted(format!("build schema worker pool: {error}"))
+            })?;
+        pool.install(|| entries.par_iter().map(transform_one).collect())
+    };
+    let mut output = DocumentMap::new();
+    for (id, result) in transformed {
+        output.insert(id, Arc::new(result?));
     }
-    Ok(transformed)
+    Ok(output)
+}
+
+/// Validates every document against a candidate schema, optionally in a
+/// bounded local pool.  Results are reduced in input order so callers receive
+/// stable errors even when validation runs concurrently.
+fn validate_documents_with_concurrency(
+    schema: &CollectionSchema,
+    docs: &DocumentMap,
+    concurrency: u32,
+) -> Result<()> {
+    let entries: Vec<Arc<Doc>> = docs.values().cloned().collect();
+    let validate_one = |doc: &Arc<Doc>| validate_doc(schema, doc, true);
+    if concurrency == 0 {
+        for doc in &entries {
+            validate_one(doc)?;
+        }
+        return Ok(());
+    }
+    let threads = usize::try_from(concurrency)
+        .map_err(|_| Error::resource_exhausted("schema concurrency exceeds this platform"))?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|error| Error::resource_exhausted(format!("build schema worker pool: {error}")))?;
+    let results: Vec<Result<()>> = pool.install(|| entries.par_iter().map(validate_one).collect());
+    for result in results {
+        result?;
+    }
+    Ok(())
 }
 
 fn commit_schema_change(

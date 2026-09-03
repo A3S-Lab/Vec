@@ -13,6 +13,9 @@ The release-facing contract has the following boundaries:
 - Collection and process configuration use typed Rust values. Unsupported
   controls and index/query combinations fail with typed errors before
   mutation.
+- Schema backfills and candidate-schema validation accept a bounded typed
+  worker count through `AddColumnOption`/`AlterColumnOption`; publication stays
+  atomic and deterministic across worker counts.
 - Public embedding and query-executor ports require `Send + Sync`. The
   `public_api_contract` integration test also enforces `Send + Sync` for the
   owned public handles, schemas, queries, values, statistics, and errors.

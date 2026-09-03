@@ -210,11 +210,12 @@ and direct file-backed mmap remain future work.
   segment controls, then restored only the typed I/O choice after both bounded
   backends existed; fixed process-versus-collection durability precedence, and
   added execution tests for WAL operation/byte checkpoint thresholds.
-- Completed: unsupported physical index descriptors, query tuning parameters,
-  segment sizing, and non-zero schema-evolution concurrency fail with typed
-  errors before mutation. Flat remains the exact vector index and scan BM25 is
-  the FTS fallback; neither increments ANN telemetry. HNSW/IVF became live in
-  Phase 4.
+- Completed: unsupported physical index descriptors and segment sizing fail
+  with typed errors before mutation. Schema-evolution backfills and candidate
+  schema validation accept an explicit bounded worker count, preserve
+  deterministic document order, and publish atomically. Flat remains the
+  exact vector index and scan BM25 is the FTS fallback; neither increments ANN
+  telemetry. HNSW/IVF became live in Phase 4.
 - Completed: dense/sparse FP16 bit encodings, signed INT4 range checks, native
   INT8/INT16 coordinates, and Binary32/Binary64 chunk/dimension contracts have
   positive, negative, typed-getter, and storage round-trip evidence. Every
@@ -757,6 +758,14 @@ execution are implemented.
   drop. Public collection health distinguishes healthy, degraded, unhealthy,
   and closed state from normal WAL checkpoint lag by checking authoritative
   revision agreement and every index generation.
+- Completed on 2026-09-03: `AddColumnOption::concurrency` and
+  `AlterColumnOption::concurrency` use a collection-local bounded Rayon pool
+  for backfill and candidate-schema validation. Results are reduced in
+  primary-key order, worker-pool construction failures are typed, and an
+  invalidability change (for example nullable-to-required data with missing
+  values) is rejected before WAL publication. The execution-contract suite
+  covers parallel backfill, successful parallel alteration, and atomic
+  rejection.
 - Remaining exit-gate provenance: the pinned upstream Rust SDK does not yet
   publish standalone FTS/hybrid, multi-query, group-by, iterator, or
   schema-evolution examples, so those project-owned gates cannot honestly claim

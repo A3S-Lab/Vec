@@ -242,8 +242,8 @@ fn run_lifecycle_matrix() {
             .expect("added field must be valid");
         let started = Instant::now();
         collection
-            .add_column(&added, None)
-            .expect("add column must succeed");
+            .add_column_with_options(&added, None, AddColumnOption { concurrency: 2 })
+            .expect("parallel add column must succeed");
         collection
             .rename_column("priority", "rank")
             .expect("rename column must succeed");
@@ -253,8 +253,8 @@ fn run_lifecycle_matrix() {
             .set_index_params(&IndexParams::invert(true, false).expect("rank index"))
             .expect("rank index must be valid");
         collection
-            .alter_column(&altered, AlterColumnOption::default())
-            .expect("alter column must succeed");
+            .alter_column(&altered, AlterColumnOption { concurrency: 2 })
+            .expect("parallel alter column must succeed");
         collection
             .drop_column("rank")
             .expect("drop column must succeed");

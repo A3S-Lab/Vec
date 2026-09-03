@@ -537,34 +537,81 @@ fn unsupported_schema_tuning_does_not_mutate_schema_or_collection() {
         None,
     )
     .expect("collection must be created");
-    let initial = collection.stats().expect("stats must be available");
-    let category = FieldSchema::new("category", DataType::String, true, 0)
+    // Segment sizing remains an explicit boundary, while schema evolution
+    // concurrency is exercised in the dedicated test below.
+    assert_eq!(collection.count().expect("count must be available"), 0);
+}
+
+#[test]
+fn schema_evolution_concurrency_backfills_and_validates_atomically() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let collection = Collection::create(
+        temporary
+            .path()
+            .join("collection")
+            .to_str()
+            .expect("temporary path must be UTF-8"),
+        &exact_schema(),
+        None,
+    )
+    .expect("collection must be created");
+    let first = valid_doc("doc-1");
+    let second = valid_doc("doc-2");
+    collection
+        .insert(&[&first, &second])
+        .expect("fixture documents must be inserted");
+
+    let category = FieldSchema::new("category", DataType::String, false, 0)
         .expect("category schema must be valid");
+    collection
+        .add_column_with_options(
+            &category,
+            Some("'general'"),
+            AddColumnOption { concurrency: 2 },
+        )
+        .expect("parallel add-column backfill must succeed");
+    let backfilled = collection
+        .fetch(&["doc-1", "doc-2"])
+        .expect("backfilled documents must be readable");
+    assert_eq!(
+        backfilled
+            .iter()
+            .map(|doc| doc
+                .get_string("category")
+                .expect("category getter must succeed"))
+            .collect::<Vec<_>>(),
+        vec![Some("general".to_string()), Some("general".to_string())]
+    );
+
+    let optional = FieldSchema::new("optional", DataType::String, true, 0)
+        .expect("optional schema must be valid");
+    collection
+        .add_column_with_options(&optional, None, AddColumnOption { concurrency: 2 })
+        .expect("parallel nullable add-column must succeed");
+    let made_required = FieldSchema::new("optional", DataType::String, false, 0)
+        .expect("required schema must be valid");
     let error = collection
-        .add_column_with_options(&category, None, AddColumnOption { concurrency: 2 })
-        .expect_err("unimplemented add-column concurrency must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!collection
+        .alter_column(&made_required, AlterColumnOption { concurrency: 2 })
+        .expect_err("altering missing nullable values to required must fail");
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(collection
         .schema()
-        .expect("schema must be available")
-        .has_field("category"));
+        .expect("schema must remain readable")
+        .field("optional")
+        .expect("optional field must remain present")
+        .is_nullable());
 
     let altered_title = FieldSchema::new("title", DataType::String, true, 0)
         .expect("altered title schema must be valid");
-    let error = collection
+    collection
         .alter_column(&altered_title, AlterColumnOption { concurrency: 2 })
-        .expect_err("unimplemented alter-column concurrency must fail explicitly");
-    assert_eq!(error.code, ErrorCode::NotSupported);
-    assert!(!collection
+        .expect("parallel alter-column validation must succeed");
+    assert!(collection
         .schema()
-        .expect("schema must be available")
+        .expect("schema must be readable")
         .field("title")
         .expect("title must exist")
         .is_nullable());
-    assert_eq!(
-        collection.stats().expect("stats must be available"),
-        initial
-    );
 }
 
 #[test]

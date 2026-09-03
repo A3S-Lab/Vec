@@ -1,6 +1,6 @@
 use a3s_vec::{
-    initialize, shutdown, AlterColumnOption, Collection, CollectionSchema, DataType, Doc,
-    FieldSchema, IndexParams, MetricType,
+    initialize, shutdown, AddColumnOption, AlterColumnOption, Collection, CollectionSchema,
+    DataType, Doc, FieldSchema, IndexParams, MetricType,
 };
 use std::path::{Path, PathBuf};
 
@@ -73,10 +73,14 @@ fn main() -> a3s_vec::Result<()> {
     assert!(collection.stats()?.revision > iterator_revision);
 
     let category = FieldSchema::new("category", DataType::String, false, 0)?;
-    collection.add_column(&category, Some("'general'"))?;
+    collection.add_column_with_options(
+        &category,
+        Some("'general'"),
+        AddColumnOption { concurrency: 2 },
+    )?;
     collection.rename_column("category", "kind")?;
     let nullable_kind = FieldSchema::new("kind", DataType::String, true, 0)?;
-    collection.alter_column(&nullable_kind, AlterColumnOption::default())?;
+    collection.alter_column(&nullable_kind, AlterColumnOption { concurrency: 2 })?;
     let evolved = collection.fetch(&["doc-1"])?;
     assert_eq!(evolved[0].get_string("kind")?, Some("general".to_string()));
     collection.drop_column("kind")?;
