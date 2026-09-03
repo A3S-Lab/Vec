@@ -2,13 +2,12 @@
 
 mod search;
 
-use self::search::{
-    greedy_search, greedy_search_by, search_layer, search_layer_by, search_layer_filtered_by,
-};
+use self::search::{greedy_search_by, search_layer_by, search_layer_filtered_by};
 use super::ordinal_map::OrdinalMap;
 use super::ordinals::OrdinalTable;
 use super::quantization::{
-    dense_query_norm, score_dense_with_query_norm, score_with_query_norm, QuantizedVector,
+    dense_query_norm, dense_query_norm_fast, score_ann, score_dense_with_query_norm,
+    QuantizedVector,
 };
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
@@ -72,29 +71,30 @@ impl HnswIndex {
                 continue;
             };
 
+            let query_norm_f64 = if metric == MetricType::Cosine {
+                dense_query_norm(query)
+            } else {
+                0.0
+            };
+            let score_for = |candidate| {
+                decoded.get(candidate).map(|vector| {
+                    score_dense_with_query_norm(query, vector, metric, query_norm_f64)
+                })
+            };
             if maximum_level > level {
                 for layer in ((level + 1)..=maximum_level).rev() {
-                    entry = greedy_search(
-                        &graph.layers[layer],
-                        &decoded,
-                        ordinals,
-                        query,
-                        entry,
-                        metric,
-                    );
+                    entry = greedy_search_by(&graph.layers[layer], ordinals, entry, &score_for);
                 }
             }
 
             let connection_top = level.min(maximum_level);
             for layer in (0..=connection_top).rev() {
-                let candidates = search_layer(
+                let candidates = search_layer_by(
                     &graph.layers[layer],
-                    &decoded,
-                    ordinals,
-                    query,
                     &[entry],
                     ef_construction,
-                    metric,
+                    ordinals,
+                    &score_for,
                 );
                 let degree = if layer == 0 { m.saturating_mul(2) } else { m }.max(1);
                 let neighbors: Vec<u64> = candidates
@@ -144,7 +144,12 @@ impl HnswIndex {
         if vectors.is_empty() {
             return RoaringTreemap::new();
         }
-        let query_norm = if metric == MetricType::Cosine {
+        let query_norm_f32 = if metric == MetricType::Cosine {
+            dense_query_norm_fast(query)
+        } else {
+            0.0
+        };
+        let query_norm_f64 = if metric == MetricType::Cosine {
             dense_query_norm(query)
         } else {
             0.0
@@ -152,7 +157,7 @@ impl HnswIndex {
         self.candidates_by(ordinals, requested_ef, topk, &|ordinal| {
             vectors
                 .get(ordinal)
-                .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
+                .map(|vector| score_ann(query, vector, metric, query_norm_f32, query_norm_f64))
         })
     }
 
@@ -200,7 +205,12 @@ impl HnswIndex {
         if vectors.is_empty() || filter.eligible_count == 0 || result_limit == 0 {
             return RoaringTreemap::new();
         }
-        let query_norm = if metric == MetricType::Cosine {
+        let query_norm_f32 = if metric == MetricType::Cosine {
+            dense_query_norm_fast(query)
+        } else {
+            0.0
+        };
+        let query_norm_f64 = if metric == MetricType::Cosine {
             dense_query_norm(query)
         } else {
             0.0
@@ -213,7 +223,7 @@ impl HnswIndex {
             &|ordinal| {
                 vectors
                     .get(ordinal)
-                    .map(|vector| score_with_query_norm(query, vector, metric, query_norm))
+                    .map(|vector| score_ann(query, vector, metric, query_norm_f32, query_norm_f64))
             },
         )
     }

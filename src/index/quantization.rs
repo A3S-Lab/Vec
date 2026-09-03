@@ -164,6 +164,69 @@ pub(super) fn score_with_query_norm(
     }
 }
 
+/// Fast f32 scoring for the unquantized ANN representation.
+#[inline]
+pub(super) fn score_dense_fast(
+    query: &[f32],
+    candidate: &[f32],
+    metric: MetricType,
+    query_norm: f32,
+) -> f32 {
+    if query.len() != candidate.len() {
+        return f32::NEG_INFINITY;
+    }
+    match metric {
+        MetricType::L2 => -zvec_core::engine::simd::l2sq(query, candidate),
+        MetricType::Cosine => {
+            let candidate_norm = zvec_core::engine::simd::dot(candidate, candidate).sqrt();
+            let dot = zvec_core::engine::simd::dot(query, candidate);
+            if !query_norm.is_finite()
+                || !candidate_norm.is_finite()
+                || !dot.is_finite()
+                || query_norm == 0.0
+                || candidate_norm == 0.0
+            {
+                f32::NAN
+            } else {
+                dot / (query_norm * candidate_norm)
+            }
+        }
+        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => {
+            zvec_core::engine::simd::dot(query, candidate)
+        }
+    }
+}
+
+/// Dispatches an ANN score to the SIMD f32 path when the index stores raw
+/// f32 coordinates and otherwise preserves the representation-aware scorer.
+/// The second norm is kept in f64 for encoded variants so this optimization
+/// does not alter their existing ranking arithmetic.
+#[inline]
+pub(super) fn score_ann(
+    query: &[f32],
+    candidate: &QuantizedVector,
+    metric: MetricType,
+    query_norm_f32: f32,
+    query_norm_f64: f64,
+) -> f64 {
+    match candidate {
+        QuantizedVector::F32(values) => {
+            let fast = score_dense_fast(query, values, metric, query_norm_f32);
+            if fast.is_finite() {
+                f64::from(fast)
+            } else {
+                score_dense_with_query_norm(query, values, metric, query_norm_f64)
+            }
+        }
+        _ => score_with_query_norm(query, candidate, metric, query_norm_f64),
+    }
+}
+
+#[inline]
+pub(super) fn dense_query_norm_fast(query: &[f32]) -> f32 {
+    zvec_core::engine::simd::dot(query, query).sqrt()
+}
+
 fn score_iter(
     query: &[f32],
     dimension: usize,
@@ -280,7 +343,9 @@ pub(super) fn score_dense_with_query_norm(
 
 #[cfg(test)]
 mod tests {
-    use super::{score, score_dense, QuantizedVector};
+    use super::{
+        dense_query_norm, dense_query_norm_fast, score, score_ann, score_dense, QuantizedVector,
+    };
     use crate::types::{MetricType, QuantizeType};
 
     #[test]
@@ -318,5 +383,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn simd_dense_scoring_tracks_the_authoritative_f64_reference() {
+        let query = [0.25, -0.5, 0.75, 0.125, -1.0, 0.375, 0.625, -0.875];
+        let candidate = [-0.75, -0.25, 0.5, 1.0, 0.125, 0.25, -0.5, 0.75];
+        let query_norm_f32 = dense_query_norm_fast(&query);
+        let query_norm_f64 = dense_query_norm(&query);
+        let encoded = QuantizedVector::F32(candidate.to_vec());
+        for metric in [MetricType::L2, MetricType::Ip, MetricType::Cosine] {
+            let fast = score_ann(&query, &encoded, metric, query_norm_f32, query_norm_f64);
+            let exact = score_dense(&query, &candidate, metric);
+            assert!((fast - exact).abs() < 1.0e-5, "metric={metric:?}");
+        }
+    }
+
+    #[test]
+    fn simd_scoring_falls_back_when_f32_accumulators_overflow() {
+        let query = [f32::MAX, f32::MAX];
+        let candidate = QuantizedVector::F32(vec![f32::MAX, f32::MAX]);
+        let actual = score_ann(
+            &query,
+            &candidate,
+            MetricType::Cosine,
+            dense_query_norm_fast(&query),
+            dense_query_norm(&query),
+        );
+        let expected = score(&query, &candidate, MetricType::Cosine);
+        assert!(actual.is_finite());
+        assert!((actual - expected).abs() < f64::EPSILON);
     }
 }

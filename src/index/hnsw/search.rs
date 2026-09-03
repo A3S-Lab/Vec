@@ -2,21 +2,58 @@
 
 use crate::index::ordinal_map::OrdinalMap;
 use crate::index::ordinals::OrdinalTable;
-use crate::index::quantization::{dense_query_norm, score_dense_with_query_norm};
-use crate::types::MetricType;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
+
+const DENSE_VISITED_MAX_SLOTS: usize = 1 << 24;
+
+/// Tracks graph membership with a compact ordinal bitset when the ordinal
+/// space is reasonably dense. Very sparse/retired ordinal spaces retain the
+/// hash-set fallback so a query cannot allocate an attacker-sized bitmap.
+enum VisitedSet {
+    Dense(Vec<u64>),
+    Sparse(HashSet<u64>),
+}
+
+impl VisitedSet {
+    fn new(slot_count: usize, capacity: usize) -> Self {
+        if slot_count > 0 && slot_count <= DENSE_VISITED_MAX_SLOTS {
+            Self::Dense(vec![0; slot_count.saturating_add(63) / 64])
+        } else {
+            Self::Sparse(HashSet::with_capacity(capacity))
+        }
+    }
+
+    fn insert(&mut self, ordinal: u64) -> bool {
+        match self {
+            Self::Dense(bits) => {
+                let Ok(index) = usize::try_from(ordinal) else {
+                    return false;
+                };
+                let word = index / 64;
+                let mask = 1_u64 << (index % 64);
+                let Some(value) = bits.get_mut(word) else {
+                    return false;
+                };
+                let was_new = *value & mask == 0;
+                *value |= mask;
+                was_new
+            }
+            Self::Sparse(values) => values.insert(ordinal),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct ScoredNode<'a> {
     ordinal: u64,
-    primary_key: &'a str,
     score: f64,
+    ordinals: &'a OrdinalTable,
 }
 
 impl PartialEq for ScoredNode<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.ordinal == other.ordinal && self.score.total_cmp(&other.score) == Ordering::Equal
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -32,7 +69,16 @@ impl Ord for ScoredNode<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.score
             .total_cmp(&other.score)
-            .then_with(|| other.primary_key.cmp(self.primary_key))
+            // Resolve primary keys only for exact score ties. The old eager
+            // lookup paid for a persistent reverse-map access on every heap
+            // comparison, even when scores were distinct.
+            .then_with(|| {
+                other
+                    .ordinals
+                    .id(other.ordinal)
+                    .unwrap_or_default()
+                    .cmp(self.ordinals.id(self.ordinal).unwrap_or_default())
+            })
             .then_with(|| other.ordinal.cmp(&self.ordinal))
     }
 }
@@ -40,48 +86,8 @@ impl Ord for ScoredNode<'_> {
 fn scored_node(ordinal: u64, score: f64, ordinals: &OrdinalTable) -> ScoredNode<'_> {
     ScoredNode {
         ordinal,
-        primary_key: ordinals.id(ordinal).unwrap_or_default(),
         score,
-    }
-}
-
-pub(super) fn greedy_search(
-    layer: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<Vec<f32>>,
-    ordinals: &OrdinalTable,
-    query: &[f32],
-    entry: u64,
-    metric: MetricType,
-) -> u64 {
-    let mut current = entry;
-    let query_norm = if metric == MetricType::Cosine {
-        dense_query_norm(query)
-    } else {
-        0.0
-    };
-    let mut current_score = vectors.get(entry).map_or(f64::NEG_INFINITY, |vector| {
-        score_dense_with_query_norm(query, vector, metric, query_norm)
-    });
-    loop {
-        let mut best = scored_node(current, current_score, ordinals);
-        for neighbor in layer.get(current).into_iter().flatten().copied() {
-            let Some(vector) = vectors.get(neighbor) else {
-                continue;
-            };
-            let candidate = scored_node(
-                neighbor,
-                score_dense_with_query_norm(query, vector, metric, query_norm),
-                ordinals,
-            );
-            if candidate > best {
-                best = candidate;
-            }
-        }
-        if best.ordinal == current {
-            return current;
-        }
-        current = best.ordinal;
-        current_score = best.score;
+        ordinals,
     }
 }
 
@@ -110,27 +116,6 @@ pub(super) fn greedy_search_by(
         current = best.ordinal;
         current_score = best.score;
     }
-}
-
-pub(super) fn search_layer(
-    layer: &OrdinalMap<Vec<u64>>,
-    vectors: &OrdinalMap<Vec<f32>>,
-    ordinals: &OrdinalTable,
-    query: &[f32],
-    entries: &[u64],
-    ef: usize,
-    metric: MetricType,
-) -> Vec<u64> {
-    let query_norm = if metric == MetricType::Cosine {
-        dense_query_norm(query)
-    } else {
-        0.0
-    };
-    bounded_graph_search(layer, entries, ef, ordinals, |ordinal| {
-        vectors
-            .get(ordinal)
-            .map(|vector| score_dense_with_query_norm(query, vector, metric, query_norm))
-    })
 }
 
 pub(super) fn search_layer_by(
@@ -173,7 +158,7 @@ fn bounded_graph_search(
 ) -> Vec<u64> {
     let ef = ef.max(1);
     let expansion_limit = ef.saturating_mul(8).max(entries.len());
-    let mut visited = HashSet::with_capacity(expansion_limit.min(layer.len()));
+    let mut visited = VisitedSet::new(layer.slot_count(), expansion_limit.min(layer.len()));
     let mut frontier = BinaryHeap::with_capacity(ef.saturating_mul(2).min(layer.len()));
     let mut best = BinaryHeap::with_capacity(ef.saturating_add(1));
     for ordinal in entries.iter().copied() {
@@ -224,7 +209,7 @@ fn bounded_filtered_graph_search(
     let result_limit = result_limit.max(1);
     let traversal_limit = traversal_limit.max(result_limit);
     let expansion_limit = traversal_limit.saturating_mul(8).max(entries.len());
-    let mut visited = HashSet::with_capacity(expansion_limit.min(layer.len()));
+    let mut visited = VisitedSet::new(layer.slot_count(), expansion_limit.min(layer.len()));
     let mut frontier =
         BinaryHeap::with_capacity(traversal_limit.saturating_mul(2).min(layer.len()));
     let mut best = BinaryHeap::with_capacity(result_limit.saturating_add(1));
@@ -288,36 +273,75 @@ fn ordered_ordinals(best: BinaryHeap<Reverse<ScoredNode<'_>>>) -> Vec<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ordered_ordinals, retain_best, ScoredNode};
+    use super::{ordered_ordinals, retain_best, ScoredNode, VisitedSet};
+    use crate::doc::{Doc, DocumentMap};
+    use crate::index::ordinals::OrdinalTable;
     use std::collections::BinaryHeap;
+    use std::sync::Arc;
 
     #[test]
     fn heaps_order_scores_then_primary_keys_deterministically() {
+        let docs: DocumentMap = ["doc-a", "doc-b", "doc-high", "doc-low"]
+            .into_iter()
+            .map(|id| {
+                let doc = Doc::with_pk(id).expect("document ID must be valid");
+                (id.to_string(), Arc::new(doc))
+            })
+            .collect();
+        let table = OrdinalTable::build(&docs).expect("ordinal table must build");
         let mut best = BinaryHeap::new();
         for candidate in [
             ScoredNode {
-                ordinal: 2,
-                primary_key: "doc-b",
+                ordinal: table.ordinal("doc-b").expect("doc-b ordinal"),
                 score: 1.0,
+                ordinals: &table,
             },
             ScoredNode {
-                ordinal: 3,
-                primary_key: "doc-low",
+                ordinal: table.ordinal("doc-low").expect("doc-low ordinal"),
                 score: 0.0,
+                ordinals: &table,
             },
             ScoredNode {
-                ordinal: 1,
-                primary_key: "doc-a",
+                ordinal: table.ordinal("doc-a").expect("doc-a ordinal"),
                 score: 1.0,
+                ordinals: &table,
             },
             ScoredNode {
-                ordinal: 4,
-                primary_key: "doc-high",
+                ordinal: table.ordinal("doc-high").expect("doc-high ordinal"),
                 score: 2.0,
+                ordinals: &table,
             },
         ] {
             retain_best(&mut best, candidate, 3);
         }
-        assert_eq!(ordered_ordinals(best), vec![4, 1, 2]);
+        assert_eq!(
+            ordered_ordinals(best),
+            vec![
+                table.ordinal("doc-high").expect("doc-high ordinal"),
+                table.ordinal("doc-a").expect("doc-a ordinal"),
+                table.ordinal("doc-b").expect("doc-b ordinal"),
+            ]
+        );
+    }
+
+    #[test]
+    fn visited_set_deduplicates_dense_ordinals() {
+        let mut visited = VisitedSet::new(130, 8);
+        assert!(visited.insert(0));
+        assert!(visited.insert(64));
+        assert!(visited.insert(129));
+        assert!(!visited.insert(64));
+        assert!(!visited.insert(0));
+    }
+
+    #[test]
+    fn visited_set_uses_hash_fallback_for_empty_or_huge_spaces() {
+        let mut empty = VisitedSet::new(0, 8);
+        assert!(empty.insert(u64::MAX));
+        assert!(!empty.insert(u64::MAX));
+
+        let mut huge = VisitedSet::new(super::DENSE_VISITED_MAX_SLOTS + 1, 8);
+        assert!(huge.insert(17));
+        assert!(!huge.insert(17));
     }
 }
