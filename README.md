@@ -2,12 +2,12 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec: fast process-local vector and full-text retrieval for Coding Agent workspaces">
 </p>
 
-
 <p align="center">
   <strong>Language / 语言:</strong>
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">中文</a>
 </p>
+
 
 `a3s-vec` is a native Rust, process-local retrieval engine for Coding Agent
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
