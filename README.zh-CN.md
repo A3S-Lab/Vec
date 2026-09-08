@@ -1,7 +1,6 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec: fast process-local vector and full-text retrieval for Coding Agent workspaces">
+  <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec：面向 Coding Agent 工作区的快速进程内向量与全文检索">
 </p>
-
 
 <p align="center">
   <strong>Language / 语言:</strong>
@@ -9,109 +8,73 @@
   <a href="README.zh-CN.md">中文</a>
 </p>
 
-`a3s-vec` 是 Coding Agent 的原生 Rust、进程本地检索引擎
-工作区。它结合了密集和稀疏向量、标量过滤和 BM25
-在一个持久集合中——没有服务器进程或 C/C++ 运行时。
+`a3s-vec` 是面向 Coding Agent 工作区的原生 Rust、进程本地检索引擎。它在同一持久集合中结合稠密与稀疏向量、标量过滤与 BM25——无需服务器进程，也无需 C/C++ 运行时。
 
-该项目是一个活跃的原型。 HNSW、IVF（可选择 SOAR 分配）、
-HNSW/IVF RaBitQ，度量感知 Vamana，
-具有类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN，
-标量倒排索引和 FTS 已上线；
-每当索引丢失时，精确执行仍然是正确性预言，
-陈旧，或者选择性不够。
+项目仍是活跃原型。HNSW、可选 SOAR 分配的 IVF、HNSW/IVF RaBitQ、度量感知 Vamana、带类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN、标量倒排索引与 FTS 均已可用；每当索引缺失、陈旧或选择性不足时，精确执行仍是正确性预言机。
 
-[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
-[Reproducible benchmarks](BENCHMARKS.md) ·
-[Release qualification](RELEASE.md)
+[架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
+[可复现基准](BENCHMARKS.md) ·
+[发布资格](RELEASE.md)
 
-## 它提供什么
+## 它交付什么
 
-|需要|当前实施 |
-| ---| ---|
-|局部语义检索|密集和稀疏精确搜索、HNSW、IVF/SOAR、HNSW/IVF RaBitQ、度量感知 Vamana、PQ/ADC DiskANN 和精确重新排名 |
-|工作区文本搜索 | BM25、Unicode n-gram、布尔组、通配符/模糊/范围术语、有序短语邻近度、增强和标记过滤器 |
-|结构化收窄|类型化标量索引、范围/空/IN/通配符谓词和位图预过滤 |
-|耐用的嵌入 | WAL、校验和快照、清单提交、文件锁定、经过验证的派生索引缓存和 Vamana/DiskANN 扇区 sidecar |
-|可预测的故障|输入验证错误和精确回退，而不是静默近似 |
+| 需求 | 当前实现 |
+| --- | --- |
+| 本地语义检索 | 稠密与稀疏精确搜索、HNSW、IVF/SOAR、HNSW/IVF RaBitQ、度量感知 Vamana、PQ/ADC DiskANN，以及精确重排 |
+| 工作区文本搜索 | BM25、Unicode n-gram、布尔组、通配符/模糊/范围词项、有序短语邻近、boost，以及 token 过滤器 |
+| 结构化收窄 | 类型化标量索引、range/null/IN/wildcard 谓词，以及位图预过滤 |
+| 持久嵌入 | WAL、带校验和快照、manifest 提交、文件锁、已验证的派生索引缓存，以及 Vamana/DiskANN 扇区 sidecar |
+| 可预测失败 | 类型化校验错误与精确回退，而非静默近似 |
 
-## A3S Code 整合
+## A3S Code 集成
 
-该引擎现在由 A3S Code 通过会话本地迁移影子使用。
-当前代码依赖 pin 已提交
-[`708a85e3`](https://github.com/A3S-Lab/Code/commit/708a85e3ac070640ca5fb8173d0b06e6070152e7)，引脚 Vec
-提交[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d)。
-适配器将每个已接纳的嵌入批次镜像一次到临时
-收集并将Vec结果与A3S Memory结果进行比较，而Memory
-仍然是唯一的服务机构。影子故障被隔离并浮出水面
-作为有界诊断；他们无法更改公共检索结果。的
-完整的所有权、映射、资源和回滚合同记录在
-[Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)。
+引擎现由 A3S Code 通过会话本地迁移影子消费。当前 Code 依赖 pin 为提交
+[`708a85e3`](https://github.com/A3S-Lab/Code/commit/708a85e3ac070640ca5fb8173d0b06e6070152e7)，其 pin 的 Vec 提交为
+[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d)。
+适配器将每个已准入嵌入批次镜像一次到临时集合，并把 Vec 结果与 A3S Memory 结果比较，同时 Memory 仍是唯一服务权威。影子失败被隔离并以有界诊断浮出；它们不能改变公开检索结果。完整所有权、映射、资源与回滚契约见
+[Code 的迁移说明](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md)。
 
-该存储库中当前的引擎和基准证据由
-修订[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d)。
-其修订版托管门是
+本仓库当前引擎与基准证据由修订
+[`13585ccd`](https://github.com/A3S-Lab/Vec/commit/13585ccd3f956f6cb7d669b2ee6acc7096fca03d) 承载。
+其修订绑定的托管闸门为
 [CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)；
-前面的实施和方法门仍然可用
-存储库历史记录。
-当前的修订版还记录了借用的精确分数内核的测量结果
-改善。根兼容性锁可能会保留较旧的代码子模块
-固定，直到其云升级工作流程更新为一个精确的组件图；
-候选代码本身已针对此修订进行了验证。
+此前实现与方法论闸门仍可在仓库历史中查看。
+当前修订还记录了借用精确打分内核的实测改进。根兼容性锁可能保留较旧的 Code 子模块 pin，直到其 Cloud 晋升降级工作流作为一份确切组件图一并更新；Code 候选本身已对照此修订验证。
 
-所有向量、标量和 FTS 索引共享一个修订的 `u64` 序数域。
-这使得规划器可以组合位图和候选项而无需构建
-查询大小的主键映射，然后仅解析确切的前 k 个文档。
+所有向量、标量与 FTS 索引共享一个带修订的 `u64` 序号域。这让规划器可组合位图与候选而无需构建查询规模的主键映射，再仅解析确切 top-k 文档。
 
-## 测量证明
+## 实测证明
 
-`cargo bench --bench structured_fts` 构建 25,000 个工作区形状的文档
-并根据扫描执行检查每个索引结果和公共分数位。
-连续两次变更后的第二次运行在当前开发上
-机器生产：
+`cargo bench --bench structured_fts` 构建 25,000 份工作区形态文档，并对照扫描执行检查每个索引结果与公开分数位。变更后在当前开发机上连续两次运行中的第二次产出：
 
-|查询 |规划路径 |候选人/查询 |延迟/查询 |
-| ---| ---| ---: | ---: |
-|选择性短语 |索引| 1 | 7.38 微秒 |
-|选择性必需+可选|索引| 1 | 4.62 微秒 |
-|选择性通配符 |索引| 1 | 26.55 毫秒 |
-|选择性模糊|索引| 36 | 36 33.81 毫秒 |
-|选择性精确范围|索引| 1 | 429.62 微秒 |
-|选择性接近 |索引| 1 | 7.62 微秒 |
-|显式扫描控制 |扫描| 25,000 | 25,000 38.07–98.36 毫秒 |
-|常用短语|自动扫描回退 | 25,000 | 25,000 40.81 毫秒 |
-|广泛布尔值 + NOT |自动扫描回退 | 25,000 | 25,000 43.19 毫秒 |
+| 查询 | 规划器路径 | 候选/查询 | 延迟/查询 |
+| --- | --- | ---: | ---: |
+| 选择性短语 | Indexed | 1 | 7.38 µs |
+| 选择性必选 + 可选 | Indexed | 1 | 4.62 µs |
+| 选择性通配符 | Indexed | 1 | 26.55 ms |
+| 选择性模糊 | Indexed | 36 | 33.81 ms |
+| 选择性精确范围 | Indexed | 1 | 429.62 µs |
+| 选择性邻近 | Indexed | 1 | 7.62 µs |
+| 显式扫描控制 | Scan | 25,000 | 38.07–98.36 ms |
+| 常见短语 | 自动扫描回退 | 25,000 | 40.81 ms |
+| 宽布尔 + NOT | 自动扫描回退 | 25,000 | 43.19 ms |
 
-5 个选择性案例使考生得分减少 25,000 倍；模糊扩展
-将它们从 25,000 个减少到 36 个。通配符和模糊查询包含词汇表
-扩展过程，而广泛的结构化查询故意切换到确切的
-当候选集工作不太可能收回成本时扫描路径。这些是
-局部回归测量——不是跨项目 zvec 基准。满
-方法论和重复观察存在于[BENCHMARKS.md](BENCHMARKS.md)。
-公共 API 发布门是确定性的 [feature matrix](BENCHMARKS.md#public-feature-matrix-and-performance-gate)，
-它检查每个查询路由并报告同步的 p50/p95/p99 延迟，
-ANN、sidecar、mutation 和 Tokio 路径。同伴
-[concurrent-reader and mixed-workload fixtures](BENCHMARKS.md#mixed-readwrite-contention)
-门读争用、读/写争用、Recall@10、QPS 和逻辑
-会计上同样的修订。生命周期矩阵还测量
-管理操作、资源准入和维护所有权。 CI
-平台矩阵在 Linux x86/ARM、Windows x86 和 macOS ARM/Intel 上重复所有五个烟雾台；它的托管
-英特尔的结果是可移植性证据，而不是所需的 macOS 12 运行时门。
-要进行更大的同主机引擎比较，请使用 [scale harness](BENCHMARKS.md#larger-corpus-scale-comparison)，
-它以相同的确定性驱动 a3s-vec 和选择加入的 zvec 伴侣
-语料库和报告构建时间、p50/p95/p99、QPS 和 Recall@10。
+五个选择性案例将打分候选减少 25,000×；模糊扩展将其从 25,000 降到 36。通配符与模糊查询含词汇扩展遍，而宽结构化查询在候选集工作不太可能划算时故意切到精确扫描路径。这些是本地回归测量——不是跨项目 zvec 基准。完整方法与重复观察见 [BENCHMARKS.md](BENCHMARKS.md)。
+公开 API 发布闸门是确定性 [功能矩阵](BENCHMARKS.md#public-feature-matrix-and-performance-gate)，检查每条查询路由并为 sync、ANN、sidecar、mutation 与 Tokio 路径报告 p50/p95/p99 延迟。配套
+[并发读与混合负载 fixture](BENCHMARKS.md#mixed-readwrite-contention)
+在同一修订上闸读争用、读/写争用、Recall@10、QPS 与逻辑记账。生命周期矩阵额外测量管理操作、资源准入与维护所有权。CI 平台矩阵在 Linux x86/ARM、Windows x86 与 macOS ARM/Intel 上重复全部五个 smoke bench；其托管 Intel 结果是可移植性证据，不是所需的 macOS 12 运行时闸门。
+更大同机引擎对比请用 [规模 harness](BENCHMARKS.md#larger-corpus-scale-comparison)，以同一确定性语料驱动 a3s-vec 与可选 zvec 对照，并报告构建时间、p50/p95/p99、QPS 与 Recall@10。
 
 ## 快速开始
 
-A3S monorepo 使用此存储库作为 `crates/vec`。直到一个箱子
-发布版本已发布，请使用 monorepo 根目录的路径依赖项：
+A3S monorepo 将本仓库消费为 `crates/vec`。在 crate 发布上线前，从 monorepo 根使用 path 依赖：
 
 ```toml
 [dependencies]
 a3s-vec = { path = "crates/vec" }
 ```
 
-这个完整的示例创建了一个持久的 FTS 集合，插入一个工作区
-文档，并执行结构化查询：
+下面完整示例创建持久 FTS 集合、插入一份工作区文档，并执行结构化查询：
 
 ```rust
 use a3s_vec::{
@@ -141,8 +104,7 @@ fn main() -> Result<()> {
 }
 ```
 
-Tokio 应用程序可以选择调度程序安全的查询方法，而无需执行
-核心集合依赖于运行时：
+Tokio 应用可选用调度器安全的查询方法，而无需让核心集合依赖运行时：
 
 ```toml
 [dependencies]
@@ -157,24 +119,12 @@ async fn search(collection: &Collection, query: &SearchQuery) -> Result<Vec<Doc>
 }
 ```
 
-`query_async`、`multi_query_async` 和 `group_by_async` 需要有效
-Tokio运行时并执行完整的同步快照、规划器、
-其阻塞池上的 sidecar-I/O、后备和精确细化路径。他们
-产生与其同步对应物相同的结果和遥测；的
-功能是执行者安全边界，而不是延迟声明。东京不能
-开始后取消 `spawn_blocking` 工作，因此放弃其中一个 future
-不取消其基础查询。
+`query_async`、`multi_query_async` 与 `group_by_async` 需要活跃 Tokio 运行时，并在其 blocking 池上执行完整的同步快照、规划器、sidecar I/O、回退与精确细化路径。它们产生与同步对应方法相同的结果与遥测；该功能是执行器安全边界，而非延迟声明。Tokio 无法在 `spawn_blocking` 工作开始后取消它，因此丢弃这些 future 之一不会取消其底层查询。
 
 ## 可执行兼容性示例
 
-[`examples`](examples/README.md)目录是回归的一部分
-表面。上游 CRUD、向量搜索和模式构建器固定装置跟踪
-`zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4` 仅具有
-crate命名空间已更改；他们的可执行包装器仅添加本地 lint
-津贴。断言项目拥有的二进制文件涵盖矢量/FTS 和混合
-检索、分组 top-k、隔离迭代、持久模式演化以及
-维护健康。 CI 运行每个二进制文件，而不仅仅是检查它
-编译：
+[`examples`](examples/README.md) 目录是回归面的一部分。上游 CRUD、向量搜索与 schema-builder fixture 跟踪
+`zvec-ai/zvec-rust@0d40cb1aef081bae175061fef35c89269e6a80f4`，仅更改 crate 命名空间；其可执行包装仅添加本地 lint 允许。断言的项目自有二进制覆盖向量/FTS 与混合检索、分组 top-k、隔离迭代、持久 schema 演进与维护健康。CI 运行每个二进制，而非仅检查能否编译：
 
 ```text
 cargo run --locked --example crud_operations
@@ -186,69 +136,30 @@ cargo run --locked --example schema_iteration
 cargo run --locked --example maintenance_health
 ```
 
-固定的上游 CRUD 固定装置包含两个不完整的替换更新插入；
-官方 zvec 和 `a3s-vec` 都拒绝它们，因为所需的 `id` 字段是
-缺席。这个已知的上游装置缺陷被保留，因此仅命名空间
-索赔仍可审核。所声称的 A3S 拥有的示例因任何错误而失败
-结果。
+已 pin 的上游 CRUD fixture 含两次不完整替换 upsert；官方 zvec 与 `a3s-vec` 均因缺少必需 `id` 字段而拒绝。此已知上游 fixture 缺陷被保留，使「仅命名空间」声明可审计。断言的 A3S 自有示例在任何错误结果上失败。
 
 ## 检索能力
 
-### 向量和索引
+### 向量与索引
 
-- 密集 FP16、FP32、FP64、INT4、INT8、INT16、Binary32 和 Binary64 有效负载。
-- 稀疏 FP16 和 FP32 有效负载。
-- 密集、稀疏和打包二进制查询接受显式有效负载
-  或源文档 ID。源 ID 查询使用相同的精确评分，
-  过滤、半径、投影、持久性和可选的 Tokio 执行
-  路径； Binary32 和 Binary64 通过每条路线独立覆盖。
-- Binary32 和 Binary64 精确搜索使用 L2 位坐标：公开的
-  分数是负异或汉明计数。支持扁平L2；其他二进制文件
-  指标和二进制 ANN 索引返回`NotSupported`。
-- `SearchQuery::builder()` 支持密集、打包二进制或纯 FTS
-  `query_string`/`match_string` 路由并拒绝不明确的组合；
-  `include_doc_id` 公开返回的查询文档的生成序号。
-- 精确数值 L2、内积、余弦和 MIPS-L2 评分以及二进制
-  L2/Hamming评分，均为`f64`排名中级。
-- 原生 HNSW 和 IVF 候选生成，具有精确的全向量重新排序；
-  IVF 可选择将每个基向量分配给一个主质心和一个
-  正交感知 SOAR 次要质心。
-- 便携式 HNSW/IVF RaBitQ，具有确定性随机旋转，紧凑
-  1 到 9 位代码、有界细化和精确的全向量重新排序。
-- 确定性两遍度量感知 Vamana 构造（L2、内积、
-  余弦和 MIPS-L2）、有界 `list_size` 搜索、增量覆盖和
-  精确的全向量重新排序。
-- 确定性乘积量化器训练，每个块最多 256 个质心，
-  一字节代码、查询本地 ADC 表和精确的全向量重新排序。
-- 具有固定全矢量或 PQ 代码的原生 4 KiB 扇区 Vamana/DiskANN 文件
-  记录、CRC 验证、有界定位读取或不可变匿名 mmap
-  快照和故障关闭内存回退。
-- 仅索引 FP16、对称 INT8 和对称 INT4 量化。
-- 标量倒排索引，用于相等、范围、`IN`、null、通配符、前缀、
-  后缀和布尔过滤器组成。
+- 稠密 FP16、FP32、FP64、INT4、INT8、INT16、Binary32 与 Binary64 载荷。
+- 稀疏 FP16 与 FP32 载荷。
+- 稠密、稀疏与打包二进制查询接受显式载荷或源文档 ID。源 ID 查询使用相同的精确打分、过滤、半径、投影、持久化与可选 Tokio 执行路径；Binary32 与 Binary64 经各路由独立覆盖。
+- Binary32 与 Binary64 精确搜索对位坐标使用 L2：公开分数是负 XOR Hamming 计数。支持 Flat L2；其他二进制度量与二进制 ANN 索引返回 `NotSupported`。
+- `SearchQuery::builder()` 支持稠密、打包二进制或纯 FTS 的 `query_string`/`match_string` 路由，并拒绝歧义组合；`include_doc_id` 为返回的查询文档暴露世代序号。
+- 精确数值 L2、内积、余弦与 MIPS-L2 打分，以及二进制 L2/Hamming 打分，均以 `f64` 排序中间值。
+- 原生 HNSW 与 IVF 候选生成加精确全向量重排；IVF 可选将每个基向量赋给主质心与一个正交感知 SOAR 次质心。
+- 可移植 HNSW/IVF RaBitQ，带确定性随机旋转、紧凑 1–9 bit 码、有界细化与精确全向量重排。
+- 确定性两遍度量感知 Vamana 构建（L2、内积、余弦与 MIPS-L2）、有界 `list_size` 搜索、增量 overlay，以及精确全向量重排。
+- 确定性乘积量化器训练，每块最多 256 质心、单字节码、查询本地 ADC 表，以及精确全向量重排。
+- 原生 4 KiB 扇区 Vamana/DiskANN 文件，固定全向量或 PQ 码记录、CRC 校验、有界定位读或不可变匿名 mmap 快照，以及失败封闭的内存回退。
+- 仅索引的 FP16、对称 INT8 与对称 INT4 量化。
+- 标量倒排索引，用于相等、范围、`IN`、null、通配符、前缀、后缀与布尔过滤组合。
 
-Vamana 接受 L2、内积、余弦和 MIPS-L2 向量，可选
-FP16、INT8 或 INT4 仅索引量化和精确的权威重新排名。
-`IndexParams::diskann` 使用相同的度量感知确定性图并且
-当 `pq_chunk_num > 0` 时启用语料库训练的 PQ；零选择全向量
-图表评分。新建或重建的一代
-在记忆中穿越。经过验证的缓存重新打开后，有界查询使用
-默认情况下可移植定位读取并保留请求本地扇区/节点
-缓存。 `IoBackend::Mmap` 相反，将已经验证的 sidecar 复制到
-打开时只读匿名内存映射并提供相同的有界范围
-来自那个不可变的快照。 PQ 查询构建一个可感知指标的 ADC 表，
-在图遍历期间求和代码相似度或距离。增量叠加共享
-读者；完全重建会重新训练密码本并使阅读器失效，直到
-下一个验证的重新开放。短读或格式错误的记录会回退到
-等效的内存中全向量或 ADC 图，并且权威向量仍然
-执行最终重新排名。该文件是 A3S 原生格式，而不是 Microsoft
-DiskANN C++ 格式。 mmap 快照独立于以后的替换或
-截断源文件，但 open 执行完整的 sidecar 复制并保留
-句柄生命周期的额外内存。可选的 Tokio 条目
-点使任一后端远离运行时工作人员；本机异步文件读取和
-直接文件支持的 mmap 仍然是未来的加速器。
+Vamana 接受 L2、内积、余弦与 MIPS-L2 向量，可选 FP16、INT8 或 INT4 仅索引量化与精确权威重排。
+`IndexParams::diskann` 使用相同度量感知确定性图，并在 `pq_chunk_num > 0` 时启用语料训练的 PQ；零选择全向量图打分。新构建或重建的世代在内存中遍历。经验证缓存重开后，有界查询默认使用可移植定位读，并保留请求本地扇区/节点缓存。`IoBackend::Mmap` 则在打开时将已验证 sidecar 复制到只读匿名内存映射，并从该不可变快照服务相同有界范围。PQ 查询构建一张度量感知 ADC 表，并在图遍历期间累加码相似度或距离。增量 overlay 共享 reader；完整重建重训码本并使 reader 失效直至下次验证重开。短读或畸形记录回退到等价内存全向量或 ADC 图，权威向量仍做最终重排。该文件是 A3S 原生格式，不是 Microsoft DiskANN C++ 格式。mmap 快照独立于源文件之后的替换或截断，但打开会完整复制 sidecar 并在 handle 生命周期内保留该额外内存。可选 Tokio 入口将任一后端保持在运行时 worker 之外；原生异步文件读与直接文件后备 mmap 仍是未来加速器。
 
-使用类型化选项为一个集合句柄选择 mmap：
+用类型化选项为单个集合 handle 选择 mmap：
 
 ```rust
 use a3s_vec::{Collection, CollectionOptions, IoBackend, Result};
@@ -260,7 +171,7 @@ fn open_with_mmap(path: &str) -> Result<Collection> {
 }
 ```
 
-相同的查询控件为两种索引类型选择有界列表大小：
+同一查询控制为两种索引类型选择有界 list size：
 
 ```rust
 use a3s_vec::{DiskannQueryParams, IndexParams, MetricType, Result, SearchQuery};
@@ -271,12 +182,7 @@ fn configure_diskann_pq(query: &mut SearchQuery) -> Result<IndexParams> {
 }
 ```
 
-RaBitQ 是一个独立的 HNSW/IVF 索引系列。它训练确定性中心，
-应用四轮带符号哈达玛旋转，并仅使用紧凑代码
-用于候选遍历或细化。权威向量仍然是
-公共分数的来源。 HNSW默认为7位16中心；打字的
-选项构造函数公开位宽、中心计数和样本计数。体外受精
-使用 `scale_factor * topk` 作为有界精确细化器集：
+RaBitQ 是独立的 HNSW/IVF 索引族。它训练确定性中心，应用四轮有符号 Hadamard 旋转，并仅将紧凑码用于候选遍历或细化。权威向量仍是公开分数来源。HNSW 默认七 bit 与 16 中心；类型化选项构造器暴露 bit 宽、中心数与采样数。IVF 用 `scale_factor * topk` 作为有界精确细化集：
 
 ```rust
 use a3s_vec::{
@@ -291,29 +197,20 @@ fn configure_rabitq(query: &mut SearchQuery) -> Result<IndexParams> {
 }
 ```
 
-Vamana 现在执行 `max_occlusion` RobustPrune 候选上限，
-`saturate` 图形填充控制，以及独立的 FP16/INT8/INT4 索引
-具有权威精确重新排名的量化。二元人工神经网络和阿里巴巴的
-C++ 线格式保持独立、记录的边界。确切的二进制路由是基于A3S的扩展
-zvec 的前二进制平方欧几里德/汉明语义；阿里巴巴删除了其
-[zvec PR #365](https://github.com/alibaba/zvec/pull/365) 中的汉明度量，所以
-该项目不声明当前上游二进制查询兼容性。
+Vamana 现执行 `max_occlusion` RobustPrune 候选上限、`saturate` 图填充控制，以及独立 FP16/INT8/INT4 索引量化与权威精确重排。二进制 ANN 与阿里巴巴 C++ 线格式仍是独立、已文档化的边界。精确二进制路由是基于 zvec 先前二进制平方欧氏/Hamming 语义的 A3S 扩展；阿里巴巴在 [zvec PR #365](https://github.com/alibaba/zvec/pull/365) 中移除了 Hamming 度量，因此本项目不声称与当前上游二进制查询兼容。
 
 ### 全文搜索
 
-FTS 管道使用相同的有序标记器分析文档和查询
-和过滤器配置。
+FTS 管道用相同有序分词器与过滤器配置分析文档与查询。
 
-|组件|支持的值 |
-| ---| ---|
-|分词器 | `standard`、`whitespace`、Unicode `ngram`、可选 `jieba` / `jieba_accurate` |
-|令牌过滤器 | `lowercase`、`ascii_folding`、`stemmer` |
-|查询语法 | `AND`、`OR`、`NOT`、括号、`+` 必需、`-` 禁止、转义符、`*` / `?` 通配符、同字段限定符、`^` 增强、模糊术语、有序短语斜率和术语范围|
-|默认运算符 | `OR` 用于兼容性，或显式 `AND` |
+| 组件 | 支持值 |
+| --- | --- |
+| Tokenizer | `standard`、`whitespace`、Unicode `ngram`、可选 `jieba` / `jieba_accurate` |
+| Token filter | `lowercase`、`ascii_folding`、`stemmer` |
+| 查询语法 | `AND`、`OR`、`NOT`、括号、`+` 必选、`-` 禁止、转义、`*` / `?` 通配符、同字段限定符、`^` boost、模糊词项、有序短语 slop，以及词项范围 |
+| 默认算子 | 兼容用 `OR`，或显式 `AND` |
 
-省略 `filters` 选择 `lowercase`。传递显式空切片会保留
-标准、空白和 n-gram 分词器输出区分大小写。过滤器
-按声明顺序对索引文本和查询文本运行。
+省略 `filters` 选择 `lowercase`。传入显式空切片使 standard、whitespace 与 n-gram 分词器输出保持大小写敏感。过滤器按声明顺序同时作用于索引文本与查询文本。
 
 ```rust
 use a3s_vec::{IndexParams, Result};
@@ -327,15 +224,9 @@ fn workspace_text_index() -> Result<IndexParams> {
 }
 ```
 
-Snowball 词干分析器支持阿拉伯语、丹麦语、荷兰语、英语、芬兰语、法语、
-德语、希腊语、匈牙利语、意大利语、挪威语、葡萄牙语、罗马尼亚语、俄语、
-西班牙语、瑞典语、泰米尔语和土耳其语。 ASCII 折叠使用 Unicode 分解
-加上常见的拉丁语兼容性映射；它不是按字节进行广告的
-相当于每个 zvec 折叠桌。
+Snowball stemmer 支持 Arabic、Danish、Dutch、English、Finnish、French、German、Greek、Hungarian、Italian、Norwegian、Portuguese、Romanian、Russian、Spanish、Swedish、Tamil 与 Turkish。ASCII folding 使用 Unicode 分解加常见拉丁兼容映射；不宣称与每个 zvec folding 表逐字节等价。
 
-n-gram 分词器默认为 Unicode 二元组。 `ngram_min`,
-`ngram_max`和`token_chars`配置其范围和接受的Unicode
-字符类：
+n-gram 分词器默认 Unicode bigram。`ngram_min`、`ngram_max` 与 `token_chars` 配置其范围与接受的 Unicode 字符类：
 
 ```rust
 use a3s_vec::{IndexParams, Result};
@@ -351,28 +242,13 @@ fn identifier_index() -> Result<IndexParams> {
 }
 ```
 
-对于选择性标识符/路径查询，`default_operator=AND`从
-最短的发帖。结构化表达式构建精确的布尔候选集；
-短语仅验证候选者的有序邻近度。计划者又回到了
-扫描广泛表达式的执行，并在标量时保持索引细化
-预过滤器可用。
+对选择性标识符/路径查询，`default_operator=AND` 从最短 posting 开始。结构化表达式构建精确布尔候选集；短语仅对候选验证有序邻近。规划器对宽表达式回退到扫描执行，并在有标量预过滤可用时保留索引细化。
 
-通配符（`rust*`、`r?sty`）、模糊（`rust~1` 或 `rust~2`）和范围
-(`[alpha TO omega]`, `{alpha TO omega}`) 叶子相对于分析的展开一次
-术语词汇。 `*` 是无界范围端点。模糊项、范围界限、
-通配符文字片段必须分别分析一个术语和范围
-比较是根据最终的词典术语顺序进行的。限定符如
-`body:rust`必须命名已被`SearchQuery::fts`选择的字段；
-跨域执行被拒绝。提升是有限值
-`(0, 1_000_000]`。
+通配符（`rust*`、`r?sty`）、模糊（`rust~1` 或 `rust~2`）与范围（`[alpha TO omega]`、`{alpha TO omega}`）叶子对已分析词项词汇扩展一次。`*` 是无界范围端点。模糊词项、范围边界与通配符字面片段必须各自分析为一个词项，范围比较按结果词典序。如 `body:rust` 的限定符必须命名 `SearchQuery::fts` 已选字段；跨字段执行被拒绝。Boost 为有限值，范围 `(0, 1_000_000]`。
 
-例如，引用的短语接受从 0 到 1,024 的显式斜率
-`"vector engine"~2`。 Slop 计算干预令牌的总数，同时保留
-术语顺序；它不启用转置。索引执行和扫描执行
-使用这些相同的扩展、BM25 和邻近规则。象征性`&&`和`||`
-别名仍然明确不受支持。
+带引号短语接受 0 到 1,024 的显式 slop，例如 `"vector engine"~2`。Slop 计介入 token 总数同时保留词项顺序；不启用换位。索引与扫描执行使用相同扩展、BM25 与邻近规则。符号 `&&` 与 `||` 别名仍明确不支持。
 
-## 执行如何保持准确
+## 执行如何保持精确
 
 ```text
 request
@@ -384,43 +260,23 @@ request
   → exact-score, deterministic top-k, projection, and optional fusion
 ```
 
-- 平面矢量和扫描 BM25 执行始终可用作参考路径。
-- 每个派生索引生成都是不可变的，并标有其来源
-  修订。
-- HNSW/IVF/RaBitQ/Vamana/DiskANN候选者重新排名，具有权威性
-  向量。
-- 索引和扫描 FTS 共享 `f64` 语料库/评分原语并生成
-  不同赛程中的公共分数完全相同。
-- 同等分数使用升序主键作为确定性抢七。
+- Flat 向量与扫描 BM25 执行始终作为参考路径可用。
+- 每个派生索引世代不可变，并标记其源修订。
+- HNSW/IVF/RaBitQ/Vamana/DiskANN 候选用权威向量重排。
+- 索引与扫描 FTS 共享 `f64` 语料/打分原语，并在差分 fixture 中产生位一致公开分数。
+- 相等分数用升序主键作为确定性平局打破。
 
-## 持久性和恢复
+## 持久化与恢复
 
-文档、快照、WAL记录都是权威的。当前存储
-格式为版本 4：校验和 MessagePack 快照加上清单提交
-WAL 边界。版本 3 JSON 快照保持可读并在下一个版本升级
-可写检查点。
+文档、快照与 WAL 记录是权威的。当前存储格式为版本 4：带校验和的 MessagePack 快照加 manifest 提交的 WAL 边界。版本 3 JSON 快照仍可读，并在下次可写检查点升级。
 
-ANN、标量、FTS 和共享序数表分别作为
-非权威派生缓存。缓存格式 10 包括 RaBitQ 旋转，
-中心、紧凑代码、Vamana/DiskANN 图、PQ 码本/代码、已解析
-分词器和有序过滤器状态。瓦玛纳或
-另外还生成 DiskANN
-需要 `indexes/diskann-graph.bin`：绑定到的 A3S 原生 4 KiB 扇区镜像
-相同的修订版、模式摘要和清单标识。它的标题、元数据、
-填充、完整向量或 PQ 代码/码本、图形边缘和 CRC 均经过验证
-在缓存命中之前。丢失、陈旧、损坏、结构无效或 v10 之前的版本
-缓存/边车对
-被忽略并从恢复的文档中重建；只读打开永不修复
-它。
+ANN、标量、FTS 与共享序号表作为非权威派生缓存单独持久化。缓存格式 10 含 RaBitQ 旋转、中心、紧凑码、Vamana/DiskANN 图、PQ 码本/码、已解析分词器与有序过滤器状态。Vamana 或 DiskANN 世代额外需要 `indexes/diskann-graph.bin`：绑定同一修订、schema 摘要与 manifest 身份的 A3S 原生 4 KiB 扇区镜像。其头、元数据、填充、全向量或 PQ 码/码本、图边与 CRC 在缓存命中前验证。缺失、陈旧、损坏、结构无效或 pre-v10 的缓存/sidecar 对被忽略并从恢复文档重建；只读打开永不修复它。
 
-公共 API 支持只读句柄、可配置的持久性和 sidecar
-I/O、显式 `flush`、定向 `rebuild_index`、整个注册表 `optimize`，以及
-每个句柄缓存命中/查询/候选加上 DiskANN 后端/扇区读取遥测。
+公开 API 支持只读 handle、可配置持久性与 sidecar I/O、显式 `flush`、定向 `rebuild_index`、整注册表 `optimize`，以及每 handle 的缓存命中/查询/候选加 DiskANN 后端/扇区读遥测。
 
-## 资源限制和核算
+## 资源限制与记账
 
-资源策略是一个类型化的、集合本地的选项，当句柄被调用时捕获。
-创建或打开：
+资源策略是类型化、集合本地选项，在 handle 创建或打开时捕获：
 
 ```rust,no_run
 use a3s_vec::{CollectionOptions, CollectionResourceLimits, Result};
@@ -437,35 +293,15 @@ fn bounded_options() -> Result<CollectionOptions> {
 }
 ```
 
-在新集合之前检查`max_documents`和`max_accounted_bytes`
-生成被发布或附加到 WAL。所计算的字节数是
-权威文档图加上派生的确定性二进制代码大小
-索引统计信息报告的索引负载估计。他们并不声称
-测量分配器开销、临时构建峰值、映射文件或
-处理 RSS。会增加墓碑覆盖层的删除首先会压缩
-因此删除仍然是恢复容量的实用方法。
+`max_documents` 与 `max_accounted_bytes` 在新集合世代发布或追加到 WAL 之前检查。记账字节是权威文档映射的确定性 bincode 大小加索引统计报告的派生索引载荷估计。它们不宣称测量分配器开销、临时构建峰值、映射文件或进程 RSS。会增长墓碑 overlay 的删除会先压缩派生世代，使删除仍是恢复容量的实用方式。
 
-`max_query_candidates` 限制了一个计划的精确/细化候选者
-查询；多个查询分支共享一个累积预算。它并不代表
-挂钟截止日期或包括每个计划者/索引查找。写批处理
-限制适用于插入、更新、更新插入、显式删除输入以及匹配的
-一组已过滤的删除。被拒绝的一代是原子的并且不会前进
-修订版。 `stats` 和 `stats_snapshot` 公开活动策略、文档
-和索引统计、总字节数和仅元数据拒绝
-柜台；被拒绝的查询文本和文档永远不会被记录。
+`max_query_candidates` 限制单次查询的计划精确/细化候选；多查询分支共享一个累计预算。它不代表墙钟截止，也不含每次规划器/索引查找。写批次限制适用于 insert、update、upsert、显式 delete 输入，以及过滤删除的匹配集。被拒绝的世代是原子的且不推进修订。`stats` 与 `stats_snapshot` 暴露活跃策略、文档与索引记账、总记账字节，以及仅元数据的拒绝计数器；被拒绝的查询文本与文档永不记录。
 
 ## 健康与后台维护
 
-`Collection::health` 报告显式 `healthy`、`degraded`、`unhealthy`、
-或`closed`状态。它根据已提交的内容检查内存中的修订版本
-存储修订并要求每个配置的派生索引准备就绪，
-完整，并源自该修订版。 WAL 操作等待
-检查点单独报告，因为它们在间隔或
-手动持久性，不要进行其他可恢复的收藏
-不健康。
+`Collection::health` 报告显式 `healthy`、`degraded`、`unhealthy` 或 `closed` 状态。它对照已提交存储修订检查内存修订，并要求每个已配置派生索引就绪、完整且源自该修订。等待检查点的 WAL 操作单独报告，因为在间隔或手动持久性下它们正常，不会使本可恢复的集合变为 unhealthy。
 
-集合构造永远不会启动隐藏线程。可写集合
-可以选择一个显式拥有的标准线程调度程序：
+集合构造永不启动隐藏线程。可写集合可选用一个显式拥有的标准线程调度器：
 
 ```rust,no_run
 use a3s_vec::{Collection, CollectionMaintenanceOptions};
@@ -483,41 +319,33 @@ fn start(collection: &Collection) -> a3s_vec::Result<()> {
 }
 ```
 
-每个到期的修订都会重建完整的派生注册表并检查点
-作家门举行时，同样是权威一代；读者继续
-在构建过程中使用以前的不可变索引。不变的修订版
-被跳过。只有一个运行时可以拥有收集计划、只读句柄
-拒绝它，`close`或`Drop`在释放之前唤醒并加入worker
-该所有权主张。
+每个到期修订在持有写闸时重建完整派生注册表并检查点同一权威世代；读者在构建期间继续使用先前不可变索引。未变修订被跳过。仅一个运行时可拥有集合调度，只读 handle 拒绝它，且 `close` 或 `Drop` 在释放所有权声明前唤醒并 join worker。
 
 ## 当前边界
 
-|面积 |状态 |
-| ---| ---|
-|公寓、HNSW、IVF/SOAR |实施的; SOAR 发布使用确定性主加辅助分配和唯一候选探测 |
-| HNSW/IVF RaBitQ |针对 L2、内积和余弦实现，具有 1 至 9 位代码和精确的重新排序 |
-|度量感知的 Vamana 遍历和增量覆盖 |针对 L2、内积、余弦和 MIPS-L2 实现，具有可选的 FP16/INT8/INT4 索引量化，在内存中并通过重新打开后定位或不可变的 mmap-snapshot sidecar 读取 |
-|度量感知 DiskANN PQ/ADC 和增量叠加 |在内存中实现 L2、内积、余弦和 MIPS-L2，并通过重新打开后定位或不可变的 mmap 快照 PQ 代码读取 |
-|扇区对齐的本机 Vamana/DiskANN 文件 |已实施 |
-|标量倒排索引 |已实施 |
-| BM25 + 结构化布尔/短语 FTS |已实施 |
-| FTS 通配符/字段/提升/模糊/邻近/范围语法 |使用有界的、分析器感知的语义来实现 |
-|密集/稀疏/二进制源ID查询|实施的;缺少源返回`NotFound`，缺少源有效负载返回`FailedPrecondition` |
-|收藏健康及后台维护|通过显式所有权、有界时间表、修订感知跳过、工作诊断和联合关闭来实现 |
-|馆藏资源入场|为保留文档/逻辑字节、累积查询候选、写入批次和仅元数据拒绝遥测而实施 |
-| DiskANN 查询阅读器 |可移植的定位读取或经过验证的不可变匿名 mmap 快照，以及可选的 Tokio 阻塞池查询入口点；本机异步文件读取和直接文件支持的 mmap 仍然是路线图
-|产品量化/ RaBitQ |为 DiskANN 实施 PQ /为 HNSW 和 IVF 实施 RaBitQ |
-|二进制向量查询执行 | Binary32/Binary64 精确 L2/Hamming 跨直接、源 ID、过滤、半径、投影/包含 doc-id、多查询、分组、持久性和可选 Tokio 路径实现；二进制 ANN 仍然不受支持 |
-|阿里巴巴C++二进制格式兼容性|需要明确的未来进口商/出口商 |
+| 领域 | 状态 |
+| --- | --- |
+| Flat、HNSW、IVF/SOAR | 已实现；SOAR posting 使用确定性主+次分配与唯一候选探测 |
+| HNSW/IVF RaBitQ | 已实现 L2、内积与余弦，1–9 bit 码与精确重排 |
+| 度量感知 Vamana 遍历与增量 overlay | 已实现 L2、内积、余弦与 MIPS-L2，可选 FP16/INT8/INT4 索引量化，内存中及重开后经定位或不可变 mmap 快照 sidecar 读 |
+| 度量感知 DiskANN PQ/ADC 与增量 overlay | 已实现 L2、内积、余弦与 MIPS-L2，内存中及重开后经定位或不可变 mmap 快照 PQ 码读 |
+| 扇区对齐原生 Vamana/DiskANN 文件 | 已实现 |
+| 标量倒排索引 | 已实现 |
+| BM25 + 结构化布尔/短语 FTS | 已实现 |
+| FTS 通配符/字段/boost/模糊/邻近/范围语法 | 已实现，语义有界且感知分析器 |
+| 稠密/稀疏/二进制源 ID 查询 | 已实现；缺失源返回 `NotFound`，缺失源载荷返回 `FailedPrecondition` |
+| 集合健康与后台维护 | 已实现，含显式所有权、有界调度、修订感知跳过、worker 诊断与 join 关停 |
+| 集合资源准入 | 已实现保留文档/逻辑字节、累计查询候选、写批次，以及仅元数据拒绝遥测 |
+| DiskANN 查询 reader | 可移植定位读或已验证不可变匿名 mmap 快照，加可选 Tokio blocking 池查询入口；原生异步文件读与直接文件后备 mmap 仍在路线图 |
+| 乘积量化 / RaBitQ | PQ 已实现用于 DiskANN / RaBitQ 已实现用于 HNSW 与 IVF |
+| 二进制向量查询执行 | Binary32/Binary64 精确 L2/Hamming 已实现于直接、源 ID、过滤、半径、投影/include-doc-id、多查询、group-by、持久化与可选 Tokio 路径；二进制 ANN 仍不支持 |
+| 阿里巴巴 C++ 二进制格式兼容 | 需要显式未来导入/导出器 |
 
-`a3s-vec` 遵循 zvec 的 Rust 词汇表，它是有用的，但它不是一个
-二进制兼容的克隆。 `zvec-core` 仍然是私有的纯 Rust 算法
-依赖性；调用者仅使用 A3S 拥有的集合、模式、文档、查询和
-错误合同。
+`a3s-vec` 在有用处跟随 zvec 的 Rust 词汇，但不是二进制兼容克隆。`zvec-core` 仍是私有纯 Rust 算法依赖；调用方仅使用 A3S 自有集合、schema、文档、查询与错误契约。
 
-## 质量门
+## 质量闸门
 
-在此箱内运行检查：
+在本 crate 内运行检查：
 
 ```sh
 cargo fmt --all -- --check
@@ -533,7 +361,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 cargo test --locked --test feature_matrix
 ```
 
-可重现的性能夹具：
+可复现性能 fixture：
 
 ```sh
 cargo bench --locked --bench feature_matrix --features async
@@ -555,21 +383,13 @@ cargo bench --bench structured_fts
 cargo bench --bench reopen_index
 ```
 
-默认、无默认功能、全功能、严格 Clippy、rustdoc 和 Rust
-1.75个门单独维护。可选的Jieba依赖链
-目前需要更新的 Cargo，因为一个传递包使用 Rust
-2024 年清单。
+默认、无默认功能、全功能、严格 Clippy、rustdoc 与 Rust 1.75 闸门分别维护。可选 Jieba 依赖链目前需要较新 Cargo，因为一个传递包使用 Rust 2024 manifest。
 
-## 平台和所有权
+## 平台与所有权
 
-可移植正确性路径针对 Linux x86_64/aarch64、Windows x86_64、
-和 macOS arm64/x86_64，其中 macOS 12.0 作为 Intel 部署目标。确实如此
-不需要`io_uring`、C/C++ 运行时或特定于体系结构的 SIMD。
+可移植正确性路径面向 Linux x86_64/aarch64、Windows x86_64 与 macOS arm64/x86_64，Intel 部署目标为 macOS 12.0。它不要求 `io_uring`、C/C++ 运行时或架构特定 SIMD。
 
-`a3s-vec` 拥有检索、持久化和索引执行。工作空间
-扫描、嵌入模型运行时、代理会话和 UI 策略属于
-他们的来电者。跨项目边界记录在
-[A3S local retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md)。
+`a3s-vec` 拥有检索、持久化与索引执行。工作区扫描、嵌入模型运行时、Agent 会话与 UI 策略属于其调用方。跨项目边界见
+[A3S 本地检索平台架构](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md)。
 
-这个存储库是`A3S-Lab/Vec`； A3S monorepo 将其作为
-`crates/vec`子模块。已获得[MIT](LICENSE)许可。
+本仓库为 `A3S-Lab/Vec`；A3S monorepo 将其消费为 `crates/vec` 子模块。许可证为 [MIT](LICENSE)。
