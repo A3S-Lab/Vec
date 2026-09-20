@@ -18,7 +18,10 @@ use std::collections::BTreeMap;
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
 const CACHE_FORMAT_VERSION: u32 = 10;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
-const MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
+/// Derived index cache payload ceiling (HNSW/scalar/FTS blobs).
+/// Aligned with the document snapshot ceiling so million-scale HNSW graphs can
+/// persist alongside the authoritative corpus.
+const MAX_PAYLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 pub(super) mod index_params_serde {
     use crate::schema::IndexParams;

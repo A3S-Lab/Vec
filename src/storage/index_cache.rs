@@ -4,7 +4,7 @@ use super::derived_file;
 use crate::error::Result;
 use std::path::{Path, PathBuf};
 
-const MAX_INDEX_CACHE_BYTES: u64 = 512 * 1024 * 1024 + 4_096;
+const MAX_INDEX_CACHE_BYTES: u64 = 8 * 1024 * 1024 * 1024 + 4_096;
 
 pub(super) fn read(root: &Path) -> Result<Option<Vec<u8>>> {
     derived_file::read(

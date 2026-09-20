@@ -1,34 +1,42 @@
 # Release Qualification
 
-`a3s-vec` `0.1.2` is published. Tag `0.1.2`, hosted CI run
-`35503763590`, and crates.io SHA-256
-`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0` all bind to
-revision `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`. The prior `0.1.1` package
-remains on the registry as a historical artifact (tag `0.1.1` @
-`af22076eb32386b7272c2d2acfa2fef742cb2f73`, SHA-256
-`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`). macOS 12
-Monterey Intel is deliberately unsupported.
+`a3s-vec` `0.1.3` is the current release line. Formal tag, hosted CI run, and
+crates.io SHA-256 bindings are filled in after `cargo publish` (see Registry
+status below). The prior `0.1.2` package remains on the registry as a historical
+artifact (tag `0.1.2` @ `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`, SHA-256
+`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`, CI run
+`35503763590`). macOS 12 Monterey Intel is deliberately unsupported.
 
-## 0.1.2 release notes
+## 0.1.3 release notes
 
-This patch release keeps the public storage and query contracts and adds:
+This patch release keeps the public storage and query contracts and raises the
+finite storage DoS ceilings so million-document dense corpora can flush and
+persist derived indexes on workstation hosts:
 
-- Character-trigram prefilter for FTS wildcard/fuzzy matcher expansion
-  (recall-safe prune before the pattern matcher; full vocabulary fallback when
-  no long enough literal run exists).
-- Packed dense Flat acceleration on the ANN path while binary Flat stays on
-  `DocumentMap`; bit-identical `f64` public scores and exact re-ranking retained.
-- Parallel Flat Cosine scan under the default Rayon pool (product default),
-  with the one-worker fairness harness unchanged for HNSW comparisons.
-- First-principles a3s-vec ↔ zvec remeasure protocol and fresh Apple Silicon
-  medians (`docs/scale-compare-protocol.md`, `scripts/run_fp_compare.sh`).
-- Expanded invariant-driven integration coverage (`TESTING.md`).
+- Document snapshot write/recovery ceiling: **512 MiB → 8 GiB**.
+- Derived index cache payload and on-disk index-cache file ceiling: **512 MiB →
+  8 GiB** (aligned with snapshots so HNSW graphs can persist beside the
+  authoritative corpus).
+- Committed WAL replay ceiling: **512 MiB → 8 GiB**.
+- DiskANN sidecar file ceiling remains **512 MiB** (unchanged).
+- Honest same-host million-scale directional evidence under the existing
+  fairness harness (`RAYON_NUM_THREADS=1`, protocol knobs unchanged): see
+  [README.md](README.md) and [BENCHMARKS.md](BENCHMARKS.md). Protocol defaults
+  are not tuned for high million-scale recall; do not market recall@10 from
+  that table as an accuracy SLO.
 
 Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
 manufacture a benchmark win.
 
 Supported platforms: Linux x86_64/aarch64, Windows x86_64, and macOS
 arm64/x86_64 on current hosted images (macOS deployment target 15.0).
+
+## 0.1.2 release notes (historical)
+
+- Character-trigram prefilter for FTS wildcard/fuzzy matcher expansion.
+- Packed dense Flat acceleration; parallel Flat Cosine under the default Rayon
+  pool; bit-identical `f64` public scores and exact re-ranking retained.
+- First-principles a3s-vec ↔ zvec remeasure protocol and Apple Silicon medians.
 
 ## Public API review
 
@@ -50,7 +58,7 @@ The release-facing contract has the following boundaries:
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.2` identity.
+  against the package's `0.1.3` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -76,9 +84,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.2.crate`;
-- `a3s-vec-0.1.2.crate.sha256`;
-- `a3s-vec-0.1.2.release.json`, which records the package version, source
+- `a3s-vec-0.1.3.crate`;
+- `a3s-vec-0.1.3.crate.sha256`;
+- `a3s-vec-0.1.3.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the
@@ -117,26 +125,20 @@ tag and `cargo publish` step below.
 
 ## Registry status
 
-The crates.io index contains `a3s-vec` `0.1.2`, published from tag `0.1.2`
-at revision `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`. The published crate
-SHA-256 is
-`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`, matching
-the hosted release-candidate artifact from
-[CI run 35503763590](https://github.com/A3S-Lab/Vec/actions/runs/35503763590).
-The earlier `0.1.1` and `0.1.0` packages remain historical.
+Pending formal `0.1.3` tag and `cargo publish`. Until those land, crates.io
+still serves `0.1.2` as the latest published package. After publish, this
+section records the revision, CI run, and crate SHA-256.
 
 ## Release gates
 
-Enterprise GA for `0.1.2` is closed: all of the following bind to revision
-`0c7894fedb62d3ea76057486cd4e4b5fad3978b2`:
+Enterprise GA for `0.1.3` closes when all of the following bind to one
+revision:
 
 1. Hosted CI on `main` is green (quality, MSRV, recovery fuzz smoke,
    performance matrix, platform matrix including macOS 15 Intel and arm64, and
-   the versioned release-candidate package job) —
-   [run 35503763590](https://github.com/A3S-Lab/Vec/actions/runs/35503763590).
-2. The published crate SHA-256 matches the release-candidate artifact
-   (`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`).
-3. Formal git tag `0.1.2` points at that revision, and `cargo publish`
+   the versioned release-candidate package job).
+2. The published crate SHA-256 matches the release-candidate artifact.
+3. Formal git tag `0.1.3` points at that revision, and `cargo publish`
    uploaded the matching crate.
 
 ## Deliberate non-support

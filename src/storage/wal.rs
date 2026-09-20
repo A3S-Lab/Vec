@@ -14,7 +14,7 @@ const VERSION: u16 = 4;
 const MIN_READABLE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 4 + 4;
 const MAX_WAL_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const MAX_WAL_REPLAY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_WAL_REPLAY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WalRecord {

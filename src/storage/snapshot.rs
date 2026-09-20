@@ -17,7 +17,12 @@ use std::path::{Path, PathBuf};
 
 const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 const SNAPSHOT_FORMAT_VERSION: u32 = 4;
-pub(super) const MAX_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
+/// Hard ceiling for one atomic document snapshot write/recovery.
+///
+/// Million-scale FP32 corpora exceed the historical 512 MiB guard (1M×128×4
+/// alone is 512 MiB of floats before encoding). Keep a finite `DoS` bound, but
+/// size it for enterprise million-document collections on workstation hosts.
+pub(super) const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacySnapshot {

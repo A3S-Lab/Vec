@@ -566,8 +566,10 @@ content and therefore does not rewrite the equivalent cache generation;
 HNSW/IVF/RaBitQ/Vamana/DiskANN rebuilds and `optimize()` refresh it after publication.
 
 Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
-committed WAL replay at 512 MiB, and snapshots at 512 MiB before allocation and
-deserialization. WAL frame version 4 adds the schema-only operation while
+committed WAL replay at 8 GiB, document snapshots at 8 GiB, and the derived
+index cache payload at 8 GiB before allocation and deserialization. These
+ceilings remain finite DoS bounds sized for million-document workstation
+corpora; DiskANN sidecar files keep a separate 512 MiB guard. WAL frame version 4 adds the schema-only operation while
 retaining readability for version-3 frames. The format is versioned and
 checksummed. Compatibility with
 the Alibaba C++ binary files is provided through an explicit importer/exporter

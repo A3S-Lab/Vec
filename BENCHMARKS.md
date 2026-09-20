@@ -26,7 +26,7 @@ inherited cell.
 | Item | Value |
 | --- | --- |
 | Host | Apple M5 Max, 64 GiB, macOS 26.6.2 arm64 |
-| a3s-vec | `0.1.2` candidate on Apple M5 Max, `RAYON_NUM_THREADS=1` |
+| a3s-vec | `0.1.3` on Apple M5 Max, `RAYON_NUM_THREADS=1` |
 | zvec | `0.7.0` macOS arm64 wheel, Python 3.13.15, `IndexOption(concurrency=1)`, `init(query_threads=1)`, `is_using_refiner=False` |
 | Fixture | Cosine, top-10, 32 queries × 3 rounds, batch 512, HNSW `m=16`, `ef_construction=96`, `ef=64` |
 | Artifacts | `target/fp-compare-20260920/{small,scale}/` (local; not committed) |
@@ -61,6 +61,23 @@ reports 18 logical CPUs) on the same 100k×128 fixture, three-process a3s-vec
 Flat median p50 is **650.584 µs** (Recall@10 = 1.0) versus zvec’s one-worker
 Flat median **1,841.084 µs** — about **2.83×** lower p50. Do **not** mix this
 row into the one-worker HNSW fairness table.
+
+### 1,000,000 × 128 (single process, post-0.1.3 ceilings)
+
+Same fairness controls as above (`RAYON_NUM_THREADS=1`, protocol HNSW knobs).
+One process per engine after raising snapshot / derived-index-cache / WAL-replay
+ceilings to 8 GiB. Not a three-process median.
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 77,339.081 | 651.834 | 77,990.915 | 42,871.000 | 46,497.917 | 48,390.625 | 23.37 | 1.0000 |
+| zvec 0.7.0 flat | 13,507.130 | 0.000 | 13,507.130 | 26,201.459 | 28,228.583 | 29,535.583 | 37.94 | 1.0000 |
+| a3s-vec HNSW | 77,339.081 | 422,410.953 | 499,750.034 | 158.750 | 238.708 | 279.375 | 5,953.86 | 0.3063 |
+| zvec 0.7.0 HNSW | 13,507.130 | 627,723.432 | 641,230.562 | 231.417 | 283.458 | 334.167 | 4,243.70 | 0.2437 |
+
+Directional: a3s HNSW builds and queries faster; zvec Flat insert/query is
+faster under one worker. Protocol-default Recall@10 is low on both engines—
+do not quote it as an accuracy SLO without raising `ef` / `ef_construction`.
 
 ### 2,000 × 32 (wiring / recall sanity)
 

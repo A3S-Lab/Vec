@@ -22,8 +22,8 @@
 Dense and sparse vectors, BM25 full-text, and typed scalar filters live in one
 durable Rust collection—no server process and no C/C++ runtime.
 
-**[`0.1.2` on crates.io](https://crates.io/crates/a3s-vec)** · Enterprise GA
-gate closed (tag + hosted CI + matching crate checksum) ·
+**[`0.1.3` on crates.io](https://crates.io/crates/a3s-vec)** · Enterprise GA
+line (tag + hosted CI + matching crate checksum) ·
 [RELEASE.md](RELEASE.md)
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
@@ -41,7 +41,7 @@ gate closed (tag + hosted CI + matching crate checksum) ·
 | **ANN depth** | HNSW, IVF (+ optional SOAR), HNSW/IVF RaBitQ, Vamana, PQ/ADC DiskANN (positioned I/O or mmap sidecar). |
 | **Workspace text** | BM25 with `standard` / `whitespace` / `ngram` / optional `jieba`; boolean, phrase, wildcard, fuzzy, range; character-trigram prune before matcher expansion. |
 | **Typed filters** | Equality, range, `IN`, null, wildcard/prefix/suffix, boolean composition—same planner as ANN/FTS. |
-| **Durability** | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits. |
+| **Durability** | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits; snapshot / index-cache / WAL-replay ceilings at **8 GiB** (finite DoS bounds sized for million-document workstation corpora). |
 | **Fail-closed API** | Unsupported routes and bad dimensions fail with typed errors before mutation. |
 | **Embed anywhere** | Embedding models stay with the caller; a3s-vec owns storage, indexes, and planning. |
 
@@ -59,9 +59,10 @@ L2, IP, cosine, MIPS-L2.
 3. **Hybrid without glue code** — semantic + lexical + structured predicates
    in one planner and one durable generation.
 4. **Published Enterprise GA** — hosted multi-platform CI, versioned release
-   candidate, and crates.io checksum bind to one revision (`0.1.2`).
+   candidate, and crates.io checksum bind to one revision (`0.1.3`).
 5. **Competitive HNSW under an honest harness** — same knobs, one worker,
-   exact re-rank kept; see proof below (directional, not an SLO).
+   exact re-rank kept; see proof below (directional, not an SLO). Million-document
+   flush is unblocked on workstation hosts (8 GiB storage ceilings).
 
 What it is **not**: a hosted vector cloud, a zvec C++ ABI clone, or a claim of
 universal engine ranking.
@@ -72,13 +73,13 @@ universal engine ranking.
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.2"
+a3s-vec = "0.1.3"
 ```
 
 Tokio-facing queries (same planner on `spawn_blocking`):
 
 ```toml
-a3s-vec = { version = "0.1.2", features = ["async"] }
+a3s-vec = { version = "0.1.3", features = ["async"] }
 ```
 
 Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
@@ -159,13 +160,15 @@ Protocol: [docs/scale-compare-protocol.md](docs/scale-compare-protocol.md) ·
 Controls: SplitMix64 corpus, cosine, top-10, 32×3 queries, batch 512, HNSW
 `m=16` / `ef_construction=96` / `ef=64`, one worker. a3s-vec keeps exact
 re-rank + `f64` scores; zvec uses `is_using_refiner=False`. Medians of three
-processes · package `0.1.2` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0.
+processes · package `0.1.3` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0
+(100k table). The million-document table is a single same-host process under
+the same controls after the 8 GiB storage ceilings in `0.1.3`.
 
 ### HNSW · 100k × 128 (fairness harness)
 
 | Engine | Index build | Query p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.2** | **26.3 s** | **103 µs** | **0.6000** |
+| **a3s-vec 0.1.3** | **26.3 s** | **103 µs** | **0.6000** |
 | zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
 
 ≈ **1.75×** faster build, ≈ **1.44×** lower query p50, higher stable recall.
@@ -174,13 +177,24 @@ processes · package `0.1.2` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0.
 
 | Engine | Query p50 | Recall@10 |
 | --- | ---: | ---: |
-| a3s-vec 0.1.2 | 3,550 µs | **1.0000** |
+| a3s-vec 0.1.3 | 3,550 µs | **1.0000** |
 | zvec 0.7.0 | **1,841 µs** | **1.0000** |
 
 Exact Flat with public `f64` scores is about **1.93×** slower here by
 contract. With the host default Rayon pool (product default), a3s-vec Flat
 p50 falls to **~651 µs** on this machine—report separately; do not mix into
 the HNSW fairness table.
+
+### HNSW · 1M × 128 (same controls, single process)
+
+| Engine | Insert | Index build | Query p50 | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **a3s-vec 0.1.3** | 77.3 s | **422 s** | **159 µs** | **5954** | 0.3063 |
+| zvec 0.7.0 | **13.5 s** | 628 s | 231 µs | 4244 | 0.2437 |
+
+Directional only: a3s builds and queries HNSW faster at this scale; zvec
+loads Flat faster. Protocol-default recall is **not** an accuracy claim—
+raise `ef` / `ef_construction` before quoting million-scale recall.
 
 Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
 manufacture a win.

@@ -22,7 +22,7 @@
 稠密/稀疏向量、BM25 全文与类型化标量过滤落在同一持久化 Rust 集合——无需
 服务端进程，也无需 C/C++ 运行时。
 
-**[`0.1.2` 已发布](https://crates.io/crates/a3s-vec)** · Enterprise GA 门禁已关闭
+**[`0.1.3` 已发布](https://crates.io/crates/a3s-vec)** · Enterprise GA 发布线
 （tag + 托管 CI + 匹配的 crate 校验和）· [RELEASE.md](RELEASE.md)
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
@@ -40,7 +40,7 @@
 | **ANN 深度** | HNSW、IVF（可选 SOAR）、HNSW/IVF RaBitQ、Vamana、PQ/ADC DiskANN（定位读或 mmap sidecar）。 |
 | **工作区文本** | BM25，`standard` / `whitespace` / `ngram` / 可选 `jieba`；布尔、短语、通配、模糊、范围；matcher 展开前的字符 trigram 剪枝。 |
 | **类型化过滤** | 相等、范围、`IN`、null、通配/前缀/后缀、布尔组合——与 ANN/FTS 同一规划器。 |
-| **持久化** | WAL、校验和快照、文件锁、派生索引缓存、类型化资源限额。 |
+| **持久化** | WAL、校验和快照、文件锁、派生索引缓存、类型化资源限额；快照 / 索引缓存 / WAL 回放上限为 **8 GiB**（有限 DoS 边界，按工作站百万文档语料定尺）。 |
 | **失败封闭 API** | 不支持的路由与错误维度在变更前以类型化错误失败。 |
 | **嵌入外置** | 嵌入模型留给调用方；a3s-vec 负责存储、索引与规划。 |
 
@@ -54,8 +54,8 @@ cosine、MIPS-L2。
 1. **跑在 Agent 进程内** — 无需运维旁路数据库；打开路径、写入、查询即可。
 2. **分数可辩护** — 公开排序对权威向量做精确 `f64` 重打分；Flat 召回按构造为 1.0。
 3. **混合检索无需胶水** — 语义 + 词法 + 结构化谓词在同一规划器与同一持久化世代。
-4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.2`）。
-5. **诚实 harness 下 HNSW 有竞争力** — 相同旋钮、单 worker、保留 exact re-rank；证据见下（方向性，非 SLO）。
+4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.3`）。
+5. **诚实 harness 下 HNSW 有竞争力** — 相同旋钮、单 worker、保留 exact re-rank；证据见下（方向性，非 SLO）。百万文档 flush 在工作站主机上已放开（8 GiB 存储上限）。
 
 **不是什么：** 托管向量云、zvec C++ ABI 克隆，或「全面碾压」式引擎排名。
 
@@ -65,13 +65,13 @@ cosine、MIPS-L2。
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.2"
+a3s-vec = "0.1.3"
 ```
 
 面向 Tokio 的查询（同一规划器，跑在 `spawn_blocking`）：
 
 ```toml
-a3s-vec = { version = "0.1.2", features = ["async"] }
+a3s-vec = { version = "0.1.3", features = ["async"] }
 ```
 
 Monorepo path：`a3s-vec = { path = "crates/vec" }`。
@@ -151,13 +151,14 @@ DiskANN I/O、RaBitQ、FTS 分析器、资源限额与恢复契约见
 控制：SplitMix64 语料、cosine、top-10、32×3 查询、batch 512、HNSW
 `m=16` / `ef_construction=96` / `ef=64`、单 worker。a3s-vec 保留 exact
 re-rank + `f64`；zvec 使用 `is_using_refiner=False`。三次进程中位数 · 包
-`0.1.2` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0。
+`0.1.3` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0（10 万表）。百万
+文档表为 `0.1.3` 提高 8 GiB 存储上限后、同一控制下的单进程同机结果。
 
 ### HNSW · 100k × 128（公平 harness）
 
 | 引擎 | 索引构建 | 查询 p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.2** | **26.3 s** | **103 µs** | **0.6000** |
+| **a3s-vec 0.1.3** | **26.3 s** | **103 µs** | **0.6000** |
 | zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
 
 构建约快 **1.75×**，查询 p50 约低 **1.44×**，recall 更高且稳定。
@@ -166,11 +167,22 @@ re-rank + `f64`；zvec 使用 `is_using_refiner=False`。三次进程中位数 �
 
 | 引擎 | 查询 p50 | Recall@10 |
 | --- | ---: | ---: |
-| a3s-vec 0.1.2 | 3,550 µs | **1.0000** |
+| a3s-vec 0.1.3 | 3,550 µs | **1.0000** |
 | zvec 0.7.0 | **1,841 µs** | **1.0000** |
 
 公开 `f64` 精确 Flat 在此约慢 **1.93×**（契约使然）。主机默认 Rayon 池下
 a3s-vec Flat p50 约 **651 µs**——单独报告，勿混入 HNSW 公平表。
+
+### HNSW · 1M × 128（同一控制，单进程）
+
+| 引擎 | 写入 | 索引构建 | 查询 p50 | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **a3s-vec 0.1.3** | 77.3 s | **422 s** | **159 µs** | **5954** | 0.3063 |
+| zvec 0.7.0 | **13.5 s** | 628 s | 231 µs | 4244 | 0.2437 |
+
+方向性结论：此规模下 a3s HNSW 建图与查询更快；zvec Flat 加载更快。协议
+默认 recall **不是**精度承诺——引用百万级召回前请先提高 `ef` /
+`ef_construction`。
 
 不以降低 `ef`、关闭 re-ranking 或把公开分数改成 `f32` 制造胜负。
 
