@@ -1,9 +1,11 @@
 # Release Qualification
 
-`a3s-vec` `0.1.3` is the current release line. Formal tag, hosted CI run, and
-crates.io SHA-256 bindings are filled in after `cargo publish` (see Registry
-status below). The prior `0.1.2` package remains on the registry as a historical
-artifact (tag `0.1.2` @ `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`, SHA-256
+`a3s-vec` `0.1.3` is published. Tag `0.1.3`, and crates.io SHA-256
+`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2` bind to
+revision `88599126a4c179d8a0df24bd52963d372ea8eb67`. Hosted CI run binding is
+recorded below when the push workflow on that revision completes green. The
+prior `0.1.2` package remains on the registry as a historical artifact (tag
+`0.1.2` @ `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`, SHA-256
 `2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`, CI run
 `35503763590`). macOS 12 Monterey Intel is deliberately unsupported.
 
@@ -125,19 +127,24 @@ tag and `cargo publish` step below.
 
 ## Registry status
 
-Pending formal `0.1.3` tag and `cargo publish`. Until those land, crates.io
-still serves `0.1.2` as the latest published package. After publish, this
-section records the revision, CI run, and crate SHA-256.
+The crates.io index contains `a3s-vec` `0.1.3`, published from tag `0.1.3`
+at revision `88599126a4c179d8a0df24bd52963d372ea8eb67`. The published crate
+SHA-256 is
+`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`. The
+earlier `0.1.2`, `0.1.1`, and `0.1.0` packages remain historical.
 
 ## Release gates
 
-Enterprise GA for `0.1.3` closes when all of the following bind to one
-revision:
+Enterprise GA for `0.1.3` closes when all of the following bind to revision
+`88599126a4c179d8a0df24bd52963d372ea8eb67`:
 
 1. Hosted CI on `main` is green (quality, MSRV, recovery fuzz smoke,
    performance matrix, platform matrix including macOS 15 Intel and arm64, and
-   the versioned release-candidate package job).
-2. The published crate SHA-256 matches the release-candidate artifact.
+   the versioned release-candidate package job) — push run
+   [35507891003](https://github.com/A3S-Lab/Vec/actions/runs/35507891003)
+   (binding confirmed when green).
+2. The published crate SHA-256 matches
+   `c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`.
 3. Formal git tag `0.1.3` points at that revision, and `cargo publish`
    uploaded the matching crate.
 

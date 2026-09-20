@@ -22,8 +22,8 @@
 稠密/稀疏向量、BM25 全文与类型化标量过滤落在同一持久化 Rust 集合——无需
 服务端进程，也无需 C/C++ 运行时。
 
-**[`0.1.3` 已发布](https://crates.io/crates/a3s-vec)** · Enterprise GA 发布线
-（tag + 托管 CI + 匹配的 crate 校验和）· [RELEASE.md](RELEASE.md)
+**[`0.1.3` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
+（tag `0.1.3` · SHA-256 `c5c692f4…` · [RELEASE.md](RELEASE.md)）
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [测试](TESTING.md) · [基准](BENCHMARKS.md) ·
