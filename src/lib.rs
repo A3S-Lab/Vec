@@ -44,6 +44,7 @@ mod iterator;
 mod multi_query;
 mod query;
 mod schema;
+mod score_f64;
 mod stats;
 mod storage;
 mod text;

@@ -361,3 +361,40 @@ fn exact_unquantized_score_by_ordinal_matches_document_promotion() {
         assert_eq!(from_index.to_bits(), from_document.to_bits());
     }
 }
+
+#[test]
+fn flat_index_returns_exact_topk_candidates() {
+    let schema = indexed_schema_with(
+        &IndexParams::flat(MetricType::Cosine).expect("Flat params must be valid"),
+    );
+    let docs: DocumentMap = [
+        ("a", [1.0_f32, 0.0]),
+        ("b", [0.0_f32, 1.0]),
+        ("c", [0.8_f32, 0.2]),
+        ("d", [-1.0_f32, 0.0]),
+    ]
+    .into_iter()
+    .map(|(id, vector)| (id.to_string(), vector_doc(id, &vector)))
+    .collect();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("Flat indexes must build");
+    assert!(
+        indexes.stats(&schema).iter().any(|stat| {
+            stat.name == "embedding"
+                && stat.index_type == crate::types::IndexType::Flat
+                && stat.state == "ready"
+        }),
+        "Flat field must appear as a ready index"
+    );
+    let query = SearchQuery::new("embedding", &[1.0, 0.0], 2).expect("query must be valid");
+    let plan = indexes
+        .plan_candidates(&docs, 1, &query, None)
+        .expect("Flat plan must succeed");
+    assert!(
+        !plan.used_ann,
+        "Flat must record as exact, not approximate ANN"
+    );
+    let selection = plan.selection.expect("Flat must return candidate ordinals");
+    assert_eq!(selection.count(), 2);
+    let ids: Vec<_> = selection.ids().collect();
+    assert_eq!(ids, ["a", "c"]);
+}

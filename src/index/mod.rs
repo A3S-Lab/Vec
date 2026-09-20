@@ -4,6 +4,7 @@ mod build;
 mod cache;
 mod diskann;
 mod diskann_index;
+mod flat;
 mod fts;
 mod hnsw;
 mod ivf;
@@ -27,6 +28,7 @@ use crate::stats::IndexStat;
 use crate::types::{IndexType, MetricType};
 use build::{build_vector_index, encode_vector};
 use diskann_index::DiskannIndex;
+use flat::FlatIndex;
 use fts::FtsIndexRegistry;
 use hnsw::HnswIndex;
 use ivf::IvfIndex;
@@ -84,6 +86,10 @@ struct VectorIndexBase {
     /// scorer would run per neighbor, so public ranking does not change.
     #[serde(skip)]
     cosine_norms: OnceLock<Vec<f32>>,
+    /// Authoritative `f64` cosine norms for exact Flat scans. Same promotion
+    /// and left-to-right accumulation as public `f64` scores.
+    #[serde(skip)]
+    exact_cosine_norms: OnceLock<Vec<f64>>,
     /// Contiguous unquantized coordinates for HNSW navigation. `None` when the
     /// base is empty or not a single `f32` dimension. An `Fp32` document score
     /// is the `f64` promotion of these same coordinates.
@@ -109,6 +115,7 @@ struct AnnSearchContext<'a> {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum VectorIndexKind {
+    Flat(FlatIndex),
     Hnsw(HnswIndex),
     HnswRabitq(HnswRabitqIndex),
     Ivf(IvfIndex),
@@ -219,7 +226,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_ann(params.index_type) {
+            if !is_in_memory_vector(params.index_type) {
                 continue;
             }
             indexes.insert(
@@ -318,7 +325,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_ann(params.index_type) {
+            if !is_in_memory_vector(params.index_type) {
                 continue;
             }
 
@@ -461,6 +468,11 @@ impl IndexRegistry {
         };
         let result =
             match &index.base.kind {
+                VectorIndexKind::Flat(_) => index.flat_candidates(&search).map(|ids| AnnOrdinals {
+                    ids,
+                    diskann_sector_reads: 0,
+                    diskann_io_backend: None,
+                }),
                 VectorIndexKind::Hnsw(hnsw) => {
                     index.hnsw_candidates(hnsw, &search).map(|ids| AnnOrdinals {
                         ids,
@@ -593,7 +605,11 @@ impl IndexRegistry {
         let used_scalar = scalar.is_some();
         let Some(mut scalar) = scalar else {
             let ann = self.candidates(docs, source_revision, query, None)?;
-            let used_ann = ann.is_some();
+            let used_ann = ann.as_ref().is_some_and(|_| {
+                self.indexes
+                    .get(&query.field_name)
+                    .is_some_and(|index| is_approximate_ann(index.params.index_type))
+            });
             let diskann_sector_reads = ann.as_ref().map_or(0, |ann| ann.diskann_sector_reads);
             let diskann_io_backend = ann.as_ref().and_then(|ann| ann.diskann_io_backend);
             return Ok(CandidatePlan {
@@ -665,7 +681,10 @@ impl IndexRegistry {
         Ok(CandidatePlan {
             selection: Some(ann.selection),
             fts_scores: None,
-            used_ann: true,
+            used_ann: self
+                .indexes
+                .get(&query.field_name)
+                .is_some_and(|index| is_approximate_ann(index.params.index_type)),
             diskann_sector_reads: ann.diskann_sector_reads,
             diskann_io_backend: ann.diskann_io_backend,
             used_scalar,
@@ -679,7 +698,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_ann(params.index_type) {
+            if !is_in_memory_vector(params.index_type) {
                 continue;
             }
             if let Some(index) = self.indexes.get(&field.name) {
@@ -731,6 +750,7 @@ impl VectorIndex {
             .saturating_add(self.delta_ordinals.serialized_size())
             .saturating_add(self.tombstones.serialized_size());
         let kind = match &self.base.kind {
+            VectorIndexKind::Flat(_) => FlatIndex::estimated_payload_bytes(),
             VectorIndexKind::Hnsw(index) => index.estimated_payload_bytes(),
             VectorIndexKind::HnswRabitq(index) => index.estimated_payload_bytes(),
             VectorIndexKind::Ivf(index) => index.estimated_payload_bytes(),
@@ -887,16 +907,21 @@ fn delta_compaction_limit(base_len: usize) -> usize {
     fractional.clamp(MIN_DELTA_COMPACTION, MAX_DELTA_COMPACTION)
 }
 
-fn is_in_memory_ann(index_type: IndexType) -> bool {
+pub(super) fn is_in_memory_vector(index_type: IndexType) -> bool {
     matches!(
         index_type,
-        IndexType::Hnsw
+        IndexType::Flat
+            | IndexType::Hnsw
             | IndexType::HnswRabitq
             | IndexType::Ivf
             | IndexType::IvfRabitq
             | IndexType::Diskann
             | IndexType::Vamana
     )
+}
+
+fn is_approximate_ann(index_type: IndexType) -> bool {
+    is_in_memory_vector(index_type) && index_type != IndexType::Flat
 }
 
 fn query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<Option<Vec<f32>>> {

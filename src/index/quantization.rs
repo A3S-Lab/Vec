@@ -285,11 +285,7 @@ fn decoded_nibble(value: u8) -> f32 {
 }
 
 pub(super) fn dense_query_norm(query: &[f32]) -> f64 {
-    query
-        .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum::<f64>()
-        .sqrt()
+    crate::score_f64::norm_sq_f32(query).sqrt()
 }
 
 #[cfg(test)]
@@ -315,15 +311,18 @@ pub(super) fn score_dense_cosine(
     if query.len() != candidate.len() {
         return f64::NEG_INFINITY;
     }
-    let dot = query
-        .iter()
-        .zip(candidate)
-        .map(|(left, right)| f64::from(*left) * f64::from(*right))
-        .sum::<f64>();
-    if query_norm == 0.0 || candidate_norm == 0.0 {
-        0.0
+    // Prefer the fused SIMD pass when the caller did not supply a precomputed
+    // candidate norm. When a norm is provided (graph edge caches), keep the
+    // historical divide so cached construction scores stay unchanged.
+    if candidate_norm.is_finite() && candidate_norm > 0.0 {
+        let (dot, _) = crate::score_f64::cosine_parts_f32(query, candidate);
+        if query_norm == 0.0 {
+            0.0
+        } else {
+            dot / (query_norm * candidate_norm)
+        }
     } else {
-        dot / (query_norm * candidate_norm)
+        crate::score_f64::score_f32(query, candidate, MetricType::Cosine, query_norm)
     }
 }
 
@@ -333,30 +332,7 @@ pub(super) fn score_dense_with_query_norm(
     metric: MetricType,
     query_norm: f64,
 ) -> f64 {
-    if query.len() != candidate.len() {
-        return f64::NEG_INFINITY;
-    }
-    match metric {
-        MetricType::L2 => -query
-            .iter()
-            .zip(candidate)
-            .map(|(left, right)| {
-                let difference = f64::from(*left) - f64::from(*right);
-                difference * difference
-            })
-            .sum::<f64>(),
-        MetricType::Cosine => score_dense_cosine(
-            query,
-            candidate,
-            query_norm,
-            dense_candidate_norm(candidate),
-        ),
-        MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
-            .iter()
-            .zip(candidate)
-            .map(|(left, right)| f64::from(*left) * f64::from(*right))
-            .sum::<f64>(),
-    }
+    crate::score_f64::score_f32(query, candidate, metric, query_norm)
 }
 
 #[cfg(test)]

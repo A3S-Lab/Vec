@@ -364,6 +364,13 @@ fn main() {
         .to_owned();
     let (collection, insert) = build_collection(&path, config);
     let queries = query_vectors(config);
+    let flat_ready = {
+        let started = Instant::now();
+        collection
+            .rebuild_index("embedding")
+            .expect("Flat index must compact before measurement");
+        started.elapsed()
+    };
     let exact = run_queries(&collection, &queries, config, Mode::Flat);
     let expected = exact.rankings.clone();
 
@@ -372,7 +379,7 @@ fn main() {
     );
     for mode in Config::modes() {
         match mode {
-            Mode::Flat => print_row(mode, config, insert, Duration::ZERO, &exact, 1.0),
+            Mode::Flat => print_row(mode, config, insert, flat_ready, &exact, 1.0),
             Mode::Hnsw => {
                 let started = Instant::now();
                 collection

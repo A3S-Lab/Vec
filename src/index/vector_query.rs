@@ -11,9 +11,77 @@ use super::{
     VectorIndex,
 };
 use crate::config::IoBackend;
-use crate::index::quantization::{dense_query_norm_fast, QuantizedVector};
+use crate::index::quantization::{
+    dense_query_norm, dense_query_norm_fast, score_dense_with_query_norm, QuantizedVector,
+};
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
+const FLAT_PREFETCH_AHEAD: usize = 8;
+
+#[inline]
+fn prefetch_f32_at(values: &[f32], index: usize) {
+    if index >= values.len() {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[allow(unsafe_code)]
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(
+                values.as_ptr().add(index).cast::<i8>(),
+                std::arch::x86_64::_MM_HINT_T0,
+            );
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        #[allow(unsafe_code)]
+        unsafe {
+            let ptr = values.as_ptr().add(index);
+            core::arch::asm!(
+                "prfm pldl1keep, [{ptr}]",
+                ptr = in(reg) ptr,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = (values, index);
+    }
+}
+
+struct FlatRank {
+    exact_score: f64,
+    ordinal: u64,
+}
+
+impl PartialEq for FlatRank {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for FlatRank {}
+
+impl PartialOrd for FlatRank {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FlatRank {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // BinaryHeap is a max-heap; keep the worst retained score at the root.
+        other
+            .exact_score
+            .total_cmp(&self.exact_score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
 
 fn pack_dense_f32(
     vectors: &super::ordinal_map::OrdinalMap<QuantizedVector>,
@@ -57,6 +125,116 @@ fn pack_dense_f32(
 }
 
 impl VectorIndex {
+    /// Exact Flat top-k over packed unquantized `f32` coordinates.
+    ///
+    /// Returns the retained ordinals so the query engine can re-score with the
+    /// same authoritative `f64` kernel and load only those documents. Always
+    /// returns `Some` for a Flat base: Flat has no approximate fallback.
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) fn flat_candidates(&self, search: &AnnSearchContext<'_>) -> Option<RoaringTreemap> {
+        let packed = self.packed_f32();
+        let mut live = &self.base.vector_ordinals - &self.tombstones;
+        live |= &self.delta_ordinals;
+        if let Some(allowed) = search.allowed {
+            live &= allowed;
+        }
+        if live.is_empty() || search.topk == 0 {
+            return Some(RoaringTreemap::new());
+        }
+        let limit = search.topk.min(bitmap_count_to_usize(live.len()));
+        let query_norm = if search.metric == MetricType::Cosine {
+            dense_query_norm(search.vector)
+        } else {
+            0.0
+        };
+        let cosine_norms = (search.metric == MetricType::Cosine).then(|| self.exact_cosine_norms());
+        let ordinals: Vec<u64> = live.iter().collect();
+        let mut ranked = BinaryHeap::with_capacity(limit);
+        for (index, &ordinal) in ordinals.iter().enumerate() {
+            if let Some((dimension, values)) = packed {
+                if let Some(ahead) = ordinals
+                    .get(index.saturating_add(FLAT_PREFETCH_AHEAD))
+                    .and_then(|value| usize::try_from(*value).ok())
+                {
+                    prefetch_f32_at(values, ahead.saturating_mul(dimension));
+                }
+            }
+            let Some(coordinates) = self.unquantized_f32(ordinal) else {
+                continue;
+            };
+            let exact_score = match (search.metric, cosine_norms) {
+                (MetricType::Cosine, Some(norms)) => {
+                    let candidate_norm = self.exact_cosine_norm_at(ordinal, coordinates, norms);
+                    if query_norm == 0.0 || candidate_norm == 0.0 {
+                        0.0
+                    } else {
+                        crate::score_f64::dot_f32(search.vector, coordinates)
+                            / (query_norm * candidate_norm)
+                    }
+                }
+                _ => score_dense_with_query_norm(
+                    search.vector,
+                    coordinates,
+                    search.metric,
+                    query_norm,
+                ),
+            };
+            if !exact_score.is_finite() {
+                continue;
+            }
+            let candidate = FlatRank {
+                exact_score,
+                ordinal,
+            };
+            if ranked.len() < limit {
+                ranked.push(candidate);
+                continue;
+            }
+            if ranked
+                .peek()
+                .is_some_and(|worst| candidate.cmp(worst) == Ordering::Less)
+            {
+                ranked.pop();
+                ranked.push(candidate);
+            }
+        }
+        Some(
+            ranked
+                .into_iter()
+                .map(|candidate| candidate.ordinal)
+                .collect(),
+        )
+    }
+
+    fn exact_cosine_norms(&self) -> &[f64] {
+        self.base.exact_cosine_norms.get_or_init(|| {
+            let mut norms = vec![f64::NAN; self.base.vectors.slot_count()];
+            for (ordinal, vector) in self.base.vectors.iter() {
+                let QuantizedVector::F32(values) = vector else {
+                    continue;
+                };
+                let Ok(index) = usize::try_from(ordinal) else {
+                    continue;
+                };
+                if let Some(slot) = norms.get_mut(index) {
+                    *slot = crate::score_f64::norm_sq_f32(values).sqrt();
+                }
+            }
+            norms
+        })
+    }
+
+    fn exact_cosine_norm_at(&self, ordinal: u64, coordinates: &[f32], norms: &[f64]) -> f64 {
+        if self.delta.contains_key(&ordinal) {
+            return crate::score_f64::norm_sq_f32(coordinates).sqrt();
+        }
+        usize::try_from(ordinal)
+            .ok()
+            .and_then(|index| norms.get(index).copied())
+            .filter(|value| value.is_finite())
+            .unwrap_or_else(|| crate::score_f64::norm_sq_f32(coordinates).sqrt())
+    }
+
     pub(super) fn hnsw_candidates(
         &self,
         hnsw: &HnswIndex,

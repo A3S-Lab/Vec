@@ -1,6 +1,6 @@
 //! Targeted derived-index generation rebuilds.
 
-use super::{build_vector_index, is_in_memory_ann, IndexRegistry};
+use super::{build_vector_index, is_in_memory_vector, IndexRegistry};
 use crate::doc::DocumentMap;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
@@ -25,7 +25,7 @@ impl IndexRegistry {
                 .index_params
                 .as_ref()
                 .ok_or_else(|| Error::not_found(format!("index '{field_name}' not found")))?;
-            if is_in_memory_ann(params.index_type) {
+            if is_in_memory_vector(params.index_type) {
                 next.indexes.insert(
                     field_name.to_string(),
                     build_vector_index(

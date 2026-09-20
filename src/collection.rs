@@ -22,7 +22,6 @@ use crate::schema::{AddColumnOption, AlterColumnOption, CollectionSchema, FieldS
 use crate::stats::{assess_collection_health, CollectionHealthInput, StatsRegistry, StatsSnapshot};
 pub use crate::stats::{CollectionHealth, CollectionHealthStatus, IndexStat};
 use crate::storage::StorageHandle;
-use crate::types::IndexType;
 use checkpoint::{commit_prepared_schema_change, persist_index_cache};
 use configuration::options_config;
 pub use configuration::CollectionOptions;
@@ -368,34 +367,6 @@ impl Collection {
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
         let mut indexes = state.indexes.stats(&state.schema);
-        indexes.extend(
-            state
-                .schema
-                .vectors
-                .iter()
-                .filter(|field| {
-                    field
-                        .index_params
-                        .as_ref()
-                        .is_some_and(|params| params.index_type == IndexType::Flat)
-                })
-                .map(|field| IndexStat {
-                    name: field.name.clone(),
-                    index_type: IndexType::Flat,
-                    completeness: 1.0,
-                    source_revision: state.revision,
-                    document_count: u64::try_from(
-                        state
-                            .docs
-                            .values()
-                            .filter(|doc| doc.vector(&field.name).is_some())
-                            .count(),
-                    )
-                    .unwrap_or(u64::MAX),
-                    estimated_payload_bytes: None,
-                    state: "ready".into(),
-                }),
-        );
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
         let usage = state.resource_usage;
         Ok((

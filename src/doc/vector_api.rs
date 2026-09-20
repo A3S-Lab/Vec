@@ -117,12 +117,8 @@ impl VectorValue {
                 values.iter().map(|value| f64::from(fp16_to_f32(*value))),
                 metric,
             )),
-            Self::Fp32(values) => Some(score_dense_iter(
-                query,
-                query_norm,
-                values.len(),
-                values.iter().map(|value| f64::from(*value)),
-                metric,
+            Self::Fp32(values) => Some(crate::score_f64::score_f64_f32(
+                query, values, metric, query_norm,
             )),
             Self::Fp64(values) => Some(score_dense_iter(
                 query,

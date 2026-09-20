@@ -182,7 +182,8 @@ fn validate_indexes(
                 .filter(|params| {
                     matches!(
                         params.index_type,
-                        IndexType::Hnsw
+                        IndexType::Flat
+                            | IndexType::Hnsw
                             | IndexType::HnswRabitq
                             | IndexType::Ivf
                             | IndexType::IvfRabitq
@@ -267,6 +268,7 @@ fn validate_vector_index(
 
 fn validate_vector_kind(index: &VectorIndex, dimension: usize) -> bool {
     match &index.base.kind {
+        VectorIndexKind::Flat(_) => index.params.index_type == IndexType::Flat,
         VectorIndexKind::Hnsw(hnsw) => {
             if index.params.index_type != IndexType::Hnsw {
                 return false;
