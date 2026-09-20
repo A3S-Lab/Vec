@@ -10,7 +10,7 @@
 
 `a3s-vec` 是面向 Coding Agent 工作区的原生 Rust、进程本地检索引擎。它在同一持久集合中结合稠密与稀疏向量、标量过滤与 BM25——无需服务器进程，也无需 C/C++ 运行时。
 
-项目仍是活跃原型。HNSW、可选 SOAR 分配的 IVF、HNSW/IVF RaBitQ、度量感知 Vamana、带类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN、标量倒排索引与 FTS 均已可用；每当索引缺失、陈旧或选择性不足时，精确执行仍是正确性预言机。
+项目是 `0.1.1` 发布候选。HNSW、可选 SOAR 分配的 IVF、HNSW/IVF RaBitQ、度量感知 Vamana、带类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN、标量倒排索引与 FTS 均已可用；每当索引缺失、陈旧或选择性不足时，精确执行仍是正确性预言机。正式将 `0.1.1` 发布到 crates.io 仍需 [RELEASE.md](RELEASE.md) 中的 macOS 12 Intel 运行时闸门。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [可复现基准](BENCHMARKS.md) ·
@@ -42,6 +42,33 @@
 当前修订还记录了借用精确打分内核的实测改进。根兼容性锁可能保留较旧的 Code 子模块 pin，直到其 Cloud 晋升降级工作流作为一份确切组件图一并更新；Code 候选本身已对照此修订验证。
 
 所有向量、标量与 FTS 索引共享一个带修订的 `u64` 序号域。这让规划器可组合位图与候选而无需构建查询规模的主键映射，再仅解析确切 top-k 文档。
+
+## 同机 HNSW 与 zvec 对比
+
+第一性原理对比：同一主机、同一夹具、单 worker、相同 HNSW 控制参数。不改变公开分数契约：a3s-vec 保留 exact re-ranking 与 `f64` 公开分数；zvec harness 关闭可选 refiner（`is_using_refiner=False`）。a3s-vec 为可移植 Rust 默认 target；zvec 0.7.0 为发行原生 wheel。每个单元格为三次独立进程的中位数。完整 CSV 方法见 [BENCHMARKS.md](BENCHMARKS.md)。
+
+主机：Windows x86_64，Intel Xeon w5-2445，128 GiB RAM（2026-09-20）。
+控制：cosine，`m=16`，`ef_construction=96`，`ef=64`，32 查询 × 3 轮，`RAYON_NUM_THREADS=1` / zvec `concurrency=1`。
+
+### 100,000 文档 × 128 维
+
+| 引擎 | 索引构建 (ms) | 查询 p50 (µs) | 查询 p95 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 候选** | **49,317** | 355.0 | **415.7** | **0.6000** |
+| zvec 0.7.0 | 70,920 | **348.5** | 461.3 | 0.5875 |
+
+该夹具上 a3s-vec 构建约快 **1.44×**，Recall@10 更高且稳定。查询 p50 与 zvec 落在噪声内（约 2%）。a3s-vec 仍在候选生成后做 exact re-ranking。
+
+### 2,000 文档 × 32 维
+
+| 引擎 | 索引构建 (ms) | 查询 p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 候选** | 145.9 | **62.8** | **1.0000** |
+| zvec 0.7.0 | **123.7** | 206.8 | 1.0000 |
+
+较小规模下 a3s-vec 查询 p50 约低 **3.3×**，recall 相同。构建时间接近。
+
+以上是单主机、单参数点的方向性证据，不是 SLO，也不是 Flat 扫描排名。公开 `f64` Flat 路径按契约仍慢于 zvec 原生路径；不以关闭 re-ranking 或降低 `ef` 制造胜负。
 
 ## 实测证明
 

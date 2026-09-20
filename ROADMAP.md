@@ -9,6 +9,71 @@ The roadmap is ordered by dependency and by the cost of being wrong. Each
 phase has an explicit exit gate; a later approximate or optimized feature does
 not replace an earlier correctness gate.
 
+## Forward plan (2026-09-19)
+
+The mission is a process-local retrieval engine for Coding Agent workspaces:
+one durable collection of documents, exact vector and BM25 answers, and
+derived indexes that can always be rebuilt. The six invariants in
+[ARCHITECTURE.md](ARCHITECTURE.md) are the filter. A proposal that does not
+make one of those invariants more true is not scheduled.
+
+Phases 0 through 7 are complete on `main` (`ddcb5d6`, crate `0.1.1`). After
+the qualified kernel revision `13585cc`, later commits only bump the version
+and documentation; `src/index/hnsw/search.rs` changed a comment, not search
+behavior. There are no open issues and no open pull requests. Do not reopen a
+completed index family to add a variant.
+
+### VEC-R1 — Qualify this candidate, then stop
+
+The only open gate this crate still owes is an actual macOS 12 Intel x86-64
+runtime result for one exact revision, followed by the tagged `0.1.1` artifact
+of that same revision. The self-hosted workflow already rejects every other
+host. A missing runner is not evidence, and a software substitute is not the
+gate.
+
+Exit: the external runner's checksummed report names the tagged revision, and
+the published crate checksum matches that revision. Until then, `0.1.1` stays
+a release candidate.
+
+### VEC-R2 — Change the engine only when an invariant fails
+
+After VEC-R1, the next engine change is a failing test against one of the six
+invariants on a workload this crate already claims. Empty queues are not a
+reason to invent the next index.
+
+The following are refused until that test exists:
+
+- Native async file reads and direct file-backed mmap. Positioned reads, the
+  anonymous mmap snapshot, and Tokio `spawn_blocking` already satisfy invariant
+  6. They are accelerators, not missing correctness.
+- Binary ANN. Exact Binary32/Binary64 search is done. An approximate binary
+  index needs its own metric contract first.
+- Positional phrase postings. Phrase proximity already matches the scan oracle
+  by retokenizing candidates. A local latency row is not a published SLO.
+- Alibaba C++ storage compatibility, language bindings, and network embedding
+  providers. Those are adapters or an explicit import/export task.
+- Waiting for upstream zvec examples of FTS, hybrid, multi-query, group-by,
+  iterators, or schema evolution. The pinned SDK does not publish them.
+  Project-owned executable gates already cover the behavior. Provenance is not
+  a development phase.
+
+Code's Memory-authoritative shadow, `vgrep`, and removal of the old retrieval
+path stay in the
+[A3S local retrieval platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-roadmap.md).
+This crate does not grow CLI or serving policy to unblock that work.
+
+### Enterprise GA
+
+Enterprise GA is the formal `0.1.1` tag and registry artifact defined in
+[RELEASE.md](RELEASE.md). It is not a second product tier, an operations
+suite, or another index family. It is reached only when the VEC-R1 report
+names that tagged revision and the published checksum matches it.
+
+Hosted CI on `main` is already green, including run `34175436220` for
+`ddcb5d6`. The macOS 12 workflow `33811715564` was cancelled after 24 hours.
+`A3S-Lab/Vec` currently has zero self-hosted runners, so this workspace cannot
+close the gate or honestly publish the tag.
+
 ## Current implementation status
 
 **2026-09-03:** Phase 1's query/write contract hardening, Phase 3's core
@@ -720,8 +785,9 @@ execution are implemented.
   requires at least 0.50 recall@10 while capping exact candidate work at 96.
   The public feature benchmark records p50/p95/p99 latency and throughput for
   all four metrics in both graph families.
-- Remaining: native async file reads or a sound direct file-backed mmap
-  backend, plus the Linux/macOS Intel runtime portability gate.
+- Not scheduled: native async file reads and direct file-backed mmap stay
+  refused by the forward plan until an invariant test fails. The only open
+  release gate is VEC-R1.
 
 ## Phase 7 — Advanced collection API
 
@@ -767,10 +833,10 @@ execution are implemented.
   values) is rejected before WAL publication. The execution-contract suite
   covers parallel backfill, successful parallel alteration, and atomic
   rejection.
-- Remaining exit-gate provenance: the pinned upstream Rust SDK does not yet
-  publish standalone FTS/hybrid, multi-query, group-by, iterator, or
-  schema-evolution examples, so those project-owned gates cannot honestly claim
-  namespace-only upstream provenance yet.
+- Not a development phase: the pinned upstream Rust SDK does not publish
+  standalone FTS/hybrid, multi-query, group-by, iterator, or schema-evolution
+  examples. Project-owned executable gates already cover that behavior.
+  Waiting for those examples does not block Enterprise GA.
 
 **Exit gate**
 
@@ -885,10 +951,11 @@ execution are implemented.
   hosted CSV validators offline, and emits checksummed machine-readable
   evidence. No qualifying runner is currently registered, so this automation
   does not close the hardware gate by itself.
-- Remaining release work: an actual macOS 12 Intel runtime result from an
-  external runner and publication of the formal tagged artifact against that
-  same revision. Logical collection accounting is not advertised as a process-RSS
-  or hard CPU-time limit. The adapter contract and evidence are maintained in
+- Open, and the whole of Enterprise GA: an actual macOS 12 Intel runtime
+  result from an external runner, then the formal tag and registry artifact
+  for that same revision. As of 2026-09-19 the repository has zero self-hosted
+  runners. Logical collection accounting is not a process-RSS or hard CPU-time
+  limit. The adapter contract stays in
   [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
 
 **Release gate**
@@ -910,13 +977,8 @@ execution are implemented.
 
 ## Immediate implementation order
 
-1. Land the contract/types and reference flat engine.
-2. Land WAL/snapshot recovery before ANN optimization.
-3. Add HNSW/IVF and FTS/scalar indexes behind the same planner contracts.
-4. Extend the completed DiskANN/PQ/RaBitQ path beyond scheduler-safe Tokio and
-   immutable mmap-snapshot query offload with native async reads or direct
-   file-backed mmap only after equivalent
-   exact-reference, recall, and corruption tests are green.
-5. Finish API compatibility, Intel validation, and the versioned release
-   artifact as release work; keep the completed Code/Memory adapter outside the
-   storage core and governed by its migration contract.
+1. Phases 0–7 are done. Do not reland them.
+2. VEC-R1: obtain the macOS 12 Intel runtime report, then tag `0.1.1` at that
+   revision.
+3. VEC-R2: accept no further engine change without a failing invariant test.
+   Native async reads and direct file-backed mmap stay refused.

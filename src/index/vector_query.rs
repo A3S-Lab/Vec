@@ -11,7 +11,50 @@ use super::{
     VectorIndex,
 };
 use crate::config::IoBackend;
+use crate::index::quantization::{dense_query_norm_fast, QuantizedVector};
+use crate::types::MetricType;
 use roaring::RoaringTreemap;
+
+fn pack_dense_f32(
+    vectors: &super::ordinal_map::OrdinalMap<QuantizedVector>,
+) -> Option<super::DenseF32Base> {
+    if vectors.is_empty() {
+        return None;
+    }
+    let mut dimension = None;
+    for vector in vectors.values() {
+        let QuantizedVector::F32(values) = vector else {
+            return None;
+        };
+        if values.is_empty() {
+            return None;
+        }
+        match dimension {
+            None => dimension = Some(values.len()),
+            Some(expected) if expected != values.len() => return None,
+            Some(_) => {}
+        }
+    }
+    let dimension = dimension?;
+    let len = vectors.slot_count().checked_mul(dimension)?;
+    let mut packed = vec![0.0_f32; len];
+    for (ordinal, vector) in vectors.iter() {
+        let QuantizedVector::F32(values) = vector else {
+            return None;
+        };
+        let index = usize::try_from(ordinal).ok()?;
+        let start = index.checked_mul(dimension)?;
+        let destination = packed.get_mut(start..start.saturating_add(dimension))?;
+        if destination.len() != values.len() {
+            return None;
+        }
+        destination.copy_from_slice(values);
+    }
+    Some(super::DenseF32Base {
+        dimension,
+        values: packed,
+    })
+}
 
 impl VectorIndex {
     pub(super) fn hnsw_candidates(
@@ -21,6 +64,9 @@ impl VectorIndex {
     ) -> Option<RoaringTreemap> {
         let requested_ef = optional_positive_query_parameter(search.query, "ef");
         let limit = hnsw.candidate_limit(requested_ef, search.topk, search.eligible_count);
+        let candidate_norms =
+            (search.metric == MetricType::Cosine).then(|| self.cosine_candidate_norms());
+        let packed = self.packed_f32();
         let base = if let Some(allowed) = search.allowed {
             let base_eligible_count = self.base_eligible_vector_count(allowed);
             let traversal_limit =
@@ -40,6 +86,8 @@ impl VectorIndex {
                     excluded: &self.tombstones,
                     eligible_count: base_eligible_count,
                 },
+                candidate_norms,
+                packed,
             )
         } else {
             let base_ef = limit
@@ -52,6 +100,8 @@ impl VectorIndex {
                 Some(base_ef),
                 search.topk,
                 search.metric,
+                candidate_norms,
+                packed,
             )
         };
         let merged = self.merge_candidates(
@@ -63,6 +113,32 @@ impl VectorIndex {
             search.ordinals,
         );
         candidate_set_is_sufficient(&merged, search).then_some(merged)
+    }
+
+    fn cosine_candidate_norms(&self) -> &[f32] {
+        self.base.cosine_norms.get_or_init(|| {
+            let mut norms = vec![f32::NAN; self.base.vectors.slot_count()];
+            for (ordinal, vector) in self.base.vectors.iter() {
+                let QuantizedVector::F32(values) = vector else {
+                    continue;
+                };
+                let Ok(index) = usize::try_from(ordinal) else {
+                    continue;
+                };
+                if let Some(slot) = norms.get_mut(index) {
+                    *slot = dense_query_norm_fast(values);
+                }
+            }
+            norms
+        })
+    }
+
+    fn packed_f32(&self) -> Option<(usize, &[f32])> {
+        self.base
+            .dense_f32
+            .get_or_init(|| pack_dense_f32(&self.base.vectors))
+            .as_ref()
+            .map(|packed| (packed.dimension, packed.values.as_slice()))
     }
 
     pub(super) fn hnsw_rabitq_candidates(
@@ -410,5 +486,26 @@ impl VectorIndex {
             0,
             None,
         )
+    }
+
+    /// Unquantized coordinates for one ordinal.
+    ///
+    /// Delta vectors shadow the base. Quantized or removed ordinals return
+    /// `None` so the caller keeps the document score.
+    pub(super) fn unquantized_f32(&self, ordinal: u64) -> Option<&[f32]> {
+        if let Some(vector) = self.delta.get(&ordinal) {
+            return match vector {
+                QuantizedVector::F32(values) => Some(values.as_slice()),
+                _ => None,
+            };
+        }
+        if self.tombstones.contains(ordinal) {
+            return None;
+        }
+        let (dimension, values) = self.packed_f32()?;
+        let index = usize::try_from(ordinal).ok()?;
+        let start = index.checked_mul(dimension)?;
+        let end = start.checked_add(dimension)?;
+        values.get(start..end)
     }
 }

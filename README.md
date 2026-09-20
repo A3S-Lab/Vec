@@ -13,12 +13,13 @@
 workspaces. It combines dense and sparse vectors, scalar filtering, and BM25
 inside one durable collection—without a server process or a C/C++ runtime.
 
-The project is an active prototype. HNSW, IVF with optional SOAR assignment,
+The project is a `0.1.1` release candidate. HNSW, IVF with optional SOAR assignment,
 HNSW/IVF RaBitQ, metric-aware Vamana,
 product-quantized DiskANN with typed positioned or immutable mmap-snapshot traversal,
 scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
-stale, or not selective enough.
+stale, or not selective enough. Formal crates.io publication of `0.1.1` still
+requires the macOS 12 Intel runtime gate in [RELEASE.md](RELEASE.md).
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Reproducible benchmarks](BENCHMARKS.md) ·
@@ -61,6 +62,46 @@ the Code candidate itself has been validated against this revision.
 All vector, scalar, and FTS indexes share one revisioned `u64` ordinal domain.
 That lets the planner compose bitmaps and candidates without building
 query-sized primary-key maps, then resolve only the exact top-k documents.
+
+## Same-host HNSW comparison with zvec
+
+First-principles comparison uses one host, one fixture, one worker, and the
+same HNSW controls. It does not change the public score contract: a3s-vec keeps
+exact re-ranking and `f64` public scores; the zvec harness disables its
+optional refiner (`is_using_refiner=False`). a3s-vec is the portable Rust
+default target; zvec 0.7.0 is the shipped native wheel. Each cell is the
+median of three independent processes. Full CSV methodology is in
+[BENCHMARKS.md](BENCHMARKS.md).
+
+Host: Windows x86_64, Intel Xeon w5-2445, 128 GiB RAM (2026-09-20).
+Controls: cosine, `m=16`, `ef_construction=96`, `ef=64`, 32 queries × 3 rounds,
+`RAYON_NUM_THREADS=1` / zvec `concurrency=1`.
+
+### 100,000 documents × 128 dimensions
+
+| Engine | Index build (ms) | Query p50 (µs) | Query p95 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 candidate** | **49,317** | 355.0 | **415.7** | **0.6000** |
+| zvec 0.7.0 | 70,920 | **348.5** | 461.3 | 0.5875 |
+
+On this fixture a3s-vec builds about **1.44×** faster and holds a higher,
+stable Recall@10. Query p50 is within noise of zvec (~2%). a3s-vec still pays
+exact re-ranking after candidate generation.
+
+### 2,000 documents × 32 dimensions
+
+| Engine | Index build (ms) | Query p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 candidate** | 145.9 | **62.8** | **1.0000** |
+| zvec 0.7.0 | **123.7** | 206.8 | 1.0000 |
+
+At this smaller scale a3s-vec query p50 is about **3.3×** lower with identical
+recall. Build times remain close.
+
+These rows are directional evidence for one host and parameter point, not an
+SLO and not a Flat-scan ranking. Flat exact `f64` remains slower than zvec's
+native path by design of the public score contract; do not disable re-ranking
+or lower `ef` to manufacture a win.
 
 ## Measured proof
 

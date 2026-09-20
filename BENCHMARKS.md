@@ -92,13 +92,38 @@ SLOs.
 | a3s-vec HNSW | 2,767.024 | 185,429.317 | 188,288.828 | 1,725.400 | 2,499.600 | 2,666.600 | 550.80 | 0.6000 |
 | zvec 0.7.0 HNSW | 2,720.001 | 82,119.333 | 86,154.840 | 340.300 | 464.400 | 571.100 | 2,722.18 | 0.5719 |
 
+### HNSW candidate refresh (2026-09-20, pre-tag)
+
+The uncommitted-then-landed 0.1.1 candidate keeps exact re-ranking, `ef=64`,
+and `f64` public scores. Navigation uses the packed `f32` slab, cosine-norm
+cache, heap-skip, visited TLS, and construction-time edge-score reuse that
+preserves the rescored neighbor lists. Values below are three-process medians
+on the same Xeon w5-2445 host and controls as the 2026-09-03 table. zvec
+Recall@10 ranged 0.5625–0.6219; a3s-vec was 0.6000 in every process.
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec 0.1.1 candidate HNSW | 2,913.047 | 49,316.543 | 52,364.205 | 355.000 | 415.700 | 486.900 | 2,736.66 | 0.6000 |
+| zvec 0.7.0 HNSW (same day) | 2,490.961 | 70,919.508 | 73,410.469 | 348.500 | 461.300 | 718.100 | 2,759.95 | 0.5875 |
+
+Relative to same-day zvec: index build is about 1.44× shorter, Recall@10 is
+higher, and query p50 is within about 2% (noise). Relative to the 2026-09-03
+a3s-vec HNSW row above, query p50 falls from 1,725.4 µs to 355.0 µs (−79.4%)
+and index build from 185,429 ms to 49,317 ms (−73.4%) without lowering `ef`
+or dropping exact re-ranking.
+
+The matching 2,000 × 32 three-process medians on the same day:
+
+| Engine / mode | Index build (ms) | p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| a3s-vec 0.1.1 candidate HNSW | 145.869 | 62.800 | 1.0000 |
+| zvec 0.7.0 HNSW | 123.652 | 206.800 | 1.0000 |
+
 At this corpus size and configuration, zvec's median flat query p50 is about
-5.6x lower and its HNSW query p50 about 5.1x lower. Its median HNSW total
-build is about 2.2x shorter, while the load times are within 2% of one
-another. Relative to the prior a3s-vec measurement, the borrowed exact-score
-kernel reduced flat p50 by 20.4%, HNSW p50 by 21.3%, HNSW total build by
-21.8%, and raised HNSW QPS by 23.9%, with identical recall. The
-three zvec HNSW processes produced Recall@10 values from 0.5625 to 0.5781
+5.6x lower and its historical 2026-09-03 HNSW query p50 about 5.1x lower than
+the then-current a3s-vec row. The 2026-09-20 candidate closes the HNSW query
+gap to noise while remaining faster to build. The
+three zvec HNSW processes on 2026-09-03 produced Recall@10 values from 0.5625 to 0.5781
 (median 0.5719); a3s-vec produced 0.6000 in all three, or 2.81 percentage
 points higher than the zvec median at this parameter point. Both recall
 values are too low to serve as a production target without increasing

@@ -10,7 +10,7 @@ use crate::text::{
     bm25_term_score, contains_ordered_phrase, parse_fts_query, text_value, FtsEvalContext,
     Tokenizer,
 };
-use crate::types::MetricType;
+use crate::types::{DataType, MetricType};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
@@ -227,7 +227,18 @@ pub(super) fn execute_query_with_candidates(
             topk,
         )?
     } else {
-        execute_vector(docs, query, metric, candidate_ids, filter, topk)?
+        execute_vector(
+            docs,
+            indexes,
+            query,
+            metric,
+            candidate_ids,
+            filter,
+            topk,
+            schema.vectors.iter().any(|field| {
+                field.name == query.field_name && field.data_type == DataType::VectorFp32
+            }),
+        )?
     };
     sort_scored_docs(&mut scored);
     scored.truncate(topk);
@@ -255,16 +266,41 @@ pub(super) fn execute_query_with_candidates(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_vector(
     docs: &DocumentMap,
+    indexes: &IndexRegistry,
     query: &SearchQuery,
     metric: MetricType,
     candidate_ids: Option<&CandidateSelection>,
     filter: Option<&FilterExpr>,
     topk: usize,
+    field_is_fp32: bool,
 ) -> Result<Vec<ScoredDoc>> {
     let query_vector = resolve_query_vector(docs, query)?;
     let radius = query.params.get("radius").and_then(Value::as_f64);
+    if let (Some(candidate_ids), Some(query_f32), true, None) = (
+        candidate_ids,
+        query.vector.as_deref(),
+        field_is_fp32,
+        filter,
+    ) {
+        if let ResolvedQueryVector::Dense { norm, .. } = &query_vector {
+            if let Some(scored) = rerank_unquantized_candidates(
+                docs,
+                indexes,
+                candidate_ids,
+                &query.field_name,
+                query_f32,
+                *norm,
+                metric,
+                radius,
+                topk,
+            )? {
+                return Ok(scored);
+            }
+        }
+    }
     let mut result = TopKCollector::new(topk);
     if let Some(candidate_ids) = candidate_ids {
         for id in candidate_ids.ids() {
@@ -294,6 +330,98 @@ fn execute_vector(
         }
     }
     result.into_scored_docs()
+}
+
+/// Ranks unquantized `f32` candidates with the document `f64` promotion, then
+/// loads only the retained documents. Returns `None` when any candidate is
+/// not an unquantized `f32` vector, so the caller uses the document path.
+#[allow(clippy::too_many_arguments)]
+fn rerank_unquantized_candidates(
+    docs: &DocumentMap,
+    indexes: &IndexRegistry,
+    candidate_ids: &CandidateSelection,
+    field: &str,
+    query: &[f32],
+    query_norm: f64,
+    metric: MetricType,
+    radius: Option<f64>,
+    topk: usize,
+) -> Result<Option<Vec<ScoredDoc>>> {
+    if topk == 0 {
+        return Ok(Some(Vec::new()));
+    }
+    let mut ranked = BinaryHeap::new();
+    for id in candidate_ids.ids() {
+        let Some(exact_score) =
+            indexes.exact_unquantized_f32_score(field, id, query, query_norm, metric)
+        else {
+            return Ok(None);
+        };
+        if radius_excludes(exact_score, radius, metric) {
+            continue;
+        }
+        retain_ranked(&mut ranked, RankedId { exact_score, id }, topk);
+    }
+    let mut scored = Vec::with_capacity(ranked.len());
+    for candidate in ranked {
+        let Some(doc) = docs.get(candidate.id) else {
+            return Ok(None);
+        };
+        scored.push(ScoredDoc::new(candidate.exact_score, doc.as_ref().clone())?);
+    }
+    Ok(Some(scored))
+}
+
+fn radius_excludes(score: f64, radius: Option<f64>, metric: MetricType) -> bool {
+    radius.is_some_and(|radius| {
+        if metric == MetricType::L2 {
+            score < -radius * radius
+        } else {
+            score < radius
+        }
+    })
+}
+
+struct RankedId<'a> {
+    exact_score: f64,
+    id: &'a str,
+}
+
+impl PartialEq for RankedId<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedId<'_> {}
+
+impl PartialOrd for RankedId<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedId<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .exact_score
+            .total_cmp(&self.exact_score)
+            .then_with(|| self.id.cmp(other.id))
+    }
+}
+
+fn retain_ranked<'a>(ranked: &mut BinaryHeap<RankedId<'a>>, candidate: RankedId<'a>, limit: usize) {
+    if ranked.len() < limit {
+        ranked.push(candidate);
+        return;
+    }
+    if ranked
+        .peek()
+        .is_some_and(|worst| candidate.cmp(worst) == Ordering::Less)
+    {
+        ranked.pop();
+        ranked.push(candidate);
+    }
 }
 
 fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<ResolvedQueryVector> {

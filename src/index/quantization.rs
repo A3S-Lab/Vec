@@ -171,6 +171,7 @@ pub(super) fn score_dense_fast(
     candidate: &[f32],
     metric: MetricType,
     query_norm: f32,
+    candidate_norm: Option<f32>,
 ) -> f32 {
     if query.len() != candidate.len() {
         return f32::NEG_INFINITY;
@@ -178,7 +179,9 @@ pub(super) fn score_dense_fast(
     match metric {
         MetricType::L2 => -zvec_core::engine::simd::l2sq(query, candidate),
         MetricType::Cosine => {
-            let candidate_norm = zvec_core::engine::simd::dot(candidate, candidate).sqrt();
+            let candidate_norm = candidate_norm
+                .filter(|value| value.is_finite())
+                .unwrap_or_else(|| zvec_core::engine::simd::dot(candidate, candidate).sqrt());
             let dot = zvec_core::engine::simd::dot(query, candidate);
             if !query_norm.is_finite()
                 || !candidate_norm.is_finite()
@@ -208,10 +211,11 @@ pub(super) fn score_ann(
     metric: MetricType,
     query_norm_f32: f32,
     query_norm_f64: f64,
+    candidate_norm: Option<f32>,
 ) -> f64 {
     match candidate {
         QuantizedVector::F32(values) => {
-            let fast = score_dense_fast(query, values, metric, query_norm_f32);
+            let fast = score_dense_fast(query, values, metric, query_norm_f32, candidate_norm);
             if fast.is_finite() {
                 f64::from(fast)
             } else {
@@ -298,6 +302,31 @@ pub(super) fn score_dense(query: &[f32], candidate: &[f32], metric: MetricType) 
     score_dense_with_query_norm(query, candidate, metric, query_norm)
 }
 
+pub(super) fn dense_candidate_norm(candidate: &[f32]) -> f64 {
+    dense_query_norm(candidate)
+}
+
+pub(super) fn score_dense_cosine(
+    query: &[f32],
+    candidate: &[f32],
+    query_norm: f64,
+    candidate_norm: f64,
+) -> f64 {
+    if query.len() != candidate.len() {
+        return f64::NEG_INFINITY;
+    }
+    let dot = query
+        .iter()
+        .zip(candidate)
+        .map(|(left, right)| f64::from(*left) * f64::from(*right))
+        .sum::<f64>();
+    if query_norm == 0.0 || candidate_norm == 0.0 {
+        0.0
+    } else {
+        dot / (query_norm * candidate_norm)
+    }
+}
+
 pub(super) fn score_dense_with_query_norm(
     query: &[f32],
     candidate: &[f32],
@@ -316,23 +345,12 @@ pub(super) fn score_dense_with_query_norm(
                 difference * difference
             })
             .sum::<f64>(),
-        MetricType::Cosine => {
-            let dot = query
-                .iter()
-                .zip(candidate)
-                .map(|(left, right)| f64::from(*left) * f64::from(*right))
-                .sum::<f64>();
-            let candidate_norm = candidate
-                .iter()
-                .map(|value| f64::from(*value) * f64::from(*value))
-                .sum::<f64>()
-                .sqrt();
-            if query_norm == 0.0 || candidate_norm == 0.0 {
-                0.0
-            } else {
-                dot / (query_norm * candidate_norm)
-            }
-        }
+        MetricType::Cosine => score_dense_cosine(
+            query,
+            candidate,
+            query_norm,
+            dense_candidate_norm(candidate),
+        ),
         MetricType::MipsL2 | MetricType::Ip | MetricType::Undefined => query
             .iter()
             .zip(candidate)
@@ -344,9 +362,44 @@ pub(super) fn score_dense_with_query_norm(
 #[cfg(test)]
 mod tests {
     use super::{
-        dense_query_norm, dense_query_norm_fast, score, score_ann, score_dense, QuantizedVector,
+        dense_candidate_norm, dense_query_norm, dense_query_norm_fast, score, score_ann,
+        score_dense, score_dense_cosine, score_dense_with_query_norm, QuantizedVector,
     };
+    use crate::doc::VectorValue;
     use crate::types::{MetricType, QuantizeType};
+
+    #[test]
+    fn unquantized_f32_score_matches_the_document_promotion() {
+        let query = [0.25_f32, -0.5, 0.75, 0.125];
+        let stored = [0.5_f32, 0.25, -0.125, 1.0];
+        let document = VectorValue::Fp32(stored.to_vec());
+        let query_f64: Vec<f64> = query.iter().copied().map(f64::from).collect();
+        let norm = query_f64
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        let from_document = document
+            .dense_score(&query_f64, norm, MetricType::Cosine)
+            .expect("fp32 document must score");
+        let from_index = score_dense_with_query_norm(&query, &stored, MetricType::Cosine, norm);
+        assert_eq!(from_document.to_bits(), from_index.to_bits());
+    }
+
+    #[test]
+    fn cached_cosine_norm_matches_the_live_f64_score() {
+        let query = [1.0_f32, -2.0, 0.5, 0.0];
+        let candidate = [0.25_f32, 4.0, -1.0, 3.5];
+        let query_norm = dense_query_norm(&query);
+        let live = score_dense_with_query_norm(&query, &candidate, MetricType::Cosine, query_norm);
+        let cached = score_dense_cosine(
+            &query,
+            &candidate,
+            query_norm,
+            dense_candidate_norm(&candidate),
+        );
+        assert_eq!(live.to_bits(), cached.to_bits());
+    }
 
     #[test]
     fn quantized_encodings_reduce_the_index_payload() {
@@ -393,7 +446,14 @@ mod tests {
         let query_norm_f64 = dense_query_norm(&query);
         let encoded = QuantizedVector::F32(candidate.to_vec());
         for metric in [MetricType::L2, MetricType::Ip, MetricType::Cosine] {
-            let fast = score_ann(&query, &encoded, metric, query_norm_f32, query_norm_f64);
+            let fast = score_ann(
+                &query,
+                &encoded,
+                metric,
+                query_norm_f32,
+                query_norm_f64,
+                None,
+            );
             let exact = score_dense(&query, &candidate, metric);
             assert!((fast - exact).abs() < 1.0e-5, "metric={metric:?}");
         }
@@ -409,9 +469,37 @@ mod tests {
             MetricType::Cosine,
             dense_query_norm_fast(&query),
             dense_query_norm(&query),
+            None,
         );
         let expected = score(&query, &candidate, MetricType::Cosine);
         assert!(actual.is_finite());
         assert!((actual - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn precomputed_cosine_norm_matches_the_live_simd_norm() {
+        let query = [0.25, -0.5, 0.75, 0.125, -1.0, 0.375, 0.625, -0.875];
+        let candidate = [-0.75, -0.25, 0.5, 1.0, 0.125, 0.25, -0.5, 0.75];
+        let encoded = QuantizedVector::F32(candidate.to_vec());
+        let query_norm_f32 = dense_query_norm_fast(&query);
+        let query_norm_f64 = dense_query_norm(&query);
+        let stored = dense_query_norm_fast(&candidate);
+        let live = score_ann(
+            &query,
+            &encoded,
+            MetricType::Cosine,
+            query_norm_f32,
+            query_norm_f64,
+            None,
+        );
+        let cached = score_ann(
+            &query,
+            &encoded,
+            MetricType::Cosine,
+            query_norm_f32,
+            query_norm_f64,
+            Some(stored),
+        );
+        assert_eq!(live.to_bits(), cached.to_bits());
     }
 }

@@ -2,23 +2,61 @@
 
 use crate::index::ordinal_map::OrdinalMap;
 use crate::index::ordinals::OrdinalTable;
+use std::cell::RefCell;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 
 const DENSE_VISITED_MAX_SLOTS: usize = 1 << 24;
+/// Neighbors scored before a prefetch issued now is consumed. Four full
+/// vectors of lead time overlap a DRAM fill with distance work. Prefetching
+/// the whole neighbor list first was slower: the hints displaced lines that
+/// were about to be scored.
+const PREFETCH_AHEAD: usize = 4;
+
+/// Asks the CPU to pull one `f32` cache line before a later distance read.
+///
+/// This is the only `unsafe` in the crate. It does not load or store through
+/// the pointer, so it cannot change a score, a candidate set, or recall.
+/// The hint has to stay in the neighbor loop; an outlined call misses the
+/// lead time the prefetch is there to provide.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(super) fn prefetch_f32_at(values: &[f32], index: usize) {
+    if index >= values.len() {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: `index` is inside `values`, so the address is within that
+        // allocation. `_mm_prefetch` is a cache hint and does not dereference.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(
+                values.as_ptr().add(index).cast::<i8>(),
+                std::arch::x86_64::_MM_HINT_T0,
+            );
+        }
+    }
+}
 
 /// Tracks graph membership with a compact ordinal bitset for bounded ordinal
 /// spaces. Large or unbounded spaces retain the hash-set fallback so a query
-/// cannot allocate an attacker-sized bitmap.
+/// cannot allocate an attacker-sized bitmap. The dense buffer is reused on
+/// the calling thread: construction searches once per inserted vector, and a
+/// fresh bitmap each time is allocator traffic, not search work.
 enum VisitedSet {
     Dense(Vec<u64>),
     Sparse(HashSet<u64>),
 }
 
+thread_local! {
+    static VISITED_WORDS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
 impl VisitedSet {
     fn new(slot_count: usize, capacity: usize) -> Self {
         if slot_count > 0 && slot_count <= DENSE_VISITED_MAX_SLOTS {
-            Self::Dense(vec![0; slot_count.saturating_add(63) / 64])
+            Self::Dense(take_visited_words(slot_count.saturating_add(63) / 64))
         } else {
             Self::Sparse(HashSet::with_capacity(capacity))
         }
@@ -42,6 +80,34 @@ impl VisitedSet {
             Self::Sparse(values) => values.insert(ordinal),
         }
     }
+}
+
+impl Drop for VisitedSet {
+    fn drop(&mut self) {
+        if let Self::Dense(bits) = self {
+            recycle_visited_words(std::mem::take(bits));
+        }
+    }
+}
+
+fn take_visited_words(words: usize) -> Vec<u64> {
+    VISITED_WORDS.with(|slot| {
+        let mut bits = std::mem::take(&mut *slot.borrow_mut());
+        if bits.len() < words {
+            bits.resize(words, 0);
+        }
+        bits[..words].fill(0);
+        bits
+    })
+}
+
+fn recycle_visited_words(bits: Vec<u64>) {
+    VISITED_WORDS.with(|slot| {
+        let mut recycled = slot.borrow_mut();
+        if bits.capacity() > recycled.capacity() {
+            *recycled = bits;
+        }
+    });
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,20 +162,21 @@ pub(super) fn greedy_search_by(
     ordinals: &OrdinalTable,
     entry: u64,
     score_for: &impl Fn(u64) -> Option<f64>,
+    prefetch_for: &impl Fn(u64),
 ) -> u64 {
     let mut current = entry;
     let mut current_score = score_for(entry).unwrap_or(f64::NEG_INFINITY);
     loop {
         let mut best = scored_node(current, current_score, ordinals);
-        for neighbor in layer.get(current).into_iter().flatten().copied() {
+        each_neighbor(layer, current, prefetch_for, |neighbor| {
             let Some(score) = score_for(neighbor) else {
-                continue;
+                return;
             };
             let candidate = scored_node(neighbor, score, ordinals);
             if candidate > best {
                 best = candidate;
             }
-        }
+        });
         if best.ordinal == current {
             return current;
         }
@@ -124,8 +191,9 @@ pub(super) fn search_layer_by(
     ef: usize,
     ordinals: &OrdinalTable,
     score_for: &impl Fn(u64) -> Option<f64>,
+    prefetch_for: &impl Fn(u64),
 ) -> Vec<u64> {
-    bounded_graph_search(layer, entries, ef, ordinals, score_for)
+    bounded_graph_search(layer, entries, ef, ordinals, score_for, prefetch_for)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -136,6 +204,7 @@ pub(super) fn search_layer_filtered_by(
     traversal_limit: usize,
     ordinals: &OrdinalTable,
     score_for: &impl Fn(u64) -> Option<f64>,
+    prefetch_for: &impl Fn(u64),
     is_allowed: &impl Fn(u64) -> bool,
 ) -> Vec<u64> {
     bounded_filtered_graph_search(
@@ -145,6 +214,7 @@ pub(super) fn search_layer_filtered_by(
         traversal_limit,
         ordinals,
         score_for,
+        prefetch_for,
         is_allowed,
     )
 }
@@ -155,6 +225,7 @@ fn bounded_graph_search(
     ef: usize,
     ordinals: &OrdinalTable,
     score_for: impl Fn(u64) -> Option<f64>,
+    prefetch_for: &impl Fn(u64),
 ) -> Vec<u64> {
     let ef = ef.max(1);
     let expansion_limit = ef.saturating_mul(8).max(entries.len());
@@ -182,21 +253,26 @@ fn bounded_graph_search(
             break;
         }
         expanded += 1;
-        for neighbor in layer.get(current.ordinal).into_iter().flatten().copied() {
+        each_neighbor(layer, current.ordinal, prefetch_for, |neighbor| {
             if !visited.insert(neighbor) {
-                continue;
+                return;
             }
             let Some(candidate_score) = score_for(neighbor) else {
-                continue;
+                return;
             };
-            let candidate = scored_node(neighbor, candidate_score, ordinals);
-            frontier.push(candidate);
-            retain_best(&mut best, candidate, ef);
-        }
+            consider_candidate(
+                &mut frontier,
+                &mut best,
+                scored_node(neighbor, candidate_score, ordinals),
+                ef,
+                true,
+            );
+        });
     }
     ordered_ordinals(best)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bounded_filtered_graph_search(
     layer: &OrdinalMap<Vec<u64>>,
     entries: &[u64],
@@ -204,6 +280,7 @@ fn bounded_filtered_graph_search(
     traversal_limit: usize,
     ordinals: &OrdinalTable,
     score_for: impl Fn(u64) -> Option<f64>,
+    prefetch_for: &impl Fn(u64),
     is_allowed: impl Fn(u64) -> bool,
 ) -> Vec<u64> {
     let result_limit = result_limit.max(1);
@@ -237,21 +314,65 @@ fn bounded_filtered_graph_search(
             break;
         }
         expanded += 1;
-        for neighbor in layer.get(current.ordinal).into_iter().flatten().copied() {
+        each_neighbor(layer, current.ordinal, prefetch_for, |neighbor| {
             if !visited.insert(neighbor) {
-                continue;
+                return;
             }
             let Some(candidate_score) = score_for(neighbor) else {
-                continue;
+                return;
             };
-            let candidate = scored_node(neighbor, candidate_score, ordinals);
-            frontier.push(candidate);
-            if is_allowed(neighbor) {
-                retain_best(&mut best, candidate, result_limit);
-            }
-        }
+            consider_candidate(
+                &mut frontier,
+                &mut best,
+                scored_node(neighbor, candidate_score, ordinals),
+                result_limit,
+                is_allowed(neighbor),
+            );
+        });
     }
     ordered_ordinals(best)
+}
+
+fn each_neighbor(
+    layer: &OrdinalMap<Vec<u64>>,
+    ordinal: u64,
+    prefetch_for: &impl Fn(u64),
+    mut visit: impl FnMut(u64),
+) {
+    let Some(neighbors) = layer.get(ordinal) else {
+        return;
+    };
+    let primed = PREFETCH_AHEAD.min(neighbors.len());
+    for neighbor in neighbors.iter().copied().take(primed) {
+        prefetch_for(neighbor);
+    }
+    for (index, neighbor) in neighbors.iter().copied().enumerate() {
+        if let Some(ahead) = neighbors.get(index.saturating_add(PREFETCH_AHEAD)).copied() {
+            prefetch_for(ahead);
+        }
+        visit(neighbor);
+    }
+}
+
+fn consider_candidate<'a>(
+    frontier: &mut BinaryHeap<ScoredNode<'a>>,
+    best: &mut BinaryHeap<Reverse<ScoredNode<'a>>>,
+    candidate: ScoredNode<'a>,
+    limit: usize,
+    admitted: bool,
+) {
+    // The result threshold only tightens. A neighbor already worse than the
+    // worst retained hit cannot be expanded later, so skipping both heaps
+    // keeps the same candidate set.
+    let dominated =
+        best.len() >= limit && best.peek().is_some_and(|Reverse(worst)| candidate < *worst);
+    if dominated {
+        return;
+    }
+    frontier.push(candidate);
+    if admitted {
+        retain_best(best, candidate, limit);
+    }
 }
 
 fn retain_best<'a>(

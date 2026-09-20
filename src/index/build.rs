@@ -37,6 +37,8 @@ pub(super) fn build_vector_index(
             vector_ordinals,
             kind,
             diskann: None,
+            cosine_norms: std::sync::OnceLock::new(),
+            dense_f32: std::sync::OnceLock::new(),
         }),
         delta: BTreeMap::new(),
         delta_ordinals: RoaringTreemap::new(),

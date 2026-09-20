@@ -33,12 +33,15 @@ use ivf::IvfIndex;
 use ordinal_map::OrdinalMap;
 pub(crate) use ordinals::OrdinalScores;
 use ordinals::{OrdinalSet, OrdinalTable};
-use quantization::{dense_query_norm, score_with_query_norm, QuantizedVector};
+use quantization::{
+    dense_query_norm, score_dense_with_query_norm, score_with_query_norm, QuantizedVector,
+};
 use rabitq_index::{HnswRabitqIndex, IvfRabitqIndex};
 use roaring::RoaringTreemap;
 use scalar::{ScalarCandidates, ScalarIndexRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use vamana::VamanaIndex;
 
 const MIN_DELTA_COMPACTION: usize = 64;
@@ -76,6 +79,22 @@ struct VectorIndexBase {
     kind: VectorIndexKind,
     #[serde(skip)]
     diskann: Option<Arc<diskann::FieldReader>>,
+    /// Cosine norms of unquantized base vectors, filled on the first cosine
+    /// query. The values are `sqrt(dot(v, v))` from the same SIMD kernel the
+    /// scorer would run per neighbor, so public ranking does not change.
+    #[serde(skip)]
+    cosine_norms: OnceLock<Vec<f32>>,
+    /// Contiguous unquantized coordinates for HNSW navigation. `None` when the
+    /// base is empty or not a single `f32` dimension. An `Fp32` document score
+    /// is the `f64` promotion of these same coordinates.
+    #[serde(skip)]
+    dense_f32: OnceLock<Option<DenseF32Base>>,
+}
+
+#[derive(Clone, Debug)]
+struct DenseF32Base {
+    dimension: usize,
+    values: Vec<f32>,
 }
 
 struct AnnSearchContext<'a> {
@@ -157,6 +176,25 @@ impl CandidateSelection {
 impl IndexRegistry {
     pub(crate) fn document_ordinal(&self, id: &str) -> Option<u64> {
         self.ordinals.ordinal(id)
+    }
+
+    /// Exact `f64` score from unquantized `f32` index coordinates.
+    ///
+    /// This is the same promotion `VectorFp32` documents use. Quantized
+    /// coordinates and missing ids return `None`.
+    pub(crate) fn exact_unquantized_f32_score(
+        &self,
+        field: &str,
+        id: &str,
+        query: &[f32],
+        query_norm: f64,
+        metric: MetricType,
+    ) -> Option<f64> {
+        let index = self.indexes.get(field)?;
+        let ordinal = self.ordinals.ordinal(id)?;
+        let coordinates = index.unquantized_f32(ordinal)?;
+        let score = score_dense_with_query_norm(query, coordinates, metric, query_norm);
+        score.is_finite().then_some(score)
     }
 
     /// Builds a complete generation before it is published into collection
@@ -756,8 +794,13 @@ impl VectorIndex {
         }
         ids |= delta;
         match limit {
-            Some(limit) => self.limit_candidates(&ids, query, limit, metric, ordinals),
-            None => ids,
+            // The caller ranks this set again from the authoritative
+            // documents. Rescoring here only chooses which ids survive the
+            // limit, so a set that is already small enough is finished.
+            Some(limit) if bitmap_count_to_usize(ids.len()) > limit => {
+                self.limit_candidates(&ids, query, limit, metric, ordinals)
+            }
+            Some(_) | None => ids,
         }
     }
 

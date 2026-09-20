@@ -52,10 +52,13 @@ impl HnswRabitqIndex {
         let Some(prepared) = self.quantizer.prepare_query(query) else {
             return RoaringTreemap::new();
         };
-        self.graph
-            .candidates_by(ordinals, requested_ef, topk, &|ordinal| {
-                self.quantizer.score(&prepared, ordinal)
-            })
+        self.graph.candidates_by(
+            ordinals,
+            requested_ef,
+            topk,
+            &|ordinal| self.quantizer.score(&prepared, ordinal),
+            &|_| {},
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -76,6 +79,7 @@ impl HnswRabitqIndex {
             traversal_limit,
             filter,
             &|ordinal| self.quantizer.score(&prepared, ordinal),
+            &|_| {},
         )
     }
 
