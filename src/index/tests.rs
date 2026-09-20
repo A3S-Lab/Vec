@@ -218,7 +218,7 @@ fn incremental_generation_shares_base_and_shadows_updates_and_deletes() {
         candidates.selection.ids().collect::<BTreeSet<_>>(),
         BTreeSet::from(["base-a", "delta-c"])
     );
-    let stat = &next.stats(&schema)[0];
+    let stat = &next.stats(&schema, &next_docs, 3)[0];
     assert_eq!(stat.document_count, 2);
     assert_eq!(stat.source_revision, 3);
     assert!(stat.estimated_payload_bytes.is_some_and(|bytes| bytes > 0));
@@ -378,7 +378,7 @@ fn flat_index_returns_exact_topk_candidates() {
     .collect();
     let indexes = IndexRegistry::build(&schema, &docs, 1).expect("Flat indexes must build");
     assert!(
-        indexes.stats(&schema).iter().any(|stat| {
+        indexes.stats(&schema, &docs, 1).iter().any(|stat| {
             stat.name == "embedding"
                 && stat.index_type == crate::types::IndexType::Flat
                 && stat.state == "ready"

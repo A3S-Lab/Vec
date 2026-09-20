@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 use crate::query::SearchQuery;
 use crate::schema::{CollectionSchema, IndexParams};
 use crate::stats::IndexStat;
-use crate::types::{IndexType, MetricType};
+use crate::types::{DataType, IndexType, MetricType};
 use build::{build_vector_index, encode_vector};
 use diskann_index::DiskannIndex;
 use flat::FlatIndex;
@@ -241,7 +241,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_vector(params.index_type) {
+            if !builds_packed_vector_index(params.index_type, field.data_type) {
                 continue;
             }
             indexes.insert(
@@ -340,7 +340,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_incremental_vector(params.index_type) {
+            if !is_incremental_vector(params.index_type, field.data_type) {
                 continue;
             }
 
@@ -707,34 +707,76 @@ impl IndexRegistry {
         })
     }
 
-    pub(crate) fn stats(&self, schema: &CollectionSchema) -> Vec<IndexStat> {
+    pub(crate) fn stats(
+        &self,
+        schema: &CollectionSchema,
+        docs: &DocumentMap,
+        source_revision: u64,
+    ) -> Vec<IndexStat> {
         let mut stats = Vec::new();
         for field in &schema.vectors {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_vector(params.index_type) {
+            if builds_packed_vector_index(params.index_type, field.data_type) {
+                if let Some(index) = self.indexes.get(&field.name) {
+                    stats.push(IndexStat {
+                        name: field.name.clone(),
+                        index_type: index.params.index_type,
+                        completeness: 1.0,
+                        source_revision: index.source_revision,
+                        document_count: u64::try_from(index.live_vector_count())
+                            .unwrap_or(u64::MAX),
+                        estimated_payload_bytes: Some(index.estimated_payload_bytes()),
+                        state: "ready".into(),
+                    });
+                } else if params.index_type == IndexType::Flat {
+                    // Packed Flat is a rebuild-only acceleration cache. When it
+                    // is absent, DocumentMap exact scan remains the ready path.
+                    let document_count = u64::try_from(
+                        docs.values()
+                            .filter(|doc| doc.vector(&field.name).is_some())
+                            .count(),
+                    )
+                    .unwrap_or(u64::MAX);
+                    stats.push(IndexStat {
+                        name: field.name.clone(),
+                        index_type: IndexType::Flat,
+                        completeness: 1.0,
+                        source_revision,
+                        document_count,
+                        estimated_payload_bytes: None,
+                        state: "ready".into(),
+                    });
+                } else {
+                    stats.push(IndexStat {
+                        name: field.name.clone(),
+                        index_type: params.index_type,
+                        completeness: 0.0,
+                        source_revision: 0,
+                        document_count: 0,
+                        estimated_payload_bytes: None,
+                        state: "missing".into(),
+                    });
+                }
                 continue;
             }
-            if let Some(index) = self.indexes.get(&field.name) {
+            // Binary Flat executes on the document snapshot.
+            if params.index_type == IndexType::Flat {
+                let document_count = u64::try_from(
+                    docs.values()
+                        .filter(|doc| doc.vector(&field.name).is_some())
+                        .count(),
+                )
+                .unwrap_or(u64::MAX);
                 stats.push(IndexStat {
                     name: field.name.clone(),
-                    index_type: index.params.index_type,
+                    index_type: IndexType::Flat,
                     completeness: 1.0,
-                    source_revision: index.source_revision,
-                    document_count: u64::try_from(index.live_vector_count()).unwrap_or(u64::MAX),
-                    estimated_payload_bytes: Some(index.estimated_payload_bytes()),
-                    state: "ready".into(),
-                });
-            } else {
-                stats.push(IndexStat {
-                    name: field.name.clone(),
-                    index_type: params.index_type,
-                    completeness: 0.0,
-                    source_revision: 0,
-                    document_count: 0,
+                    source_revision,
+                    document_count,
                     estimated_payload_bytes: None,
-                    state: "missing".into(),
+                    state: "ready".into(),
                 });
             }
         }
@@ -935,13 +977,31 @@ pub(super) fn is_in_memory_vector(index_type: IndexType) -> bool {
     )
 }
 
+/// Packed `f32`/`f64` `VectorIndex` generations. Binary Flat stays on the
+/// document snapshot (Hamming exact) and must not enter `encode_vector`.
+pub(super) fn builds_packed_vector_index(index_type: IndexType, data_type: DataType) -> bool {
+    is_in_memory_vector(index_type) && supports_f32_ann_kernel(data_type)
+}
+
+fn supports_f32_ann_kernel(data_type: DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::VectorFp16
+            | DataType::VectorFp32
+            | DataType::VectorFp64
+            | DataType::VectorInt4
+            | DataType::VectorInt8
+            | DataType::VectorInt16
+    )
+}
+
 /// Indexes that maintain incremental overlays on every mutation.
 ///
 /// Flat is an exact-scan cache rebuilt on full generation boundaries
 /// (`build` / `rebuild_index`). Maintaining Flat deltas on every insert only
 /// slows writes; the packed scan path wants a compacted base anyway.
-fn is_incremental_vector(index_type: IndexType) -> bool {
-    is_in_memory_vector(index_type) && index_type != IndexType::Flat
+fn is_incremental_vector(index_type: IndexType, data_type: DataType) -> bool {
+    builds_packed_vector_index(index_type, data_type) && index_type != IndexType::Flat
 }
 
 fn is_approximate_ann(index_type: IndexType) -> bool {

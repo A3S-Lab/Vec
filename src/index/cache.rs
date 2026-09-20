@@ -180,16 +180,7 @@ fn validate_indexes(
                 .index_params
                 .as_ref()
                 .filter(|params| {
-                    matches!(
-                        params.index_type,
-                        IndexType::Flat
-                            | IndexType::Hnsw
-                            | IndexType::HnswRabitq
-                            | IndexType::Ivf
-                            | IndexType::IvfRabitq
-                            | IndexType::Diskann
-                            | IndexType::Vamana
-                    )
+                    super::builds_packed_vector_index(params.index_type, field.data_type)
                 })
                 .map(|params| (field, params))
         })

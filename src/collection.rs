@@ -366,7 +366,9 @@ impl Collection {
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        let mut indexes = state.indexes.stats(&state.schema);
+        let mut indexes = state
+            .indexes
+            .stats(&state.schema, &state.docs, state.revision);
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
         let usage = state.resource_usage;
         Ok((

@@ -202,7 +202,7 @@ impl ResourceUsage {
         let document_bytes = bincode::serialized_size(docs)
             .map_err(|error| Error::internal(format!("account document bytes: {error}")))?;
         let estimated_index_bytes = indexes
-            .stats(schema)
+            .stats(schema, docs, 0)
             .into_iter()
             .filter_map(|index| index.estimated_payload_bytes)
             .fold(0_u64, u64::saturating_add);
