@@ -19,10 +19,11 @@
 `a3s-vec` 是原生 Rust 的**进程内**检索引擎：稠密/稀疏向量、标量过滤与 BM25
 落在同一持久化集合中——无需服务端进程，也无需 C/C++ 运行时。
 
-**`0.1.2` 是当前 [crates.io](https://crates.io/crates/a3s-vec) 发布线**
-（发布完成前为 `main` 上的候选）。标签 `0.1.2`、托管 CI 与已发布 crate
-校验和绑定同一修订（[RELEASE.md](RELEASE.md)）。索引缺失、过期或不够选择性时，
-精确执行仍是正确性预言机。macOS 12 Monterey Intel 不受支持。
+**`0.1.2` 已发布到 [crates.io](https://crates.io/crates/a3s-vec)。** 标签
+`0.1.2`、托管 CI run `35503763590` 与 crate SHA-256
+`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0` 绑定修订
+`0c7894f`（[RELEASE.md](RELEASE.md)）。索引缺失、过期或不够选择性时，精确执行
+仍是正确性预言机。macOS 12 Monterey Intel 不受支持。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [测试](TESTING.md) · [基准](BENCHMARKS.md) · [发布](RELEASE.md) ·

@@ -20,12 +20,12 @@
 vectors, scalar filters, and BM25 live in one durable collection—no server
 process and no C/C++ runtime.
 
-**`0.1.2` is the current release on [crates.io](https://crates.io/crates/a3s-vec)
-(or the release candidate on `main` until publish completes).** Tag `0.1.2`,
-hosted CI, and the published crate checksum bind to one revision
-([RELEASE.md](RELEASE.md)). Exact execution stays the correctness oracle when
-an index is missing, stale, or not selective enough. macOS 12 Monterey Intel
-is unsupported.
+**`0.1.2` is published on [crates.io](https://crates.io/crates/a3s-vec).** Tag
+`0.1.2`, hosted CI run `35503763590`, and crate SHA-256
+`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0` bind to
+revision `0c7894f` ([RELEASE.md](RELEASE.md)). Exact execution stays the
+correctness oracle when an index is missing, stale, or not selective enough.
+macOS 12 Monterey Intel is unsupported.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
@@ -53,8 +53,8 @@ Evidence: [BENCHMARKS.md](BENCHMARKS.md). Same host, shared SplitMix64
 corpus, one worker, identical HNSW controls (`m=16`, `ef_construction=96`,
 `ef=64`). a3s-vec keeps exact re-ranking and `f64` public scores; the zvec
 harness sets `is_using_refiner=False`. Medians of three independent
-processes on **current HEAD**, Apple M5 Max / macOS 26.6.2
-arm64, zvec 0.7.0. Package identity is `0.1.2`.
+processes on revision `0c7894f` (package `0.1.2`), Apple M5 Max / macOS 26.6.2
+arm64, zvec 0.7.0.
 
 ### Apple Silicon · 100k × 128 (fairness: one worker)
 

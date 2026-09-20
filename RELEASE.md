@@ -1,9 +1,11 @@
 # Release Qualification
 
-`a3s-vec` `0.1.2` is the current release line. Tag `0.1.2`, hosted CI, and the
-crates.io checksum must bind to one revision after `cargo publish`. The prior
-`0.1.1` package remains on the registry as a historical artifact (tag `0.1.1`
-@ `af22076eb32386b7272c2d2acfa2fef742cb2f73`, SHA-256
+`a3s-vec` `0.1.2` is published. Tag `0.1.2`, hosted CI run
+`35503763590`, and crates.io SHA-256
+`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0` all bind to
+revision `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`. The prior `0.1.1` package
+remains on the registry as a historical artifact (tag `0.1.1` @
+`af22076eb32386b7272c2d2acfa2fef742cb2f73`, SHA-256
 `94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`). macOS 12
 Monterey Intel is deliberately unsupported.
 
@@ -115,9 +117,13 @@ tag and `cargo publish` step below.
 
 ## Registry status
 
-Pending `cargo publish` of `0.1.2`. After publish, this section records the
-tag revision and crates.io SHA-256. The crates.io index already contains
-`a3s-vec` `0.1.1` as a historical package.
+The crates.io index contains `a3s-vec` `0.1.2`, published from tag `0.1.2`
+at revision `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`. The published crate
+SHA-256 is
+`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`, matching
+the hosted release-candidate artifact from
+[CI run 35503763590](https://github.com/A3S-Lab/Vec/actions/runs/35503763590).
+The earlier `0.1.1` and `0.1.0` packages remain historical.
 
 ## Release gates
 

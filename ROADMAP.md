@@ -986,9 +986,8 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.1` is closed (tag `0.1.1` / crates.io bind to
-   `af22076`). Ship `0.1.2` per [RELEASE.md](RELEASE.md) when hosted CI and
-   the versioned release-candidate artifact bind to one revision.
+2. Enterprise GA for `0.1.2` is closed: tag `0.1.2` and crates.io publish bind
+   to revision `0c7894f` / CI run `35503763590` per [RELEASE.md](RELEASE.md).
    macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index
