@@ -1,13 +1,13 @@
 # Release Qualification
 
-`a3s-vec` `0.1.4` is the active release line on `main`. It keeps the `0.1.3`
-corpus-scale ceiling magnitudes and makes them typed, explicit
-`StorageCeilings` policy (never inferred from host RAM or free disk). Tag,
-crates.io SHA-256, and hosted CI run binding are recorded in the post-publish
-checklist below. The prior `0.1.3` package remains on the registry as a
-historical artifact (tag `0.1.3` @ `88599126a4c179d8a0df24bd52963d372ea8eb67`,
-SHA-256 `c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`).
-macOS 12 Monterey Intel is deliberately unsupported.
+`a3s-vec` `0.1.4` is published. Tag `0.1.4`, and crates.io SHA-256
+`15c4220df078de9c350aea98e0f9187890cec066e4d3ee242170a2ab762ed80f` bind to
+revision `9a07e9a33726dd187080b00a44505f9bbd31bd97`. Hosted CI run
+`35510190796` closes the gate when green. The prior `0.1.3` package remains
+on the registry as a historical artifact (tag `0.1.3` @
+`88599126a4c179d8a0df24bd52963d372ea8eb67`, SHA-256
+`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`). macOS 12
+Monterey Intel is deliberately unsupported.
 
 ## 0.1.4 release notes
 

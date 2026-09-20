@@ -22,8 +22,8 @@
 Dense and sparse vectors, BM25 full-text, and typed scalar filters live in one
 durable Rust collection—no server process and no C/C++ runtime.
 
-**[`0.1.4` on crates.io](https://crates.io/crates/a3s-vec)** · publishing
-(tag `0.1.4` · [RELEASE.md](RELEASE.md))
+**[`0.1.4` on crates.io](https://crates.io/crates/a3s-vec)** · published
+(tag `0.1.4` · SHA-256 `15c4220d…` · [RELEASE.md](RELEASE.md))
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
