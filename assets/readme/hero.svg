@@ -23,7 +23,7 @@
     <rect x="360" y="296" width="150" height="42" rx="9" fill="#171B20" stroke="#343B45"/>
     <text x="379" y="323" fill="#F5F2EA">CACHE · WAL</text>
   </g>
-  <text x="56" y="370" fill="#7E8998" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18">EXACT FALLBACK · DETERMINISTIC ORDER · CACHE V6</text>
+  <text x="56" y="370" fill="#7E8998" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18">EXACT RE-RANK · DETERMINISTIC ORDER · PUBLISHED 0.1.1</text>
 
   <g transform="translate(640 34)">
     <rect width="510" height="332" rx="20" fill="#111419" stroke="#2B3038"/>
