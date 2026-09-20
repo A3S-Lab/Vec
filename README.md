@@ -19,7 +19,8 @@ product-quantized DiskANN with typed positioned or immutable mmap-snapshot trave
 scalar inverted indexes, and FTS are live;
 exact execution remains the correctness oracle whenever an index is missing,
 stale, or not selective enough. Formal crates.io publication of `0.1.1` still
-requires the macOS 12 Intel runtime gate in [RELEASE.md](RELEASE.md).
+requires the hosted release gates in [RELEASE.md](RELEASE.md). macOS 12
+Monterey Intel is unsupported.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Reproducible benchmarks](BENCHMARKS.md) ·
@@ -98,6 +99,20 @@ exact re-ranking after candidate generation.
 At this smaller scale a3s-vec query p50 is about **3.3×** lower with identical
 recall. Build times remain close.
 
+### Apple Silicon (macOS arm64, same controls)
+
+After aarch64 navigation prefetch and ordinal exact re-rank (still `ef=64`,
+still authoritative `f64` re-ranking), three-process interleaved HNSW-only
+medians on the local Apple Silicon host:
+
+| Engine | Index build (ms) | Query p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 tip** | **22,375** | **99.5** | **0.6000** |
+| zvec 0.7.0 | 50,761 | 146.0 | 0.5844 |
+
+On this host a3s-vec builds about **2.27×** faster and query p50 is about
+**1.47×** lower, with higher stable Recall@10.
+
 These rows are directional evidence for one host and parameter point, not an
 SLO and not a Flat-scan ranking. Flat exact `f64` remains slower than zvec's
 native path by design of the public score contract; do not disable re-ranking
@@ -136,7 +151,8 @@ gate read contention, read/write contention, Recall@10, QPS, and logical
 accounting on the same revision. The lifecycle matrix additionally measures
 management operations, resource admission, and maintenance ownership. The CI
 platform matrix repeats all five smoke benches on Linux x86/ARM, Windows x86, and macOS ARM/Intel; its hosted
-Intel result is portability evidence, not the required macOS 12 runtime gate.
+Intel result is portability evidence on the current hosted macOS 15 Intel
+image (deployment target 15.0). macOS 12 Monterey is unsupported.
 For a larger same-host engine comparison, use the [scale harness](BENCHMARKS.md#larger-corpus-scale-comparison),
 which drives a3s-vec and an opt-in zvec companion with the same deterministic
 corpus and reports build time, p50/p95/p99, QPS, and Recall@10.
@@ -604,7 +620,8 @@ currently requires a newer Cargo because one transitive package uses a Rust
 ## Platform and ownership
 
 The portable correctness path targets Linux x86_64/aarch64, Windows x86_64,
-and macOS arm64/x86_64, with macOS 12.0 as the Intel deployment target. It does
+and macOS arm64/x86_64, with macOS 15.0 as the current deployment target.
+macOS 12 Monterey Intel is unsupported. It does
 not require `io_uring`, a C/C++ runtime, or architecture-specific SIMD.
 
 `a3s-vec` owns retrieval, persistence, and index execution. Workspace

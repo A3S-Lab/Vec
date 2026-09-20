@@ -3,8 +3,9 @@
 //! The crate provides the collection, document, schema, query, index, and
 //! durability primitives needed by an embedded vector store.  It follows the
 //! zvec Rust API vocabulary while keeping the implementation free of a C/C++
-//! runtime dependency, which makes the same source usable on Intel macOS 12,
-//! Apple Silicon, Linux, and Windows.
+//! runtime dependency, which makes the same source usable on Apple Silicon,
+//! current Intel macOS (deployment target 15.0), Linux, and Windows. macOS 12
+//! Monterey Intel is unsupported.
 //!
 //! A collection's document snapshot and WAL are authoritative. Flat queries
 //! execute against that snapshot; revision-tagged HNSW, IVF, metric-aware

@@ -10,7 +10,7 @@
 
 `a3s-vec` 是面向 Coding Agent 工作区的原生 Rust、进程本地检索引擎。它在同一持久集合中结合稠密与稀疏向量、标量过滤与 BM25——无需服务器进程，也无需 C/C++ 运行时。
 
-项目是 `0.1.1` 发布候选。HNSW、可选 SOAR 分配的 IVF、HNSW/IVF RaBitQ、度量感知 Vamana、带类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN、标量倒排索引与 FTS 均已可用；每当索引缺失、陈旧或选择性不足时，精确执行仍是正确性预言机。正式将 `0.1.1` 发布到 crates.io 仍需 [RELEASE.md](RELEASE.md) 中的 macOS 12 Intel 运行时闸门。
+项目是 `0.1.1` 发布候选。HNSW、可选 SOAR 分配的 IVF、HNSW/IVF RaBitQ、度量感知 Vamana、带类型化定位或不可变 mmap 快照遍历的乘积量化 DiskANN、标量倒排索引与 FTS 均已可用；每当索引缺失、陈旧或选择性不足时，精确执行仍是正确性预言机。正式将 `0.1.1` 发布到 crates.io 仍需 [RELEASE.md](RELEASE.md) 中的托管发布闸门。macOS 12 Monterey Intel 不受支持。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [可复现基准](BENCHMARKS.md) ·
@@ -68,6 +68,19 @@
 
 较小规模下 a3s-vec 查询 p50 约低 **3.3×**，recall 相同。构建时间接近。
 
+### Apple Silicon（macOS arm64，相同控制）
+
+在 aarch64 navigation prefetch 与按序号 exact re-rank 之后（仍为 `ef=64`，
+仍保留权威 `f64` re-ranking），本机 Apple Silicon 上三次交错独立进程的
+HNSW-only 中位数：
+
+| 引擎 | 索引构建 (ms) | 查询 p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| **a3s-vec 0.1.1 tip** | **22,375** | **99.5** | **0.6000** |
+| zvec 0.7.0 | 50,761 | 146.0 | 0.5844 |
+
+该主机上 a3s-vec 构建约快 **2.27×**，查询 p50 约低 **1.47×**，Recall@10 更高且稳定。
+
 以上是单主机、单参数点的方向性证据，不是 SLO，也不是 Flat 扫描排名。公开 `f64` Flat 路径按契约仍慢于 zvec 原生路径；不以关闭 re-ranking 或降低 `ef` 制造胜负。
 
 ## 实测证明
@@ -89,7 +102,7 @@
 五个选择性案例将打分候选减少 25,000×；模糊扩展将其从 25,000 降到 36。通配符与模糊查询含词汇扩展遍，而宽结构化查询在候选集工作不太可能划算时故意切到精确扫描路径。这些是本地回归测量——不是跨项目 zvec 基准。完整方法与重复观察见 [BENCHMARKS.md](BENCHMARKS.md)。
 公开 API 发布闸门是确定性 [功能矩阵](BENCHMARKS.md#public-feature-matrix-and-performance-gate)，检查每条查询路由并为 sync、ANN、sidecar、mutation 与 Tokio 路径报告 p50/p95/p99 延迟。配套
 [并发读与混合负载 fixture](BENCHMARKS.md#mixed-readwrite-contention)
-在同一修订上闸读争用、读/写争用、Recall@10、QPS 与逻辑记账。生命周期矩阵额外测量管理操作、资源准入与维护所有权。CI 平台矩阵在 Linux x86/ARM、Windows x86 与 macOS ARM/Intel 上重复全部五个 smoke bench；其托管 Intel 结果是可移植性证据，不是所需的 macOS 12 运行时闸门。
+在同一修订上闸读争用、读/写争用、Recall@10、QPS 与逻辑记账。生命周期矩阵额外测量管理操作、资源准入与维护所有权。CI 平台矩阵在 Linux x86/ARM、Windows x86 与 macOS ARM/Intel 上重复全部五个 smoke bench；其托管 Intel 结果是当前 macOS 15 镜像（部署目标 15.0）上的可移植性证据。macOS 12 Monterey 不受支持。
 更大同机引擎对比请用 [规模 harness](BENCHMARKS.md#larger-corpus-scale-comparison)，以同一确定性语料驱动 a3s-vec 与可选 zvec 对照，并报告构建时间、p50/p95/p99、QPS 与 Recall@10。
 
 ## 快速开始
@@ -414,7 +427,7 @@ cargo bench --bench reopen_index
 
 ## 平台与所有权
 
-可移植正确性路径面向 Linux x86_64/aarch64、Windows x86_64 与 macOS arm64/x86_64，Intel 部署目标为 macOS 12.0。它不要求 `io_uring`、C/C++ 运行时或架构特定 SIMD。
+可移植正确性路径面向 Linux x86_64/aarch64、Windows x86_64 与 macOS arm64/x86_64，当前部署目标为 macOS 15.0。macOS 12 Monterey Intel 不受支持。它不要求 `io_uring`、C/C++ 运行时或架构特定 SIMD。
 
 `a3s-vec` 拥有检索、持久化与索引执行。工作区扫描、嵌入模型运行时、Agent 会话与 UI 策略属于其调用方。跨项目边界见
 [A3S 本地检索平台架构](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md)。

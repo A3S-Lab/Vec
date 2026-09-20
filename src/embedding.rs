@@ -2,8 +2,8 @@
 //!
 //! The database never downloads a model or performs network I/O implicitly.
 //! Applications can opt into these traits when they already own an embedding
-//! provider, which keeps the core deterministic and easy to run on Intel
-//! macOS 12.
+//! provider, which keeps the core deterministic and easy to run on the
+//! supported Linux, Windows, and macOS platforms.
 
 use crate::error::Result;
 

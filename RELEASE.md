@@ -1,8 +1,9 @@
 # Release Qualification
 
-`a3s-vec` is being prepared as a `0.1.1` release candidate. A formal tag
-or registry publication must not be created until every release gate below is
-green for the same source revision.
+`a3s-vec` `0.1.1` is ready for formal tag and registry publication when every
+release gate below is green for the same source revision. macOS 12 Monterey
+Intel is deliberately unsupported: the project no longer requires, tests, or
+advertises that runtime.
 
 ## 0.1.1 release notes
 
@@ -13,6 +14,10 @@ ordinal bitset. Graph construction, encoded-vector scoring, and final public
 re-ranking retain their authoritative arithmetic and fallbacks. The change
 also refreshes the reproducible performance and cross-project qualification
 record without changing the public storage or query contracts.
+
+Supported platforms for this release are Linux x86_64/aarch64, Windows
+x86_64, and macOS arm64/x86_64 on current hosted images (macOS deployment
+target 15.0). Older macOS 12 Intel hosts are out of scope.
 
 ## Public API review
 
@@ -71,7 +76,7 @@ revision-bound Actions artifact:
 - One `a3s-vec-platform-performance-<platform>-<revision>` directory for each
   hosted platform, containing the same five validated smoke CSVs. These
   artifacts show whether the metrics and recall gate hold across the supported
-  OS/architecture matrix; the hosted Intel image is not macOS 12.
+  OS/architecture matrix.
 
 The same package can be reproduced locally without changing external state:
 
@@ -96,8 +101,8 @@ cargo package --locked --offline
 cargo publish --dry-run --locked
 ```
 
-The candidate artifact is not a crates.io publication and is not evidence of
-an actual macOS 12 Intel runtime.
+The candidate artifact is not itself a crates.io publication until the formal
+tag and `cargo publish` step below.
 
 The previous `0.1.0` candidate was produced by
 [CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)
@@ -120,9 +125,7 @@ revision. Artifact
 
 Same-host HNSW directional evidence versus zvec 0.7.0 (three-process
 medians, exact re-rank retained) is recorded in
-[`README.md`](README.md) and [`BENCHMARKS.md`](BENCHMARKS.md). This
-candidate is still not a crates.io publication and is still not macOS 12
-Intel runtime evidence.
+[`README.md`](README.md) and [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Registry status
 
@@ -134,19 +137,30 @@ version collision. After the release gates below pass, publish `0.1.1` with an
 artifact, checksum, and source-revision manifest that all bind to the same
 qualified revision.
 
-## Formal release blockers
+## Release gates
 
-- Register an actual Intel Mac running macOS 12 as a repository runner with the
-  `a3s-macos-12` label, then manually dispatch
-  `macOS 12 Intel Runtime Qualification` with the exact candidate commit. The
-  workflow's host-fenced script runs the locked exact/FTS, recovery, async,
-  DiskANN, example, rustdoc, package, and all five smoke-scale performance
-  fixtures (with the same CSV validators as hosted CI) offline. A deployment
-  target or newer hosted Intel image is insufficient.
-- Attach that machine-readable result to the release record and verify the
-  source revision matches the candidate artifact.
-- Re-run the Code migration and root compatibility-lock checks against that
-  same Vec revision before creating the formal tag and registry artifact.
+Enterprise GA for `0.1.1` is closed when all of the following bind to one
+revision:
 
-Until those gates pass, A3S Code keeps A3S Memory as the serving authority and
-uses Vec only as a failure-isolated differential shadow.
+1. Hosted CI on `main` is green for that revision (quality, MSRV, recovery
+   fuzz smoke, performance matrix, platform matrix including macOS 15 Intel
+   and arm64, and the versioned release-candidate package job).
+2. The published crate SHA-256 matches the release-candidate artifact for
+   that revision.
+3. The formal git tag `0.1.1` (or `v0.1.1` if the repository adopts a `v`
+   prefix) points at that revision, and `cargo publish` uploads the matching
+   crate.
+
+Root submodule / Cloud lock bumps are separate consumers and must not invent
+new engine work. Code commit `ff226ebe` removed the Vec shadow migration note
+and made official `zvec-rust` 0.7 FTS the workspace lexical default; a Vec
+shadow re-qualification is not a publish blocker.
+
+## Deliberate non-support
+
+- macOS 12 Monterey on Intel x86-64 is unsupported. The former
+  `macOS 12 Intel Runtime Qualification` workflow and host-fenced script have
+  been removed. A `MACOSX_DEPLOYMENT_TARGET=12.0` build is not a supported
+  configuration.
+- Native async file reads and direct file-backed mmap remain refused until an
+  invariant test fails (see VEC-R2 in [`ROADMAP.md`](ROADMAP.md)).

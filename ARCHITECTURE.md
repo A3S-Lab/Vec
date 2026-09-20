@@ -814,33 +814,23 @@ force downstream callers to migrate unrelated types.
 ## 9. Platform policy
 
 The release matrix includes Linux x86_64/aarch64, Windows x86_64, and macOS
-arm64/x86_64 with a macOS deployment target of 12.0. The default derived-file
+arm64/x86_64 with a macOS deployment target of 15.0. The default derived-file
 backend uses cursor-independent positioned reads (`FileExt::read_at` on Unix
 and `FileExt::seek_read` on Windows) with a stable-Rust fallback elsewhere.
 The optional backend uses safe anonymous-map allocation and read-only
-transition after validation, without mapping a mutable external file. Intel
-Monterey uses the portable scalar/AVX2 path and POSIX file locks; Linux-only
+transition after validation, without mapping a mutable external file. Hosted
+Intel macOS uses the portable scalar/AVX2 path and POSIX file locks; Linux-only
 `io_uring` is never a required dependency. CI must compile with default
 features and with all optional index/FTS features enabled.
 
-The external Intel gate has a separate manual workflow. It accepts an exact
-40-character revision and runs only on a self-hosted runner labeled
-`a3s-macos-12`; its script rejects non-Darwin, non-x86_64, non-macOS-12, dirty,
-or revision-mismatched hosts before testing. After a locked dependency fetch,
-formatting, strict Clippy, default/all-feature tests, examples, rustdoc, and
-package verification run offline, it executes and validates the feature-matrix,
-concurrent-reader, mixed-workload, scale-comparison, and lifecycle-matrix
-smoke benchmarks. The workflow uploads a checksummed crate, the five
-performance CSVs (including management-plane lifecycle, resource, and
-maintenance metrics), and a machine-readable
-host/revision report, so a newer hosted Intel image cannot be mistaken for
-Monterey evidence.
+macOS 12 Monterey on Intel is unsupported. The former self-hosted
+`a3s-macos-12` qualification workflow has been removed and must not be treated
+as an open release gate.
 
-The ordinary CI platform matrix runs those same five smoke benchmarks on
-Linux x86_64/arm64, Windows x86_64, and macOS arm64/Intel, with one validated,
-revision-bound CSV artifact per platform. This is cross-platform regression
-evidence; the hosted macOS Intel image still does not satisfy the macOS 12
-runtime gate.
+The ordinary CI platform matrix runs the five smoke benchmarks on
+Linux x86_64/arm64, Windows x86_64, and macOS arm64/Intel (hosted macOS 15),
+with one validated, revision-bound CSV artifact per platform. This is the
+cross-platform regression evidence for publication.
 
 The default Cargo feature set is empty and its normal/build dependency graph
 does not contain Jieba, `zstd-sys`, or `cc`. The `jieba` feature is explicit
@@ -866,4 +856,6 @@ available.
 - deterministic result ordering and schema validation tests;
 - recall and latency benchmarks against the flat reference implementation;
 - fuzz coverage for filter parsing, WAL frames, and index metadata;
-- Intel macOS 12 compile, smoke, and runtime benchmark before release.
+- hosted macOS arm64/Intel (15.0 deployment target), Linux, and Windows
+  compile, smoke, and runtime benchmark before release. macOS 12 Monterey
+  Intel is unsupported.

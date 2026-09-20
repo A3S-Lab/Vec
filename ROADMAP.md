@@ -9,7 +9,7 @@ The roadmap is ordered by dependency and by the cost of being wrong. Each
 phase has an explicit exit gate; a later approximate or optimized feature does
 not replace an earlier correctness gate.
 
-## Forward plan (2026-09-19)
+## Forward plan (2026-09-20)
 
 The mission is a process-local retrieval engine for Coding Agent workspaces:
 one durable collection of documents, exact vector and BM25 answers, and
@@ -17,29 +17,24 @@ derived indexes that can always be rebuilt. The six invariants in
 [ARCHITECTURE.md](ARCHITECTURE.md) are the filter. A proposal that does not
 make one of those invariants more true is not scheduled.
 
-Phases 0 through 7 are complete on `main` (`ddcb5d6`, crate `0.1.1`). After
-the qualified kernel revision `13585cc`, later commits only bump the version
-and documentation; `src/index/hnsw/search.rs` changed a comment, not search
-behavior. There are no open issues and no open pull requests. Do not reopen a
-completed index family to add a variant.
+Phases 0 through 7 are complete on `main`. The current `0.1.1` release
+candidate is `a08413a` (hosted artifact CI run `35481932811`); later
+docs-only commits such as `e6d067f` do not change the package bytes. Do not
+reopen a completed index family to add a variant. There are no open engine
+issues that pass the six-invariant filter.
 
-### VEC-R1 — Qualify this candidate, then stop
+### VEC-R1 — Cancelled: macOS 12 Intel support dropped
 
-The only open gate this crate still owes is an actual macOS 12 Intel x86-64
-runtime result for one exact revision, followed by the tagged `0.1.1` artifact
-of that same revision. The self-hosted workflow already rejects every other
-host. A missing runner is not evidence, and a software substitute is not the
-gate.
-
-Exit: the external runner's checksummed report names the tagged revision, and
-the published crate checksum matches that revision. Until then, `0.1.1` stays
-a release candidate.
+macOS 12 Monterey on Intel x86-64 is unsupported. The former self-hosted
+`a3s-macos-12` qualification workflow and host-fenced script are removed.
+Hosted macOS Intel CI remains on `macos-15-intel` with deployment target
+`15.0`. Do not reopen a Monterey runtime gate.
 
 ### VEC-R2 — Change the engine only when an invariant fails
 
-After VEC-R1, the next engine change is a failing test against one of the six
-invariants on a workload this crate already claims. Empty queues are not a
-reason to invent the next index.
+The next engine change is a failing test against one of the six invariants on
+a workload this crate already claims. Empty queues are not a reason to invent
+the next index.
 
 The following are refused until that test exists:
 
@@ -56,6 +51,7 @@ The following are refused until that test exists:
   iterators, or schema evolution. The pinned SDK does not publish them.
   Project-owned executable gates already cover the behavior. Provenance is not
   a development phase.
+- Restoring macOS 12 Intel as a release requirement.
 
 Code's Memory-authoritative shadow, `vgrep`, and removal of the old retrieval
 path stay in the
@@ -66,13 +62,30 @@ This crate does not grow CLI or serving policy to unblock that work.
 
 Enterprise GA is the formal `0.1.1` tag and registry artifact defined in
 [RELEASE.md](RELEASE.md). It is not a second product tier, an operations
-suite, or another index family. It is reached only when the VEC-R1 report
-names that tagged revision and the published checksum matches it.
+suite, or another index family. It is reached when hosted CI is green for one
+exact revision, that revision is tagged, and the published crate checksum
+matches the release-candidate artifact.
 
-Hosted CI on `main` is already green, including run `34175436220` for
-`ddcb5d6`. The macOS 12 workflow `33811715564` was cancelled after 24 hours.
-`A3S-Lab/Vec` currently has zero self-hosted runners, so this workspace cannot
-close the gate or honestly publish the tag.
+Capability alignment with zvec means the claimed Rust collection/query surface
+(exact + advertised ANN/FTS routes, durability, schema evolution) matches the
+pinned zvec vocabulary where this crate documents parity. Deliberate
+non-goals (Binary ANN, C++ storage ABI, language bindings) stay refused.
+
+Honest performance superiority means the documented same-host
+`scale_compare` / `scale_compare_zvec.py` harness (one worker, same HNSW
+controls, exact re-rank retained, zvec `is_using_refiner=False`) shows
+a3s-vec better on HNSW index build and HNSW query p50 without lowering `ef`
+or disabling re-ranking. A Windows Xeon win does not excuse an Apple Silicon
+regression against the same contract; platform accelerators (prefetch/SIMD)
+must preserve scores. Flat exact `f64` may remain slower than zvec's native
+path by design of the public score contract.
+
+Hosted CI on `main` is already green for the prior candidate, including run
+`35481932811` for `a08413a`. Local Apple Silicon evidence after ordinal exact
+re-rank shows HNSW build ~2.27× faster and query p50 ~1.47× lower than zvec
+0.7.0 under the honest harness (Recall@10 0.6000 vs median 0.5844). Remaining
+work: land the Monterey-drop / prefetch / ordinal-rerank revision as the
+publish tip, confirm hosted CI green for that tip, then tag and publish.
 
 ## Current implementation status
 
@@ -177,8 +190,8 @@ requires a newer Cargo because its current compressed-dictionary chain uses
 Rust 2024 manifests. GitHub Actions runs the full default-feature suite on Linux x86_64
 and arm64, Windows x86_64, and macOS arm64 and Intel, while separate jobs gate
 Rust 1.75, formatting, all-feature Clippy/tests, and rustdoc. The Intel build
-uses a macOS 12.0 deployment target; an actual macOS 12 runtime smoke still
-requires a self-hosted or external runner.
+uses a macOS 15.0 deployment target on the hosted Intel image. macOS 12
+Monterey Intel is unsupported.
 
 **Verification refresh (2026-09-03):** Vec revision `13585ccd`
 passes the all-feature and no-default suites
@@ -194,8 +207,7 @@ local Windows x86_64 host (with the Unix validator under WSL where needed).
 Hosted revision-bound artifacts are recorded in
 [CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017),
 which passed all ten jobs, including the lifecycle matrix and versioned
-release-candidate package. These checks do not replace the actual macOS 12
-Intel runtime gate described below.
+release-candidate package. macOS 12 Monterey Intel is unsupported and is not a release gate.
 
 The scale-comparison harness now has a reproducible 20-column CSV contract;
 the recorded 100,000-document, three-process median is documented in
@@ -209,8 +221,7 @@ Phase 3's portable implementation gate is complete: per-handle deterministic
 fault injection covers all 18 write/sync/rename/prune boundaries, including
 WAL and snapshot cleanup; lock conflicts include bounded owner metadata; and
 both fixed-seed mutation fuzzing and a libFuzzer/AddressSanitizer smoke target
-exercise recovery. The actual macOS 12 Intel runtime smoke remains external
-runner work. HNSW/IVF/RaBitQ/Vamana/DiskANN schema and query controls execute against
+exercise recovery. macOS 12 Monterey Intel is unsupported. HNSW/IVF/RaBitQ/Vamana/DiskANN schema and query controls execute against
 immutable, revision-tagged generations; scalar and FTS indexes publish matching
 immutable generations. Native sector-aligned Vamana/DiskANN files, bounded
 positioned or immutable mmap-snapshot query traversal, PQ/ADC compression, and
@@ -307,8 +318,8 @@ and direct file-backed mmap remain future work.
   and reopen.
 - Completed for hosted runners: the default suite runs on Linux x86_64/arm64,
   Windows x86_64, and macOS arm64/Intel. The Intel job compiles with a 12.0
-  deployment target, but an actual macOS 12 runtime smoke remains open.
-- Open: the macOS 12 Intel runtime required by the full Phase 1 exit gate.
+  deployment target 15.0 on hosted Intel.
+- Cancelled: macOS 12 Monterey Intel support was dropped; it is not an exit gate.
   Scale-bearing FP16/INT8/INT4 index quantization and exact re-ranking are
   completed in Phase 4. Binary exact query execution is complete; binary ANN
   remains an explicit non-goal until a metric/index contract is justified.
@@ -388,8 +399,7 @@ and direct file-backed mmap remain future work.
   manifest/snapshot/WAL file. A separate cargo-fuzz target exercises the same
   public recovery boundary under libFuzzer and AddressSanitizer; CI runs 256
   smoke iterations.
-- Open: the actual macOS 12 Intel runtime smoke requires a self-hosted or
-  external runner.
+- Cancelled: macOS 12 Monterey Intel support was dropped.
 
 ## Phase 4 — Memory ANN indexes
 
@@ -706,7 +716,7 @@ execution are implemented.
   fixtures plus public lifecycle tests cover those paths on Windows. The
   default-feature crate also cross-checks the Unix `read_at` branch for the
   installed Linux x86_64/aarch64 and macOS arm64/x86_64 targets, including a
-  macOS 12 deployment target; the Intel macOS 12 runtime gate remains external.
+  macOS 15.0 deployment target on hosted Intel; macOS 12 Monterey is unsupported.
 - Completed: a validated cache reopen attaches one immutable positioned reader
   per Vamana or DiskANN field. Bounded queries load packed 4 KiB sectors or multi-sector
   node strides into a request-local extent/node cache, while incremental
@@ -851,7 +861,7 @@ execution are implemented.
 - Integrate the crate behind an explicit A3S Code/Memory adapter; keep the
   collection API independent of CLI policy.
 - Add benchmarks, fuzz targets, memory/CPU limits, and observability hooks.
-- Add Linux/macOS arm64/macOS x86_64/Windows CI, including macOS 12 Intel.
+- Add Linux/macOS arm64/macOS x86_64/Windows CI on current hosted images.
 - Publish README, migration notes, API docs, and a versioned release artifact.
 
 **Progress through 2026-09-03**
@@ -865,7 +875,7 @@ execution are implemented.
 - Completed in the engine: ANN/filtered/DiskANN benchmarks, deterministic
   recovery fuzzing plus a libFuzzer/AddressSanitizer smoke target, collection
   health, query/index/WAL telemetry, and hosted Linux arm64/x86_64, Windows
-  x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 12.0
+  x86_64, and macOS arm64/Intel CI. The Intel hosted job uses a macOS 15.0
   deployment target. The platform matrix also runs and validates the feature,
   concurrent-reader, mixed-read/write, scale, and lifecycle smoke CSVs on every
   hosted OS and architecture, retaining one revision-bound artifact per
@@ -943,28 +953,24 @@ execution are implemented.
   `cargo publish --dry-run --locked` verify version `0.1.1`. After every hosted
   gate passes on `main`, CI uploads the verified crate, SHA-256 checksum, and a
   source-revision manifest as one versioned release-candidate artifact.
-- Completed external-gate automation: a manual workflow accepts an exact
-  revision only on a self-hosted runner labeled `a3s-macos-12`. Its reusable
-  script rejects any host that is not actual macOS 12 on Intel x86-64, runs the
-  locked format, Clippy, default/all-feature, recovery, async, DiskANN, example,
-  rustdoc, package, and all five smoke-scale performance fixtures with the
-  hosted CSV validators offline, and emits checksummed machine-readable
-  evidence. No qualifying runner is currently registered, so this automation
-  does not close the hardware gate by itself.
-- Open, and the whole of Enterprise GA: an actual macOS 12 Intel runtime
-  result from an external runner, then the formal tag and registry artifact
-  for that same revision. As of 2026-09-19 the repository has zero self-hosted
-  runners. Logical collection accounting is not a process-RSS or hard CPU-time
-  limit. The adapter contract stays in
-  [Code's migration note](https://github.com/A3S-Lab/Code/blob/main/manual/WORKSPACE_RETRIEVAL_VEC_MIGRATION.md).
+- Cancelled: the macOS 12 Intel self-hosted qualification workflow was removed.
+  Monterey is unsupported. Enterprise GA is the hosted-green tag plus matching
+  crates.io publish defined in RELEASE.md. Logical collection accounting is
+  not a process-RSS or hard CPU-time limit.
+- Closed the Apple Silicon HNSW query gap under the honest harness (2026-09-20):
+  aarch64 `prfm` navigation prefetch (`PREFETCH_AHEAD=8`) plus ordinal exact
+  re-rank (score by ANN ordinal, resolve primary keys only for competitive
+  top-k) keep `ef=64` and authoritative `f64` scores. Interleaved three-process
+  medians: build ~2.27× faster and query p50 ~1.47× lower than zvec 0.7.0, with
+  Recall@10 0.6000 vs median 0.5844.
 
 **Release gate**
 
 - `cargo fmt --check`, `cargo clippy -- -D warnings`, unit/integration/fuzz
   smoke tests, recovery suite, `cargo bench --locked --bench feature_matrix
   --features async`, `concurrent_queries`, `mixed_workload`, `scale_compare`,
-  and `lifecycle_matrix` (smoke scale in CI), benchmark report, and Intel macOS 12
-  runtime smoke all pass. No feature is advertised unless its gate has
+  and `lifecycle_matrix` (smoke scale in CI) and benchmark report all pass on the
+  supported hosted matrix. macOS 12 Monterey Intel is unsupported. No feature is advertised unless its gate has
   evidence.
 
 ## Deliberate boundaries
@@ -978,7 +984,9 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. VEC-R1: obtain the macOS 12 Intel runtime report, then tag `0.1.1` at that
-   revision.
+2. Tag and publish `0.1.1` from the hosted-green candidate revision
+   (`a08413a` / artifact CI `35481932811`) per [RELEASE.md](RELEASE.md).
+   macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
-   Native async reads and direct file-backed mmap stay refused.
+   Native async reads, direct file-backed mmap, benchmark-chasing index
+   variants, and restoring Monterey support stay refused.

@@ -168,6 +168,14 @@ impl CandidateSelection {
         self.ids.ids()
     }
 
+    pub(crate) fn iter_ordinals(&self) -> impl Iterator<Item = u64> + '_ {
+        self.ids.iter_ordinals()
+    }
+
+    pub(crate) fn id(&self, ordinal: u64) -> Option<&str> {
+        self.ids.id(ordinal)
+    }
+
     pub(crate) fn contains(&self, id: &str) -> bool {
         self.ids.contains(id)
     }
@@ -178,20 +186,21 @@ impl IndexRegistry {
         self.ordinals.ordinal(id)
     }
 
-    /// Exact `f64` score from unquantized `f32` index coordinates.
+    /// Exact `f64` score for a known live ordinal from unquantized `f32`
+    /// index coordinates. This is the same promotion `VectorFp32` documents
+    /// use. Quantized coordinates and missing ordinals return `None`.
     ///
-    /// This is the same promotion `VectorFp32` documents use. Quantized
-    /// coordinates and missing ids return `None`.
-    pub(crate) fn exact_unquantized_f32_score(
+    /// Prefer this over a primary-key round trip when the caller already holds
+    /// ordinals from ANN planning.
+    pub(crate) fn exact_unquantized_f32_score_at(
         &self,
         field: &str,
-        id: &str,
+        ordinal: u64,
         query: &[f32],
         query_norm: f64,
         metric: MetricType,
     ) -> Option<f64> {
         let index = self.indexes.get(field)?;
-        let ordinal = self.ordinals.ordinal(id)?;
         let coordinates = index.unquantized_f32(ordinal)?;
         let score = score_dense_with_query_norm(query, coordinates, metric, query_norm);
         score.is_finite().then_some(score)

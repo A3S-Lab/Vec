@@ -145,6 +145,17 @@ impl OrdinalSet {
         &self.bitmap
     }
 
+    /// Stable ordinals in the candidate bitmap. Prefer this over
+    /// [`Self::ids`] when the caller can score or retain by ordinal and only
+    /// needs primary keys for the final result set.
+    pub(super) fn iter_ordinals(&self) -> impl Iterator<Item = u64> + '_ {
+        self.bitmap.iter()
+    }
+
+    pub(super) fn id(&self, ordinal: u64) -> Option<&str> {
+        self.table.id(ordinal)
+    }
+
     pub(super) fn ids(&self) -> impl Iterator<Item = &str> {
         self.bitmap
             .iter()

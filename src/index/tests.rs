@@ -318,3 +318,46 @@ fn ordinal_compaction_rebuilds_ann_membership_without_filter_drift() {
         assert!(candidates.selection.ids().all(|id| allowed.contains(id)));
     }
 }
+
+#[test]
+fn exact_unquantized_score_by_ordinal_matches_document_promotion() {
+    let schema = indexed_schema();
+    let docs: DocumentMap = [
+        ("a", [1.0_f32, 0.0]),
+        ("b", [0.0_f32, 1.0]),
+        ("c", [0.5_f32, 0.5]),
+    ]
+    .into_iter()
+    .map(|(id, vector)| (id.to_string(), vector_doc(id, &vector)))
+    .collect();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("indexes must build");
+    let query = [0.75_f32, 0.25];
+    let query_norm =
+        f64::from(query[0]) * f64::from(query[0]) + f64::from(query[1]) * f64::from(query[1]);
+    let query_norm = query_norm.sqrt();
+    for (id, vector) in [
+        ("a", [1.0_f32, 0.0]),
+        ("b", [0.0_f32, 1.0]),
+        ("c", [0.5_f32, 0.5]),
+    ] {
+        let ordinal = indexes
+            .document_ordinal(id)
+            .expect("fixture document must have an ordinal");
+        let from_index = indexes
+            .exact_unquantized_f32_score_at(
+                "embedding",
+                ordinal,
+                &query,
+                query_norm,
+                MetricType::L2,
+            )
+            .expect("ordinal score must resolve");
+        let from_document = super::quantization::score_dense_with_query_norm(
+            &query,
+            &vector,
+            MetricType::L2,
+            query_norm,
+        );
+        assert_eq!(from_index.to_bits(), from_document.to_bits());
+    }
+}

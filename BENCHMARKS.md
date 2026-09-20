@@ -135,6 +135,81 @@ the index-creation transaction, while the zvec call has different persistence
 and post-insert lifecycle semantics. Repeat the run with identical durability,
 optimize, and recall targets before using it for a capacity decision.
 
+### Local Apple Silicon refresh (2026-09-20)
+
+Same harness and controls as the tables above (`RAYON_NUM_THREADS=1`, zvec
+`IndexOption(concurrency=1)`, `is_using_refiner=False`, cosine, `m=16`,
+`ef_construction=96`, `ef=64`, 32 queries × 3 rounds, batch 512). Host:
+macOS 26.6.2 arm64, Rust 1.98.1, Python 3.13.15, zvec 0.7.0 macOS arm64
+wheel. Vec checkout `e6d067f` (package `0.1.1`; candidate bytes bound to
+`a08413a`). Re-run at `2026-09-20T02:50:23Z`. Raw CSVs and three-process
+medians: `target/local-compare/` (not committed). Each cell is the median of
+three independent processes.
+
+#### 2,000 documents × 32 dimensions
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 30.022 | 0.000 | 30.022 | 38.708 | 64.125 | 154.541 | 23,376.39 | 1.0000 |
+| zvec 0.7.0 flat | 28.668 | 0.000 | 28.668 | 54.750 | 84.708 | 114.500 | 16,679.34 | 1.0000 |
+| a3s-vec HNSW | 30.022 | 93.073 | 123.095 | 35.667 | 42.042 | 45.791 | 27,197.71 | 1.0000 |
+| zvec 0.7.0 HNSW | 28.668 | 66.635 | 95.574 | 52.083 | 66.917 | 85.000 | 18,165.05 | 1.0000 |
+
+On this small fixture a3s-vec HNSW query p50 is about **1.46×** lower than
+zvec; zvec HNSW index build is about **1.40×** shorter. Recall@10 is 1.0000
+for both.
+
+#### 100,000 documents × 128 dimensions
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 1,007.213 | 0.000 | 1,007.213 | 9,283.875 | 10,328.542 | 11,898.375 | 107.82 | 1.0000 |
+| zvec 0.7.0 flat | 1,058.536 | 0.000 | 1,058.536 | 2,019.750 | 2,447.375 | 2,775.750 | 470.02 | 1.0000 |
+| a3s-vec HNSW | 1,007.213 | 33,608.264 | 34,614.808 | 232.250 | 338.792 | 390.541 | 4,055.37 | 0.6000 |
+| zvec 0.7.0 HNSW | 1,058.536 | 49,333.605 | 50,415.331 | 152.083 | 208.667 | 228.333 | 6,250.29 | 0.5750 |
+
+On this host a3s-vec HNSW builds about **1.47×** faster than zvec and holds
+Recall@10 0.6000 in every process (zvec 0.5719–0.6062, median 0.5750). HNSW
+query p50 remains about **1.53×** higher than zvec while retaining exact
+re-ranking. Flat exact `f64` stays slower than zvec's native path (~4.6×
+p50), as expected from the public score contract. These arm64 rows are not
+substitutes for the Windows Xeon release-candidate table. macOS 12 Monterey
+Intel is unsupported.
+
+#### After aarch64 navigation prefetch (same day, HNSW-only remeasure)
+
+Navigation prefetch previously existed only for x86_64. Adding a stable
+`prfm pldl1keep` hint on aarch64, then lengthening the aarch64 neighbor
+prefetch runway to 8 (x86_64 stays at 4), does not change scores or recall.
+Three-process HNSW-only medians on the same host and controls:
+
+| Engine / mode | Index build (ms) | p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| a3s-vec HNSW | 21,393.174 | 149.167 | 0.6000 |
+| zvec 0.7.0 HNSW | 49,141.421 | 146.875 | 0.5938 |
+
+Relative to same-day zvec: index build about **2.30×** faster; query p50 within
+about **1.6%** (noise band on this host; a3s process p50s were 124–176 µs);
+Recall@10 still higher and stable at 0.6000.
+
+#### After ordinal exact re-rank (same day, HNSW-only interleaved)
+
+Exact re-ranking still uses the authoritative `f64` promotion. It now scores
+ANN ordinals directly and resolves primary keys only for competitive top-k
+candidates, removing a redundant ordinal→id→ordinal round trip. Three-process
+interleaved HNSW-only medians on the same host and controls
+(`target/local-compare/rerank-ordinal/`):
+
+| Engine / mode | Index build (ms) | p50 (µs) | Recall@10 |
+| --- | ---: | ---: | ---: |
+| a3s-vec HNSW | 22,375.451 | 99.500 | 0.6000 |
+| zvec 0.7.0 HNSW | 50,761.445 | 146.000 | 0.5844 |
+
+Relative to same-day zvec: index build about **2.27×** faster; query p50 about
+**1.47×** lower; Recall@10 still higher and stable at 0.6000. This closes the
+Apple Silicon HNSW query gap under the honest harness without lowering `ef`
+or dropping exact re-ranking.
+
 ### HNSW kernel follow-up (qualified revision 13585ccd)
 
 The qualified candidate keeps graph construction and final document re-ranking on
@@ -338,10 +413,10 @@ specific regressions in latency, throughput, ANN recall, and mixed-workload
 revision/accounting behavior instead of treating a single Linux run as
 portable evidence.
 
-The hosted `macOS Intel` row is an Intel macOS 15 image compiled with a 12.0
-deployment target. It is useful portability evidence but is deliberately not
-the separate macOS 12 Intel runtime qualification required for a formal
-release. The platform smoke fixture is intentionally small; the default-scale
+The hosted `macOS Intel` row is an Intel macOS 15 image compiled with a 15.0
+deployment target. It is useful portability evidence. macOS 12 Monterey Intel
+is unsupported and is not a release gate. The platform smoke fixture is
+intentionally small; the default-scale
 same-host measurements below remain the source for trend comparisons, and
 process RSS/allocator attribution still requires an OS-specific harness.
 

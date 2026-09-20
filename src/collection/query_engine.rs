@@ -335,6 +335,10 @@ fn execute_vector(
 /// Ranks unquantized `f32` candidates with the document `f64` promotion, then
 /// loads only the retained documents. Returns `None` when any candidate is
 /// not an unquantized `f32` vector, so the caller uses the document path.
+///
+/// Scoring walks ANN ordinals directly. Primary keys are resolved only for
+/// the retained top-k so re-ranking does not invert ordinal→id→ordinal on
+/// every candidate.
 #[allow(clippy::too_many_arguments)]
 fn rerank_unquantized_candidates(
     docs: &DocumentMap,
@@ -351,16 +355,29 @@ fn rerank_unquantized_candidates(
         return Ok(Some(Vec::new()));
     }
     let mut ranked = BinaryHeap::new();
-    for id in candidate_ids.ids() {
+    for ordinal in candidate_ids.iter_ordinals() {
         let Some(exact_score) =
-            indexes.exact_unquantized_f32_score(field, id, query, query_norm, metric)
+            indexes.exact_unquantized_f32_score_at(field, ordinal, query, query_norm, metric)
         else {
             return Ok(None);
         };
-        if radius_excludes(exact_score, radius, metric) {
+        if radius_excludes(exact_score, radius, metric)
+            || dominated_by_score(&ranked, exact_score, topk)
+        {
             continue;
         }
-        retain_ranked(&mut ranked, RankedId { exact_score, id }, topk);
+        let Some(id) = candidate_ids.id(ordinal) else {
+            return Ok(None);
+        };
+        retain_ranked(
+            &mut ranked,
+            RankedId {
+                exact_score,
+                id,
+                ordinal,
+            },
+            topk,
+        );
     }
     let mut scored = Vec::with_capacity(ranked.len());
     for candidate in ranked {
@@ -385,6 +402,7 @@ fn radius_excludes(score: f64, radius: Option<f64>, metric: MetricType) -> bool 
 struct RankedId<'a> {
     exact_score: f64,
     id: &'a str,
+    ordinal: u64,
 }
 
 impl PartialEq for RankedId<'_> {
@@ -407,6 +425,7 @@ impl Ord for RankedId<'_> {
             .exact_score
             .total_cmp(&self.exact_score)
             .then_with(|| self.id.cmp(other.id))
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 }
 
@@ -422,6 +441,15 @@ fn retain_ranked<'a>(ranked: &mut BinaryHeap<RankedId<'a>>, candidate: RankedId<
         ranked.pop();
         ranked.push(candidate);
     }
+}
+
+/// Returns true when `exact_score` is strictly worse than the current worst
+/// retained hit, so the caller can skip primary-key resolution.
+fn dominated_by_score(ranked: &BinaryHeap<RankedId<'_>>, exact_score: f64, limit: usize) -> bool {
+    ranked.len() >= limit
+        && ranked
+            .peek()
+            .is_some_and(|worst| exact_score.total_cmp(&worst.exact_score) == Ordering::Less)
 }
 
 fn resolve_query_vector(docs: &DocumentMap, query: &SearchQuery) -> Result<ResolvedQueryVector> {

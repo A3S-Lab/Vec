@@ -7,10 +7,13 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 
 const DENSE_VISITED_MAX_SLOTS: usize = 1 << 24;
-/// Neighbors scored before a prefetch issued now is consumed. Four full
-/// vectors of lead time overlap a DRAM fill with distance work. Prefetching
-/// the whole neighbor list first was slower: the hints displaced lines that
-/// were about to be scored.
+/// Neighbors scored before a prefetch issued now is consumed. The lead time
+/// overlaps a DRAM fill with distance work. Prefetching the whole neighbor
+/// list first was slower: the hints displaced lines that were about to be
+/// scored. Apple Silicon benefits from a longer runway than the `x86_64` path.
+#[cfg(target_arch = "aarch64")]
+const PREFETCH_AHEAD: usize = 8;
+#[cfg(not(target_arch = "aarch64"))]
 const PREFETCH_AHEAD: usize = 4;
 
 /// Asks the CPU to pull one `f32` cache line before a later distance read.
@@ -34,6 +37,22 @@ pub(super) fn prefetch_f32_at(values: &[f32], index: usize) {
             std::arch::x86_64::_mm_prefetch(
                 values.as_ptr().add(index).cast::<i8>(),
                 std::arch::x86_64::_MM_HINT_T0,
+            );
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: `index` is inside `values`. `prfm pldl1keep` is a read
+        // prefetch hint and does not load or store through the pointer, so it
+        // cannot change scores, candidate sets, or recall. Stable Rust does
+        // not yet expose `_prefetch` on aarch64 without a feature gate.
+        #[allow(unsafe_code)]
+        unsafe {
+            let ptr = values.as_ptr().add(index);
+            core::arch::asm!(
+                "prfm pldl1keep, [{ptr}]",
+                ptr = in(reg) ptr,
+                options(readonly, nostack, preserves_flags)
             );
         }
     }
