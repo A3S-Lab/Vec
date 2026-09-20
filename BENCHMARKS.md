@@ -176,6 +176,15 @@ p50), as expected from the public score contract. These arm64 rows are not
 substitutes for the Windows Xeon release-candidate table. macOS 12 Monterey
 Intel is unsupported.
 
+#### After parallel Flat Cosine scan (2026-09-20, same host class)
+
+Exact Flat scan is embarrassingly parallel. With the default Rayon pool
+(host core count) and the same 100k×128 fixture, three-process medians show
+a3s-vec Flat query p50 **below** zvec Flat while keeping public `f64`
+re-score and Recall@10 = 1.0. Pinning `RAYON_NUM_THREADS=1` restores the
+prior ~1.5–2× `f64`-vs-`f32` floor. Flat insert beats zvec either way.
+See README for the current product summary.
+
 #### After aarch64 navigation prefetch (same day, HNSW-only remeasure)
 
 Navigation prefetch previously existed only for x86_64. Adding a stable
