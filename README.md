@@ -72,11 +72,12 @@ independent processes. Methodology and CSVs:
 ≈ **1.44×** faster build; query p50 within noise (~2%).
 
 These rows are directional evidence for one host and parameter point—not an
-SLO. Flat keeps the same exact `f64` public score contract (contiguous packed
-scan + bit-identical SIMD kernels). On the honest harness that is typically
-about **2×** slower than zvec Flat—matching the `f64` vs native `f32` arithmetic
-floor, not a missing index. Do not lower `ef`, drop exact re-ranking, or switch
-public scores to `f32` to manufacture a Flat win. HNSW remains the path that
+SLO. Flat keeps the same exact `f64` public score contract (lazy rebuild into a
+contiguous promoted-`f64` base, bit-identical SIMD kernels). On the honest
+1-worker harness Flat **insert** beats zvec; Flat **query** is typically about
+**1.5–2×** slower—matching the `f64` vs native `f32` arithmetic floor, not a
+missing index. Do not lower `ef`, drop exact re-ranking, or switch public
+scores to `f32` to manufacture a Flat query win. HNSW remains the path that
 beats zvec on build and query under identical controls.
 
 ## Install

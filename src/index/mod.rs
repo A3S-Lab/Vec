@@ -95,12 +95,22 @@ struct VectorIndexBase {
     /// is the `f64` promotion of these same coordinates.
     #[serde(skip)]
     dense_f32: OnceLock<Option<DenseF32Base>>,
+    /// Contiguous `f64` promotion of unquantized base coordinates for Flat
+    /// exact scans. Same lane values as on-the-fly `f64::from(f32)`.
+    #[serde(skip)]
+    dense_f64: OnceLock<Option<DenseF64Base>>,
 }
 
 #[derive(Clone, Debug)]
 struct DenseF32Base {
     dimension: usize,
     values: Vec<f32>,
+}
+
+#[derive(Clone, Debug)]
+struct DenseF64Base {
+    dimension: usize,
+    values: Vec<f64>,
 }
 
 struct AnnSearchContext<'a> {
@@ -325,7 +335,7 @@ impl IndexRegistry {
             let Some(params) = field.index_params.as_ref() else {
                 continue;
             };
-            if !is_in_memory_vector(params.index_type) {
+            if !is_incremental_vector(params.index_type) {
                 continue;
             }
 
@@ -918,6 +928,15 @@ pub(super) fn is_in_memory_vector(index_type: IndexType) -> bool {
             | IndexType::Diskann
             | IndexType::Vamana
     )
+}
+
+/// Indexes that maintain incremental overlays on every mutation.
+///
+/// Flat is an exact-scan cache rebuilt on full generation boundaries
+/// (`build` / `rebuild_index`). Maintaining Flat deltas on every insert only
+/// slows writes; the packed scan path wants a compacted base anyway.
+fn is_incremental_vector(index_type: IndexType) -> bool {
+    is_in_memory_vector(index_type) && index_type != IndexType::Flat
 }
 
 fn is_approximate_ann(index_type: IndexType) -> bool {

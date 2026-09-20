@@ -43,6 +43,20 @@ pub(crate) fn dot_f64_f32(query: &[f64], candidate: &[f32]) -> f64 {
     dispatch_f64_f32(query, candidate, Kernel::Dot)
 }
 
+/// Inner product over already-promoted `f64` coordinates.
+#[inline]
+pub(crate) fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    dispatch_f64(a, b, Kernel::Dot)
+}
+
+/// Squared L2 over already-promoted `f64` coordinates.
+#[inline]
+pub(crate) fn l2sq_f64(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    dispatch_f64(a, b, Kernel::L2)
+}
+
 /// Cosine: returns `(dot, candidate_norm_sq)` in one left-to-right pass.
 #[inline]
 pub(crate) fn cosine_parts_f32(query: &[f32], candidate: &[f32]) -> (f64, f64) {
@@ -148,6 +162,46 @@ fn dispatch_f64_f32(query: &[f64], candidate: &[f32], kernel: Kernel) -> f64 {
     }
     #[allow(unreachable_code)]
     f64_f32_scalar(query, candidate, kernel)
+}
+
+#[inline]
+fn dispatch_f64(a: &[f64], b: &[f64], kernel: Kernel) -> f64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        #[allow(unsafe_code)]
+        return unsafe { f64_neon(a, b, kernel) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[allow(unsafe_code)]
+        return unsafe { f64_sse2(a, b, kernel) };
+    }
+    #[allow(unreachable_code)]
+    f64_scalar(a, b, kernel)
+}
+
+#[inline]
+fn f64_scalar(a: &[f64], b: &[f64], kernel: Kernel) -> f64 {
+    let mut sum = 0.0_f64;
+    match kernel {
+        Kernel::L2 => {
+            for (left, right) in a.iter().zip(b) {
+                let difference = *left - *right;
+                sum += difference * difference;
+            }
+        }
+        Kernel::Dot => {
+            for (left, right) in a.iter().zip(b) {
+                sum += *left * *right;
+            }
+        }
+        Kernel::NormSq => {
+            for value in a {
+                sum += *value * *value;
+            }
+        }
+    }
+    sum
 }
 
 #[inline]
@@ -340,6 +394,45 @@ unsafe fn f64_f32_neon(query: &[f64], candidate: &[f32], kernel: Kernel) -> f64 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[allow(unsafe_code)]
+unsafe fn f64_neon(a: &[f64], b: &[f64], kernel: Kernel) -> f64 {
+    use std::arch::aarch64::{vgetq_lane_f64, vld1q_f64, vmulq_f64, vsubq_f64};
+    let n = a.len();
+    let mut sum = 0.0_f64;
+    let mut index = 0usize;
+    while index + 2 <= n {
+        let left = vld1q_f64(a.as_ptr().add(index));
+        let right = match kernel {
+            Kernel::NormSq => left,
+            _ => vld1q_f64(b.as_ptr().add(index)),
+        };
+        let lanes = match kernel {
+            Kernel::L2 => {
+                let difference = vsubq_f64(left, right);
+                vmulq_f64(difference, difference)
+            }
+            Kernel::Dot | Kernel::NormSq => vmulq_f64(left, right),
+        };
+        sum += vgetq_lane_f64(lanes, 0);
+        sum += vgetq_lane_f64(lanes, 1);
+        index += 2;
+    }
+    while index < n {
+        match kernel {
+            Kernel::L2 => {
+                let difference = a[index] - b[index];
+                sum += difference * difference;
+            }
+            Kernel::Dot => sum += a[index] * b[index],
+            Kernel::NormSq => sum += a[index] * a[index],
+        }
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(unsafe_code)]
 unsafe fn cosine_parts_f32_neon(query: &[f32], candidate: &[f32]) -> (f64, f64) {
     use std::arch::aarch64::{vcvt_f64_f32, vgetq_lane_f64, vld1_f32, vmulq_f64};
     let n = query.len();
@@ -486,6 +579,45 @@ unsafe fn f64_f32_sse2(query: &[f64], candidate: &[f32], kernel: Kernel) -> f64 
                 let wide = f64::from(candidate[index]);
                 sum += wide * wide;
             }
+        }
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[allow(unsafe_code)]
+unsafe fn f64_sse2(a: &[f64], b: &[f64], kernel: Kernel) -> f64 {
+    use std::arch::x86_64::{_mm_cvtsd_f64, _mm_loadu_pd, _mm_mul_pd, _mm_sub_pd, _mm_unpackhi_pd};
+    let n = a.len();
+    let mut sum = 0.0_f64;
+    let mut index = 0usize;
+    while index + 2 <= n {
+        let left = _mm_loadu_pd(a.as_ptr().add(index));
+        let right = match kernel {
+            Kernel::NormSq => left,
+            _ => _mm_loadu_pd(b.as_ptr().add(index)),
+        };
+        let lanes = match kernel {
+            Kernel::L2 => {
+                let difference = _mm_sub_pd(left, right);
+                _mm_mul_pd(difference, difference)
+            }
+            Kernel::Dot | Kernel::NormSq => _mm_mul_pd(left, right),
+        };
+        sum += _mm_cvtsd_f64(lanes);
+        sum += _mm_cvtsd_f64(_mm_unpackhi_pd(lanes, lanes));
+        index += 2;
+    }
+    while index < n {
+        match kernel {
+            Kernel::L2 => {
+                let difference = a[index] - b[index];
+                sum += difference * difference;
+            }
+            Kernel::Dot => sum += a[index] * b[index],
+            Kernel::NormSq => sum += a[index] * a[index],
         }
         index += 1;
     }
