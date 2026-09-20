@@ -1,8 +1,10 @@
 # Release Qualification
 
-`a3s-vec` `0.1.1` is ready for formal tag and registry publication when every
-release gate below is green for the same source revision. macOS 12 Monterey
-Intel is deliberately unsupported: the project no longer requires, tests, or
+`a3s-vec` `0.1.1` is published. Tag `0.1.1`, hosted CI run
+`35486636866`, and crates.io SHA-256
+`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3` all bind to
+revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. macOS 12 Monterey Intel
+is deliberately unsupported: the project no longer requires, tests, or
 advertises that runtime.
 
 ## 0.1.1 release notes
@@ -110,32 +112,35 @@ for revision `13585ccd3f956f6cb7d669b2ee6acc7096fca03d`; its manifest and
 checksum remain historical evidence.
 
 The current `0.1.1` candidate was produced by
-[CI run 35481932811](https://github.com/A3S-Lab/Vec/actions/runs/35481932811)
-for revision `a08413a48b05f5457d3b164e98d6f85988269541`. Hosted matrix jobs
+[CI run 35486636866](https://github.com/A3S-Lab/Vec/actions/runs/35486636866)
+for revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. Hosted matrix jobs
 (Linux/Windows/macOS Intel & arm64), the public feature performance matrix,
 and the versioned release-candidate packaging job are green for that
 revision. Artifact
-`a3s-vec-0.1.1-a08413a48b05f5457d3b164e98d6f85988269541` binds:
+`a3s-vec-0.1.1-af22076eb32386b7272c2d2acfa2fef742cb2f73` binds:
 
 - package version `0.1.1`;
-- source revision `a08413a48b05f5457d3b164e98d6f85988269541`;
+- source revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`;
 - crate SHA-256
-  `9688ce6ab8dac12f804b0ddc00f3d1c69db52ec23430b73e825ac4712766b68f`;
+  `94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`;
 - runner `Linux/X64`.
 
-Same-host HNSW directional evidence versus zvec 0.7.0 (three-process
-medians, exact re-rank retained) is recorded in
-[`README.md`](README.md) and [`BENCHMARKS.md`](BENCHMARKS.md).
+The prior `0.1.1` candidate from
+[CI run 35481932811](https://github.com/A3S-Lab/Vec/actions/runs/35481932811)
+(`a08413a…`, SHA-256 `9688ce6a…`) is superseded by this tip. Same-host HNSW
+directional evidence versus zvec 0.7.0 (three-process medians, exact re-rank
+retained), including the Apple Silicon query win after ordinal re-rank, is
+recorded in [`README.md`](README.md) and [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Registry status
 
-The crates.io index currently contains `a3s-vec` `0.1.0`, published on
-2026-09-02. That package predates the current qualification revision and must
-not be treated as the `0.1.1` candidate. `cargo publish --dry-run --locked`
-should now validate the new package metadata without the already-published
-version collision. After the release gates below pass, publish `0.1.1` with an
-artifact, checksum, and source-revision manifest that all bind to the same
-qualified revision.
+The crates.io index contains `a3s-vec` `0.1.1`, published from tag `0.1.1`
+at revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. The published crate
+SHA-256 is
+`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`, matching
+the hosted release-candidate artifact from
+[CI run 35486636866](https://github.com/A3S-Lab/Vec/actions/runs/35486636866).
+The earlier `0.1.0` package remains historical.
 
 ## Release gates
 

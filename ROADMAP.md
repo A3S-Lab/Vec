@@ -80,12 +80,14 @@ regression against the same contract; platform accelerators (prefetch/SIMD)
 must preserve scores. Flat exact `f64` may remain slower than zvec's native
 path by design of the public score contract.
 
-Hosted CI on `main` is already green for the prior candidate, including run
-`35481932811` for `a08413a`. Local Apple Silicon evidence after ordinal exact
-re-rank shows HNSW build ~2.27× faster and query p50 ~1.47× lower than zvec
-0.7.0 under the honest harness (Recall@10 0.6000 vs median 0.5844). Remaining
-work: land the Monterey-drop / prefetch / ordinal-rerank revision as the
-publish tip, confirm hosted CI green for that tip, then tag and publish.
+Hosted CI on `main` is green for tip `af22076` including run
+`35486636866`. Tag `0.1.1` points at that revision. crates.io `a3s-vec`
+`0.1.1` is published with SHA-256
+`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`, matching
+the release-candidate artifact. Local Apple Silicon evidence after ordinal
+exact re-rank shows HNSW build ~2.27× faster and query p50 ~1.47× lower than
+zvec 0.7.0 under the honest harness (Recall@10 0.6000 vs median 0.5844).
+Enterprise GA for `0.1.1` is closed.
 
 ## Current implementation status
 
@@ -984,8 +986,8 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Tag and publish `0.1.1` from the hosted-green candidate revision
-   (`a08413a` / artifact CI `35481932811`) per [RELEASE.md](RELEASE.md).
+2. Enterprise GA for `0.1.1` is closed: tag `0.1.1` and crates.io publish bind
+   to revision `af22076` / CI run `35486636866` per [RELEASE.md](RELEASE.md).
    macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index
