@@ -143,10 +143,10 @@ cargo package --locked --allow-dirty
 
 ## Post-publish checklist
 
-Record here when `0.1.4` is tagged and published:
-
-1. Hosted CI run ID on the release revision (binding confirmed when green).
-2. The published crate SHA-256.
+1. Hosted CI run `35510190796` on revision `9a07e9a` (binding confirmed when
+   green).
+2. The published crate SHA-256 matches
+   `15c4220df078de9c350aea98e0f9187890cec066e4d3ee242170a2ab762ed80f`.
 3. Formal git tag `0.1.4` points at that revision, and `cargo publish`
    uploaded the matching crate.
 
