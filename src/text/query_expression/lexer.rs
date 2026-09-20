@@ -176,3 +176,43 @@ fn read_word(characters: &mut Peekable<Chars<'_>>) -> Result<Token> {
     }
     Ok(Token::Word(word))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{lex, RawWord, RawWordPart, Token};
+
+    #[test]
+    fn lex_covers_operators_escapes_wildcards_and_phrase_edges() {
+        let tokens = lex(r#"+rust* OR "a \"b\"" AND te\?st"#).expect("lex");
+        assert!(matches!(tokens.first(), Some(Token::Plus)));
+        assert!(tokens.iter().any(|token| matches!(token, Token::Or)));
+        assert!(tokens.iter().any(|token| matches!(token, Token::And)));
+        assert!(tokens.iter().any(|token| matches!(token, Token::Phrase(_))));
+
+        let word = RawWord {
+            parts: vec![RawWordPart::AnyMany],
+            had_escape: false,
+        };
+        assert!(word.is_unbounded());
+        assert!(word.has_wildcard());
+        assert!(word.plain().is_none());
+
+        let plain = RawWord {
+            parts: vec![RawWordPart::Literal("rust".into())],
+            had_escape: false,
+        };
+        assert_eq!(plain.plain(), Some("rust"));
+        assert!(!plain.has_wildcard());
+        assert!(!plain.is_unbounded());
+
+        assert!(lex(r#""unterminated"#).is_err());
+        assert!(lex("\"line\nbreak\"").is_err());
+        assert!(lex(r#""trail\"#).is_err());
+        assert!(lex(r"term\").is_err());
+        assert!(lex("a&b").is_err());
+        assert!(lex("a|b").is_err());
+        assert!(lex("   ").is_ok());
+        let emptyish = lex("()").expect("parens");
+        assert_eq!(emptyish, vec![Token::LeftParen, Token::RightParen]);
+    }
+}

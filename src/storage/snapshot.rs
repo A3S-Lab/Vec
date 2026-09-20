@@ -292,3 +292,116 @@ pub(super) fn binary_relative_path(generation: u64) -> PathBuf {
 pub(super) fn legacy_relative_path(generation: u64) -> PathBuf {
     Path::new("segments").join(format!("snapshot-{generation:020}.json"))
 }
+
+#[cfg(test)]
+#[allow(clippy::needless_borrows_for_generic_args)]
+mod tests {
+    use super::{
+        binary_relative_path, prune_with_faults, read, snapshot_generation, validate_metadata,
+        write_with_faults, SNAPSHOT_FORMAT_VERSION,
+    };
+    use crate::error::ErrorCode;
+    use crate::schema::{CollectionSchema, FieldSchema};
+    use crate::storage::fault::FaultInjector;
+    use crate::storage::manifest::Manifest;
+    use crate::types::DataType;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn fixture_schema() -> CollectionSchema {
+        CollectionSchema::builder("fixture")
+            .add_field(FieldSchema::new("tag", DataType::String, false, 0).expect("field"))
+            .build()
+            .expect("schema")
+    }
+
+    #[test]
+    fn unsupported_snapshot_format_and_generation_parsing_fail_closed() {
+        let temporary = tempdir().expect("temp");
+        let mut manifest = Manifest::new("fixture", "digest");
+        manifest.generation = 1;
+        manifest.format_version = SNAPSHOT_FORMAT_VERSION + 9;
+        assert!(read(temporary.path(), &manifest)
+            .expect_err("unsupported")
+            .message
+            .contains("unsupported"));
+
+        assert_eq!(
+            snapshot_generation("snapshot-00000000000000000007.bin"),
+            Some(7)
+        );
+        assert_eq!(
+            snapshot_generation("snapshot-00000000000000000008.json"),
+            Some(8)
+        );
+        assert_eq!(snapshot_generation("wal-1.bin"), None);
+        assert_eq!(snapshot_generation("snapshot-not-a-number.bin"), None);
+    }
+
+    #[test]
+    fn snapshot_write_read_and_metadata_validation_fail_closed() {
+        let temporary = tempdir().expect("temp");
+        let root = temporary.path();
+        let schema = fixture_schema();
+        assert_eq!(
+            write_with_faults(root, &schema, &[], 0, 1, true, &FaultInjector::default())
+                .expect_err("generation 0")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+
+        let digest = write_with_faults(root, &schema, &[], 1, 1, true, &FaultInjector::default())
+            .expect("write");
+        let mut manifest = Manifest::new("fixture", &schema.digest());
+        manifest.generation = 1;
+        manifest.checkpoint_revision = 1;
+        manifest.format_version = SNAPSHOT_FORMAT_VERSION;
+        manifest.docs_checksum = digest;
+        let (loaded_schema, docs) = read(root, &manifest).expect("read");
+        assert_eq!(loaded_schema.name, "fixture");
+        assert!(docs.is_empty());
+
+        manifest.docs_checksum ^= 1;
+        assert!(read(root, &manifest)
+            .expect_err("checksum")
+            .message
+            .contains("checksum"));
+
+        let mut bad = Manifest::new("other", &schema.digest());
+        bad.generation = 2;
+        bad.checkpoint_revision = 1;
+        assert!(validate_metadata(&bad, 1, 1, &schema)
+            .expect_err("generation")
+            .message
+            .contains("generation"));
+        bad.generation = 1;
+        bad.checkpoint_revision = 9;
+        assert!(validate_metadata(&bad, 1, 1, &schema)
+            .expect_err("revision")
+            .message
+            .contains("revision"));
+        bad.checkpoint_revision = 1;
+        bad.collection_name = "other".into();
+        assert!(validate_metadata(&bad, 1, 1, &schema)
+            .expect_err("name")
+            .message
+            .contains("collection name"));
+        bad.collection_name = "fixture".into();
+        bad.schema_digest = "wrong".into();
+        assert!(validate_metadata(&bad, 1, 1, &schema)
+            .expect_err("digest")
+            .message
+            .contains("schema digest"));
+
+        // Second generation so prune removes the first artifact.
+        write_with_faults(root, &schema, &[], 2, 2, true, &FaultInjector::default())
+            .expect("second");
+        prune_with_faults(root, 2, &FaultInjector::default()).expect("prune");
+        assert!(!root.join(binary_relative_path(1)).exists());
+        assert!(root.join(binary_relative_path(2)).exists());
+        // Non-snapshot junk in segments is ignored.
+        fs::write(root.join("segments").join("notes.txt"), b"keep").expect("junk");
+        prune_with_faults(root, 2, &FaultInjector::default()).expect("ignore junk");
+        assert!(root.join("segments").join("notes.txt").exists());
+    }
+}

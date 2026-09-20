@@ -31,6 +31,26 @@ fn live_is_dense(live: &RoaringTreemap, slots: usize) -> bool {
     live.len() == slots && live.min() == Some(0) && live.max() == Some(slots - 1)
 }
 
+#[cfg(test)]
+mod live_density_tests {
+    use super::live_is_dense;
+    use roaring::RoaringTreemap;
+
+    #[test]
+    fn live_density_helper_covers_empty_sparse_and_dense_shapes() {
+        let empty = RoaringTreemap::new();
+        assert!(live_is_dense(&empty, 0));
+        assert!(!live_is_dense(&empty, 3));
+
+        let dense: RoaringTreemap = (0..4).collect();
+        assert!(live_is_dense(&dense, 4));
+        assert!(!live_is_dense(&dense, 5));
+
+        let sparse: RoaringTreemap = [0_u64, 2].into_iter().collect();
+        assert!(!live_is_dense(&sparse, 3));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flat_cosine_scan_serial(
     live: &RoaringTreemap,
@@ -1079,5 +1099,218 @@ impl VectorIndex {
         let start = index.checked_mul(dimension)?;
         let end = start.checked_add(dimension)?;
         values.get(start..end)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::bool_assert_comparison,
+    clippy::float_cmp,
+    clippy::too_many_lines
+)]
+mod tests {
+    use super::*;
+    use crate::index::ordinal_map::OrdinalMap;
+    use crate::index::quantization::QuantizedVector;
+    use crate::types::MetricType;
+    use roaring::RoaringTreemap;
+
+    #[test]
+    fn live_is_dense_oracle() {
+        let mut live = RoaringTreemap::new();
+        assert!(live_is_dense(&live, 0));
+        assert!(!live_is_dense(&live, 3));
+        live.insert(0);
+        live.insert(1);
+        live.insert(2);
+        assert!(live_is_dense(&live, 3));
+        live.remove(1);
+        assert!(!live_is_dense(&live, 3));
+    }
+
+    #[test]
+    fn flat_score_f64_metrics_match_independent_oracle() {
+        let query = [1.0_f64, 0.0, 0.0];
+        let candidate = [0.6_f64, 0.8, 0.0];
+        let query_norm = 1.0;
+        let cand_norm = 1.0;
+
+        let cosine = flat_score_f64(
+            &query,
+            &candidate,
+            MetricType::Cosine,
+            query_norm,
+            Some(cand_norm),
+        );
+        assert!((cosine - 0.6).abs() < 1e-12);
+
+        let cosine_zero =
+            flat_score_f64(&query, &candidate, MetricType::Cosine, 0.0, Some(cand_norm));
+        assert_eq!(cosine_zero, 0.0);
+
+        let cosine_none = flat_score_f64(&query, &candidate, MetricType::Cosine, query_norm, None);
+        assert!((cosine_none - 0.6).abs() < 1e-12);
+
+        let zero_cand = [0.0_f64, 0.0, 0.0];
+        assert_eq!(
+            flat_score_f64(&query, &zero_cand, MetricType::Cosine, query_norm, None),
+            0.0
+        );
+
+        let l2 = flat_score_f64(&query, &candidate, MetricType::L2, 0.0, None);
+        let expected_l2 = -((1.0_f64 - 0.6).powi(2) + 0.8_f64.powi(2));
+        assert!((l2 - expected_l2).abs() < 1e-12);
+
+        let ip = flat_score_f64(&query, &candidate, MetricType::Ip, 0.0, None);
+        assert!((ip - 0.6).abs() < 1e-12);
+        let mips = flat_score_f64(&query, &candidate, MetricType::MipsL2, 0.0, None);
+        assert_eq!(mips.to_bits(), ip.to_bits());
+    }
+
+    #[test]
+    fn flat_score_f32_metrics_match_independent_oracle() {
+        let query = [1.0_f64, 0.0];
+        let candidate = [0.0_f32, 1.0];
+        let query_norm = 1.0;
+
+        let cosine = flat_score(
+            &query,
+            &candidate,
+            MetricType::Cosine,
+            query_norm,
+            Some(1.0),
+        );
+        assert_eq!(cosine, 0.0);
+
+        let cosine_none = flat_score(&query, &candidate, MetricType::Cosine, query_norm, None);
+        assert_eq!(cosine_none, 0.0);
+
+        assert_eq!(
+            flat_score(&query, &candidate, MetricType::Cosine, 0.0, Some(1.0)),
+            0.0
+        );
+        assert_eq!(
+            flat_score(&query, &[0.0, 0.0], MetricType::Cosine, query_norm, None),
+            0.0
+        );
+
+        let l2 = flat_score(&query, &candidate, MetricType::L2, 0.0, None);
+        assert!((l2 - (-2.0)).abs() < 1e-12);
+        let ip = flat_score(&query, &candidate, MetricType::Ip, 0.0, None);
+        assert_eq!(ip, 0.0);
+    }
+
+    #[test]
+    fn retain_flat_rank_keeps_topk_by_score_then_ordinal() {
+        let mut ranked = BinaryHeap::new();
+        retain_flat_rank(
+            &mut ranked,
+            FlatRank {
+                exact_score: f64::NAN,
+                ordinal: 9,
+            },
+            2,
+        );
+        assert!(ranked.is_empty());
+
+        retain_flat_rank(
+            &mut ranked,
+            FlatRank {
+                exact_score: 1.0,
+                ordinal: 1,
+            },
+            2,
+        );
+        retain_flat_rank(
+            &mut ranked,
+            FlatRank {
+                exact_score: 3.0,
+                ordinal: 3,
+            },
+            2,
+        );
+        retain_flat_rank(
+            &mut ranked,
+            FlatRank {
+                exact_score: 2.0,
+                ordinal: 2,
+            },
+            2,
+        );
+        assert_eq!(ranked.len(), 2);
+        let mut ids: Vec<_> = ranked.into_iter().map(|c| c.ordinal).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn pack_dense_rejects_empty_and_non_f32() {
+        let empty: OrdinalMap<QuantizedVector> = OrdinalMap::default();
+        assert!(pack_dense_f64(&empty).is_none());
+        assert!(pack_dense_f32(&empty).is_none());
+
+        let mut mixed = OrdinalMap::default();
+        mixed.insert(0, QuantizedVector::F32(vec![1.0, 0.0]));
+        mixed.insert(1, QuantizedVector::Fp16(vec![0]));
+        assert!(pack_dense_f64(&mixed).is_none());
+        assert!(pack_dense_f32(&mixed).is_none());
+
+        let mut jagged = OrdinalMap::default();
+        jagged.insert(0, QuantizedVector::F32(vec![1.0]));
+        jagged.insert(1, QuantizedVector::F32(vec![1.0, 0.0]));
+        assert!(pack_dense_f64(&jagged).is_none());
+        assert!(pack_dense_f32(&jagged).is_none());
+
+        let mut empty_vec = OrdinalMap::default();
+        empty_vec.insert(0, QuantizedVector::F32(vec![]));
+        assert!(pack_dense_f64(&empty_vec).is_none());
+        assert!(pack_dense_f32(&empty_vec).is_none());
+
+        let mut ok = OrdinalMap::default();
+        ok.insert(0, QuantizedVector::F32(vec![1.0, 2.0]));
+        ok.insert(2, QuantizedVector::F32(vec![3.0, 4.0]));
+        let packed = pack_dense_f64(&ok).expect("pack f64");
+        assert_eq!(packed.dimension, 2);
+        assert_eq!(packed.values.len(), 6);
+        let packed_f32 = pack_dense_f32(&ok).expect("pack f32");
+        assert_eq!(packed_f32.values[4], 3.0);
+    }
+
+    #[test]
+    fn flat_cosine_scan_serial_respects_sparse_live_and_topk() {
+        let values = vec![1.0_f64, 0.0, 0.0, 1.0, 0.7, 0.3];
+        let inv_norms = vec![1.0, 1.0, 1.0];
+        let query = [1.0_f64, 0.0];
+        let mut live = RoaringTreemap::new();
+        live.insert(0);
+        live.insert(2);
+        let ranked = flat_cosine_scan_serial(&live, false, 2, &values, &inv_norms, &query, 1, 3);
+        assert_eq!(ranked.len(), 1);
+        assert!(ranked.contains(0));
+    }
+
+    #[test]
+    fn prefetch_helpers_tolerate_out_of_range() {
+        prefetch_f64_at(&[], 0);
+        prefetch_f64_at(&[1.0], 5);
+        prefetch_f32_at(&[], 0);
+        prefetch_f32_at(&[1.0], 5);
+        prefetch_f64_at(&[1.0, 2.0], 0);
+        prefetch_f32_at(&[1.0, 2.0], 0);
+    }
+
+    #[test]
+    fn flat_rank_ord_tie_breaks_on_ordinal() {
+        let left = FlatRank {
+            exact_score: 1.0,
+            ordinal: 1,
+        };
+        let right = FlatRank {
+            exact_score: 1.0,
+            ordinal: 2,
+        };
+        assert_eq!(left.cmp(&right), Ordering::Less);
+        assert_eq!(left.partial_cmp(&right), Some(Ordering::Less));
+        assert_eq!(left.eq(&right), false);
     }
 }

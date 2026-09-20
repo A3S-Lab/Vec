@@ -657,3 +657,203 @@ fn base64_encode(bytes: &[u8]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Doc, FieldValue, VectorValue};
+    use serde_json::json;
+
+    #[test]
+    fn field_value_to_json_covers_every_variant() {
+        assert_eq!(FieldValue::Null.to_json(), json!(null));
+        assert_eq!(FieldValue::String("x".into()).to_json(), json!("x"));
+        assert_eq!(FieldValue::Bool(true).to_json(), json!(true));
+        assert_eq!(FieldValue::Int32(-1).to_json(), json!(-1));
+        assert_eq!(FieldValue::Int64(-2).to_json(), json!(-2));
+        assert_eq!(FieldValue::Uint32(3).to_json(), json!(3));
+        assert_eq!(FieldValue::Uint64(4).to_json(), json!(4));
+        assert_eq!(FieldValue::Float(1.5).to_json(), json!(1.5));
+        assert_eq!(FieldValue::Double(2.5).to_json(), json!(2.5));
+        assert_eq!(
+            FieldValue::Binary(vec![0, 255]).to_json(),
+            json!(super::base64_encode(&[0, 255]))
+        );
+        assert_eq!(
+            FieldValue::ArrayBinary(vec![vec![1], vec![2]]).to_json(),
+            json!([super::base64_encode(&[1]), super::base64_encode(&[2])])
+        );
+        assert_eq!(
+            FieldValue::ArrayString(vec!["a".into()]).to_json(),
+            json!(["a"])
+        );
+        assert_eq!(
+            FieldValue::ArrayBool(vec![true, false]).to_json(),
+            json!([true, false])
+        );
+        assert_eq!(
+            FieldValue::ArrayInt32(vec![1, -2]).to_json(),
+            json!([1, -2])
+        );
+        assert_eq!(
+            FieldValue::ArrayInt64(vec![3, -4]).to_json(),
+            json!([3, -4])
+        );
+        assert_eq!(FieldValue::ArrayUint32(vec![5]).to_json(), json!([5]));
+        assert_eq!(FieldValue::ArrayUint64(vec![6]).to_json(), json!([6]));
+        assert_eq!(FieldValue::ArrayFloat(vec![1.25]).to_json(), json!([1.25]));
+        assert_eq!(FieldValue::ArrayDouble(vec![2.5]).to_json(), json!([2.5]));
+        assert_eq!(FieldValue::Json(json!({"k": 1})).to_json(), json!({"k": 1}));
+    }
+
+    #[test]
+    fn doc_to_core_and_scalar_json_cover_projection_path() {
+        let mut doc = Doc::with_pk("pk").expect("pk");
+        doc.set_score(1.25).expect("score");
+        doc.add_string("title", "hello").expect("string");
+        doc.add_i32("n", 7).expect("i32");
+        doc.add_vector_f32("embedding", &[1.0, 0.0])
+            .expect("vector");
+        assert_eq!(doc.scalar_json("title"), Some(json!("hello")));
+        assert_eq!(doc.scalar_json("missing"), None);
+        let core = doc.to_core();
+        assert!(!format!("{core:?}").is_empty());
+        let projected = doc.project(Some(&["title".into()]), true);
+        assert!(projected.has_field("title"));
+        assert!(!projected.has_field("n"));
+        let _ = VectorValue::Fp32(vec![1.0]);
+    }
+
+    #[test]
+    fn typed_vector_getters_reject_mismatched_storage_variants() {
+        let mut doc = Doc::with_pk("pk").expect("pk");
+        doc.add_vector_f32("embedding", &[1.0, 0.0]).expect("f32");
+        assert!(doc.get_vector_f64("embedding").is_err());
+        assert!(doc.get_vector_fp16("embedding").is_err());
+        assert!(doc.get_vector_i4("embedding").is_err());
+        assert!(doc.get_vector_i8("embedding").is_err());
+        assert!(doc.get_vector_i16("embedding").is_err());
+        assert!(doc.get_vector_binary32("embedding").is_err());
+        assert!(doc.get_vector_binary64("embedding").is_err());
+        assert!(doc.get_sparse_vector_f32("embedding").is_err());
+        assert!(doc.get_sparse_vector_fp16("embedding").is_err());
+        assert_eq!(doc.get_vector_f32("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_f64("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_fp16("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_i4("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_i8("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_i16("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_binary32("missing").expect("ok"), None);
+        assert_eq!(doc.get_vector_binary64("missing").expect("ok"), None);
+        assert_eq!(doc.get_sparse_vector_f32("missing").expect("ok"), None);
+        assert_eq!(doc.get_sparse_vector_fp16("missing").expect("ok"), None);
+
+        doc.set_vector_value("bits", VectorValue::Binary32(vec![0xff; 4]))
+            .expect("bits");
+        assert_eq!(
+            doc.get_vector_binary32("bits").expect("ok"),
+            Some(vec![0xff; 4])
+        );
+        assert!(doc.get_vector_f32("bits").is_err());
+        doc.set_vector_value("bits64", VectorValue::Binary64(vec![1; 8]))
+            .expect("bits64");
+        assert_eq!(
+            doc.get_vector_binary64("bits64").expect("ok"),
+            Some(vec![1; 8])
+        );
+        doc.set_vector_value(
+            "sparse",
+            VectorValue::SparseFp32 {
+                indices: vec![0],
+                values: vec![1.0],
+            },
+        )
+        .expect("sparse");
+        assert_eq!(
+            doc.get_sparse_vector_f32("sparse").expect("ok"),
+            Some((vec![0], vec![1.0]))
+        );
+        doc.set_vector_value(
+            "sparse16",
+            VectorValue::SparseFp16 {
+                indices: vec![1],
+                values: vec![0x3c00],
+            },
+        )
+        .expect("sparse16");
+        assert_eq!(
+            doc.get_sparse_vector_fp16("sparse16").expect("ok"),
+            Some((vec![1], vec![0x3c00]))
+        );
+
+        // Length-mismatched sparse maps refuse dense conversion oracles.
+        let bad = VectorValue::SparseFp32 {
+            indices: vec![0, 1],
+            values: vec![1.0],
+        };
+        assert!(bad.to_sparse_f64().is_none());
+        let bad16 = VectorValue::SparseFp16 {
+            indices: vec![0],
+            values: vec![0x3c00, 0x4000],
+        };
+        assert!(bad16.to_sparse_f64().is_none());
+        assert!(VectorValue::Binary32(vec![0xff; 4]).to_core().is_none());
+        assert!(VectorValue::Binary64(vec![0; 8]).to_core().is_none());
+    }
+
+    #[test]
+    fn typed_scalar_getters_reject_mismatched_field_types() {
+        let mut doc = Doc::with_pk("pk").expect("pk");
+        doc.add_string("title", "hello").expect("string");
+        doc.add_bool("flag", true).expect("bool");
+        doc.add_i32("i32", 1).expect("i32");
+        doc.add_i64("i64", 2).expect("i64");
+        doc.add_u32("u32", 3).expect("u32");
+        doc.add_u64("u64", 4).expect("u64");
+        doc.add_f32("f32", 1.5).expect("f32");
+        doc.add_f64("f64", 2.5).expect("f64");
+        doc.add_binary("bin", &[1, 2]).expect("bin");
+        doc.add_array_i32("ai32", &[1]).expect("ai32");
+        doc.add_array_i64("ai64", &[2]).expect("ai64");
+        doc.add_array_u32("au32", &[3]).expect("au32");
+        doc.add_array_u64("au64", &[4]).expect("au64");
+        doc.add_array_f32("af32", &[1.0]).expect("af32");
+        doc.add_array_f64("af64", &[2.0]).expect("af64");
+        doc.add_array_bool("abool", &[true]).expect("abool");
+
+        assert!(doc.get_string("flag").is_err());
+        assert!(doc.get_bool("title").is_err());
+        assert!(doc.get_i32("title").is_err());
+        assert!(doc.get_i64("title").is_err());
+        assert!(doc.get_u32("title").is_err());
+        assert!(doc.get_u64("title").is_err());
+        assert!(doc.get_f32("title").is_err());
+        assert!(doc.get_f64("title").is_err());
+        assert!(doc.get_binary("title").is_err());
+        assert!(doc.get_array_i32("title").is_err());
+        assert!(doc.get_array_i64("title").is_err());
+        assert!(doc.get_array_u32("title").is_err());
+        assert!(doc.get_array_u64("title").is_err());
+        assert!(doc.get_array_f32("title").is_err());
+        assert!(doc.get_array_f64("title").is_err());
+        assert!(doc.get_array_bool("title").is_err());
+
+        assert_eq!(doc.get_string("title").expect("ok"), Some("hello".into()));
+        assert_eq!(doc.get_bool("flag").expect("ok"), Some(true));
+        assert_eq!(doc.get_i32("i32").expect("ok"), Some(1));
+        assert_eq!(doc.get_i64("i64").expect("ok"), Some(2));
+        assert_eq!(doc.get_u32("u32").expect("ok"), Some(3));
+        assert_eq!(doc.get_u64("u64").expect("ok"), Some(4));
+        assert_eq!(doc.get_f32("f32").expect("ok"), Some(1.5));
+        assert_eq!(doc.get_f64("f64").expect("ok"), Some(2.5));
+        assert_eq!(doc.get_binary("bin").expect("ok"), Some(vec![1, 2]));
+        assert_eq!(doc.get_array_i32("ai32").expect("ok"), Some(vec![1]));
+        assert_eq!(doc.get_array_i64("ai64").expect("ok"), Some(vec![2]));
+        assert_eq!(doc.get_array_u32("au32").expect("ok"), Some(vec![3]));
+        assert_eq!(doc.get_array_u64("au64").expect("ok"), Some(vec![4]));
+        assert_eq!(doc.get_array_f32("af32").expect("ok"), Some(vec![1.0]));
+        assert_eq!(doc.get_array_f64("af64").expect("ok"), Some(vec![2.0]));
+        assert_eq!(doc.get_array_bool("abool").expect("ok"), Some(vec![true]));
+        assert_eq!(doc.get_string("missing").expect("ok"), None);
+        let _ = Doc::default();
+    }
+}

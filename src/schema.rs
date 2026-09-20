@@ -913,3 +913,30 @@ fn validate_field_shape(name: &str, data_type: DataType, dimension: u32) -> Resu
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_index_configuration_resolves_scalar_and_vector_fields() {
+        let mut schema = CollectionSchema::new("check-index").expect("schema");
+        schema
+            .add_field(&FieldSchema::new("title", DataType::String, false, 0).expect("title"))
+            .expect("add title");
+        schema
+            .add_vector_field(
+                &VectorSchema::new("embedding", DataType::VectorFp32, 2).expect("embedding"),
+            )
+            .expect("add embedding");
+        assert!(schema
+            .check_index_configuration("missing", &IndexParams::invert(false, false).unwrap())
+            .is_err());
+        schema
+            .check_index_configuration("title", &IndexParams::invert(false, false).unwrap())
+            .expect("scalar invert");
+        schema
+            .check_index_configuration("embedding", &IndexParams::flat(MetricType::L2).unwrap())
+            .expect("vector flat");
+    }
+}

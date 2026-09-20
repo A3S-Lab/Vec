@@ -9,7 +9,73 @@ concurrency levels.
 Environment for the 2026-08-30 and 2026-08-31 measurements: Apple M5, 16 GiB
 memory, Darwin arm64, Rust/Cargo 1.98.0.
 
-## Cross-project smoke comparison: a3s-vec and zvec
+## First-principles a3s-vec ↔ zvec comparison (current)
+
+Protocol: [`docs/scale-compare-protocol.md`](docs/scale-compare-protocol.md).
+Runner: `scripts/run_fp_compare.sh`. Companion harnesses:
+`benches/scale_compare.rs` and `scripts/scale_compare_zvec.py`.
+
+This section **supersedes** earlier Apple Silicon marketing tables and the
+stacked same-day “after prefetch / after ordinal rerank” narrative. Those
+rows remain below only as historical evidence. Claims below come from a
+fresh three-process median on **current HEAD**, not from the most flattering
+inherited cell.
+
+### Host and controls (fairness harness)
+
+| Item | Value |
+| --- | --- |
+| Host | Apple M5 Max, 64 GiB, macOS 26.6.2 arm64 |
+| a3s-vec | `0.1.2` candidate on Apple M5 Max, `RAYON_NUM_THREADS=1` |
+| zvec | `0.7.0` macOS arm64 wheel, Python 3.13.15, `IndexOption(concurrency=1)`, `init(query_threads=1)`, `is_using_refiner=False` |
+| Fixture | Cosine, top-10, 32 queries × 3 rounds, batch 512, HNSW `m=16`, `ef_construction=96`, `ef=64` |
+| Artifacts | `target/fp-compare-20260920/{small,scale}/` (local; not committed) |
+| Stamp | `20260920T093805Z` (scale), `20260920T093757Z` (small) |
+
+Asymmetries that remain material: portable Rust crate vs native C++ wheel,
+a3s exact `f64` re-rank vs zvec without refiner, and a3s Flat
+`rebuild_index` time (reported in `index_build_ms`) vs zvec Flat `0`.
+
+### 100,000 × 128 (primary)
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 1,278.853 | 52.696 | 1,331.549 | 3,550.375 | 3,895.000 | 4,226.208 | 277.31 | 1.0000 |
+| zvec 0.7.0 flat | 1,036.483 | 0.000 | 1,036.483 | 1,841.084 | 2,285.334 | 2,315.667 | 534.10 | 1.0000 |
+| a3s-vec HNSW | 1,278.853 | 26,341.207 | 27,733.976 | 103.417 | 139.917 | 154.458 | 9,255.35 | 0.6000 |
+| zvec 0.7.0 HNSW | 1,036.483 | 46,167.887 | 47,194.801 | 149.000 | 201.584 | 210.583 | 6,507.28 | 0.5813 |
+
+Relative medians (same controls):
+
+- HNSW index build: a3s-vec ≈ **1.75×** shorter than zvec.
+- HNSW query p50: a3s-vec ≈ **1.44×** lower than zvec, with exact re-ranking kept.
+- HNSW Recall@10: a3s-vec stable **0.6000**; zvec **0.5656–0.6031** (median 0.5813).
+- Flat query under one Rayon worker: a3s-vec ≈ **1.93×** higher p50 than zvec
+  (`f64` public score / exact scan vs native `f32` path). Insert is about
+  **1.23×** longer on a3s-vec in this run.
+
+### Product-default Flat (not the fairness harness)
+
+Exact Flat scan is embarrassingly parallel. With Rayon **unset** (host
+reports 18 logical CPUs) on the same 100k×128 fixture, three-process a3s-vec
+Flat median p50 is **650.584 µs** (Recall@10 = 1.0) versus zvec’s one-worker
+Flat median **1,841.084 µs** — about **2.83×** lower p50. Do **not** mix this
+row into the one-worker HNSW fairness table.
+
+### 2,000 × 32 (wiring / recall sanity)
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 30.947 | 0.718 | 31.673 | 19.667 | 23.542 | 36.167 | 48,104.22 | 1.0000 |
+| zvec 0.7.0 flat | 33.379 | 0.000 | 33.379 | 55.750 | 111.791 | 200.458 | 15,257.27 | 1.0000 |
+| a3s-vec HNSW | 30.947 | 94.657 | 124.797 | 30.709 | 37.833 | 40.542 | 31,102.77 | 1.0000 |
+| zvec 0.7.0 HNSW | 33.379 | 69.722 | 101.882 | 57.333 | 113.125 | 163.250 | 15,231.55 | 1.0000 |
+
+At this tiny corpus, zvec HNSW builds faster (~1.36×) while a3s-vec HNSW
+query p50 is ~1.87× lower. Recall@10 is 1.0 for both. Prefer the 100k table
+for product direction.
+
+## Historical: Xeon smoke comparison (2026-09-03)
 
 This is a supplemental, same-host API comparison refreshed on 2026-09-03. It
 is not the release gate and is not a substitute for a VectorDBBench run at
@@ -135,7 +201,13 @@ the index-creation transaction, while the zvec call has different persistence
 and post-insert lifecycle semantics. Repeat the run with identical durability,
 optimize, and recall targets before using it for a capacity decision.
 
-### Local Apple Silicon refresh (2026-09-20)
+### Historical: stacked Apple Silicon notes (superseded by FP redo above)
+
+The following same-day progressive tables (small fixture, 100k, prefetch,
+ordinal rerank) are retained for archaeology only. Prefer the
+**First-principles** section for current HEAD claims.
+
+#### Archived local Apple Silicon refresh (2026-09-20, pre-FP redo)
 
 Same harness and controls as the tables above (`RAYON_NUM_THREADS=1`, zvec
 `IndexOption(concurrency=1)`, `is_using_refiner=False`, cosine, `m=16`,
@@ -1288,8 +1360,10 @@ were 117.4 to 8,305.7 times faster than their scan controls for term/phrase,
 required/optional, range, and proximity execution. Wildcard expansion was 2.93
 times faster than scan while still scoring one document. Fuzzy distance 1
 expanded to 36 concrete terms and was 2.91 times faster than scoring the full
-corpus. Dynamic wildcard/fuzzy latency includes one analyzed-vocabulary scan;
-the concrete term set is then shared by candidate construction and BM25.
+corpus. Dynamic wildcard/fuzzy expansion uses an index-local character-trigram
+prefilter when a literal run (or fuzzy query) yields a non-zero shared-trigram
+bound; otherwise it falls back to one analyzed-vocabulary scan. The concrete
+term set is then shared by candidate construction and BM25.
 
 The first run preserved the same plans and candidate counts. Its indexed/scan
 pairs were 7.38/40,620.12, 4.62/38,979.88,

@@ -695,10 +695,12 @@ unsafe fn cosine_parts_f64_f32_sse2(query: &[f64], candidate: &[f32]) -> (f64, f
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::{
-        cosine_parts_f32, cosine_parts_f64_f32, dot_f32, dot_f64_f32, l2sq_f32, l2sq_f64_f32,
-        norm_sq_f32, score_f32, score_f64_f32,
+        cosine_parts_f32, cosine_parts_f64_f32, dot_f32, dot_f64, dot_f64_f32, f32_scalar,
+        f64_f32_scalar, f64_scalar, l2sq_f32, l2sq_f64, l2sq_f64_f32, norm_sq_f32, score_f32,
+        score_f64_f32, Kernel,
     };
     use crate::types::MetricType;
 
@@ -814,5 +816,73 @@ mod tests {
             assert_eq!(from_f32.to_bits(), from_doc.to_bits(), "{metric:?}");
             assert!(from_f32.is_finite());
         }
+    }
+
+    #[test]
+    fn portable_scalar_kernels_match_dispatch_bits() {
+        let a32 = [0.25_f32, -0.5, 0.75, 0.125, -1.0];
+        let b32 = [-0.75_f32, -0.25, 0.5, 1.0, 0.125];
+        assert_eq!(
+            f32_scalar(&a32, &b32, Kernel::Dot).to_bits(),
+            dot_f32(&a32, &b32).to_bits()
+        );
+        assert_eq!(
+            f32_scalar(&a32, &b32, Kernel::L2).to_bits(),
+            l2sq_f32(&a32, &b32).to_bits()
+        );
+        assert_eq!(
+            f32_scalar(&a32, &a32, Kernel::NormSq).to_bits(),
+            norm_sq_f32(&a32).to_bits()
+        );
+
+        let a64: Vec<f64> = a32.iter().copied().map(f64::from).collect();
+        let b64: Vec<f64> = b32.iter().copied().map(f64::from).collect();
+        assert_eq!(
+            f64_scalar(&a64, &b64, Kernel::Dot).to_bits(),
+            dot_f64(&a64, &b64).to_bits()
+        );
+        assert_eq!(
+            f64_scalar(&a64, &b64, Kernel::L2).to_bits(),
+            l2sq_f64(&a64, &b64).to_bits()
+        );
+        assert_eq!(
+            f64_scalar(&a64, &a64, Kernel::NormSq).to_bits(),
+            a64.iter().map(|v| v * v).sum::<f64>().to_bits()
+        );
+
+        assert_eq!(
+            f64_f32_scalar(&a64, &b32, Kernel::Dot).to_bits(),
+            dot_f64_f32(&a64, &b32).to_bits()
+        );
+        assert_eq!(
+            f64_f32_scalar(&a64, &b32, Kernel::L2).to_bits(),
+            l2sq_f64_f32(&a64, &b32).to_bits()
+        );
+        assert_eq!(
+            f64_f32_scalar(&a64, &b32, Kernel::NormSq).to_bits(),
+            b32.iter()
+                .map(|v| {
+                    let wide = f64::from(*v);
+                    wide * wide
+                })
+                .sum::<f64>()
+                .to_bits()
+        );
+    }
+
+    #[test]
+    fn score_helpers_reject_mismatched_dimensions() {
+        let query = [1.0_f32, 0.0];
+        let candidate = [1.0_f32];
+        assert_eq!(
+            score_f32(&query, &candidate, MetricType::L2, 1.0),
+            f64::NEG_INFINITY
+        );
+        let query_f64 = [1.0_f64, 0.0];
+        assert_eq!(
+            score_f64_f32(&query_f64, &candidate, MetricType::Ip, 1.0),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(score_f32(&query, &[0.0, 0.0], MetricType::Cosine, 0.0), 0.0);
     }
 }

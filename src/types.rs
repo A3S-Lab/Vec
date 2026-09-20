@@ -270,3 +270,121 @@ impl fmt::Display for DocOperator {
         write!(f, "{self:?}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DataType, DocOperator, IndexType, MetricType, QuantizeType};
+
+    #[test]
+    fn data_type_round_trips_and_classifies_every_variant() {
+        let variants = [
+            DataType::Undefined,
+            DataType::Binary,
+            DataType::String,
+            DataType::Bool,
+            DataType::Int32,
+            DataType::Int64,
+            DataType::Uint32,
+            DataType::Uint64,
+            DataType::Float,
+            DataType::Double,
+            DataType::VectorBinary32,
+            DataType::VectorBinary64,
+            DataType::VectorFp16,
+            DataType::VectorFp32,
+            DataType::VectorFp64,
+            DataType::VectorInt4,
+            DataType::VectorInt8,
+            DataType::VectorInt16,
+            DataType::SparseVectorFp16,
+            DataType::SparseVectorFp32,
+            DataType::ArrayBinary,
+            DataType::ArrayString,
+            DataType::ArrayBool,
+            DataType::ArrayInt32,
+            DataType::ArrayInt64,
+            DataType::ArrayUint32,
+            DataType::ArrayUint64,
+            DataType::ArrayFloat,
+            DataType::ArrayDouble,
+        ];
+        for variant in variants {
+            let encoded = u32::from(variant);
+            assert_eq!(DataType::from(encoded), variant);
+            assert!(!format!("{variant}").is_empty());
+            assert_eq!(variant.is_vector(), (20..40).contains(&encoded));
+            assert_eq!(
+                variant.is_sparse_vector(),
+                matches!(
+                    variant,
+                    DataType::SparseVectorFp16 | DataType::SparseVectorFp32
+                )
+            );
+            assert_eq!(
+                variant.is_dense_vector(),
+                variant.is_vector() && !variant.is_sparse_vector()
+            );
+            assert_eq!(variant.is_array(), encoded >= 40);
+            assert_eq!(
+                variant.is_scalar(),
+                !variant.is_vector() && !variant.is_array() && variant != DataType::Undefined
+            );
+        }
+        assert_eq!(DataType::from(999), DataType::Undefined);
+    }
+
+    #[test]
+    fn index_metric_quantize_and_operator_vocabularies_round_trip() {
+        for variant in [
+            IndexType::Undefined,
+            IndexType::Hnsw,
+            IndexType::Ivf,
+            IndexType::Flat,
+            IndexType::Diskann,
+            IndexType::Vamana,
+            IndexType::IvfRabitq,
+            IndexType::HnswRabitq,
+            IndexType::Invert,
+            IndexType::Fts,
+        ] {
+            assert_eq!(IndexType::from(u32::from(variant)), variant);
+            assert!(!format!("{variant}").is_empty());
+        }
+        assert_eq!(IndexType::from(999), IndexType::Undefined);
+
+        for variant in [
+            MetricType::Undefined,
+            MetricType::L2,
+            MetricType::Ip,
+            MetricType::Cosine,
+            MetricType::MipsL2,
+        ] {
+            assert_eq!(MetricType::from(u32::from(variant)), variant);
+            assert!(variant.higher_is_better());
+            assert!(!format!("{variant}").is_empty());
+        }
+        assert_eq!(MetricType::from(999), MetricType::Undefined);
+
+        for variant in [
+            QuantizeType::Undefined,
+            QuantizeType::Fp16,
+            QuantizeType::Int8,
+            QuantizeType::Int4,
+            QuantizeType::Rabitq,
+            QuantizeType::Pq,
+        ] {
+            assert_eq!(QuantizeType::from(u32::from(variant)), variant);
+            assert!(!format!("{variant}").is_empty());
+        }
+        assert_eq!(QuantizeType::from(999), QuantizeType::Undefined);
+
+        for variant in [
+            DocOperator::Insert,
+            DocOperator::Update,
+            DocOperator::Upsert,
+            DocOperator::Delete,
+        ] {
+            assert!(!format!("{variant}").is_empty());
+        }
+    }
+}

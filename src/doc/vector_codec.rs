@@ -189,8 +189,12 @@ pub(super) fn f64_to_f32(value: f64) -> Option<f32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
-    use super::{f32_to_fp16, fp16_is_finite, fp16_to_f32};
+    use super::{
+        encode_fp16, f32_to_fp16, f64_to_f32, fp16_is_finite, fp16_to_f32, validate_vector,
+    };
+    use crate::doc::VectorValue;
 
     #[test]
     fn every_finite_fp16_bit_pattern_round_trips() {
@@ -203,5 +207,55 @@ mod tests {
             let encoded = f32_to_fp16(value).expect("decoded FP16 value must encode");
             assert_eq!(encoded, bits, "value={value}, bits={bits:#06x}");
         }
+    }
+
+    #[test]
+    fn validate_vector_rejects_empty_nonfinite_and_sparse_shape_errors() {
+        assert!(validate_vector(&VectorValue::Fp32(vec![])).is_err());
+        assert!(validate_vector(&VectorValue::Fp32(vec![f32::NAN])).is_err());
+        assert!(validate_vector(&VectorValue::Fp64(vec![f64::INFINITY])).is_err());
+        assert!(validate_vector(&VectorValue::Fp16(vec![0x7c00])).is_err());
+        assert!(validate_vector(&VectorValue::Int4(vec![8])).is_err());
+        assert!(validate_vector(&VectorValue::Binary32(vec![1, 2])).is_err());
+        assert!(validate_vector(&VectorValue::Binary64(vec![1; 4])).is_err());
+        assert!(validate_vector(&VectorValue::SparseFp32 {
+            indices: vec![],
+            values: vec![],
+        })
+        .is_err());
+        assert!(validate_vector(&VectorValue::SparseFp32 {
+            indices: vec![0, 0],
+            values: vec![1.0, 2.0],
+        })
+        .is_err());
+        assert!(validate_vector(&VectorValue::SparseFp16 {
+            indices: vec![0],
+            values: vec![0x7c00],
+        })
+        .is_err());
+        assert!(validate_vector(&VectorValue::SparseFp32 {
+            indices: vec![0],
+            values: vec![f32::NAN],
+        })
+        .is_err());
+        assert!(validate_vector(&VectorValue::Fp32(vec![1.0])).is_ok());
+        assert!(validate_vector(&VectorValue::Binary32(vec![0; 4])).is_ok());
+    }
+
+    #[test]
+    fn fp16_encode_and_f64_promotion_cover_range_guards() {
+        assert!(encode_fp16(&[]).is_err());
+        assert!(encode_fp16(&[f32::NAN]).is_err());
+        assert!(encode_fp16(&[70_000.0]).is_err());
+        assert!(encode_fp16(&[1.0]).is_ok());
+        assert_eq!(f64_to_f32(1.5), Some(1.5));
+        assert_eq!(f64_to_f32(f64::NAN), None);
+        assert_eq!(f64_to_f32(f64::INFINITY), None);
+        assert_eq!(f64_to_f32(f64::from(f32::MAX) * 2.0), None);
+        // Subnormal / signed-zero FP16 decode arms.
+        assert_eq!(fp16_to_f32(0x0000), 0.0);
+        assert!(fp16_to_f32(0x0001).is_finite());
+        assert!(!fp16_is_finite(0x7c00));
+        assert!(!fp16_is_finite(0xfc00));
     }
 }

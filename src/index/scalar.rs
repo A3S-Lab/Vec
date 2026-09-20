@@ -759,8 +759,15 @@ fn like_literal_prefix(pattern: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
 mod tests {
-    use super::{like_literal_prefix, like_match};
+    use super::{
+        like_literal_prefix, like_match, literal_key, scalar_key, ScalarKey, ScalarNumber,
+    };
+    use crate::doc::FieldValue;
+    use crate::types::DataType;
+    use std::cmp::Ordering;
+    use zvec_core::filter::Literal;
 
     #[test]
     fn wildcard_matching_agrees_with_filter_syntax() {
@@ -768,6 +775,12 @@ mod tests {
         assert!(like_match("main.rs", "*.rs"));
         assert!(like_match("abc", "a_c"));
         assert!(!like_match("src/lib.rs", "tests/%"));
+        assert!(like_match("abcdef", "a%c%f"));
+        assert!(like_match("abc", "%%%"));
+        assert!(!like_match("abc", "ab%d"));
+        assert!(!like_match("ab", "a_c"));
+        assert!(like_match("", "%"));
+        assert!(!like_match("", "_"));
     }
 
     #[test]
@@ -776,5 +789,68 @@ mod tests {
         assert_eq!(like_literal_prefix("main.rs").as_deref(), Some("main.rs"));
         assert_eq!(like_literal_prefix("_ain.rs"), None);
         assert_eq!(like_literal_prefix("*.rs"), None);
+    }
+
+    #[test]
+    fn scalar_number_and_literal_keys_reject_non_finite_values() {
+        assert!(ScalarNumber::new(0.0).is_some());
+        assert!(ScalarNumber::new(-1.5).is_some());
+        assert!(ScalarNumber::new(f64::NAN).is_none());
+        assert!(ScalarNumber::new(f64::INFINITY).is_none());
+        assert_eq!(
+            literal_key(&Literal::Num(1.0))
+                .map(|key| format!("{key:?}"))
+                .is_some(),
+            true
+        );
+        assert!(literal_key(&Literal::Num(f64::NAN)).is_none());
+        assert!(literal_key(&Literal::Null).is_some());
+        assert!(literal_key(&Literal::Bool(true)).is_some());
+        assert!(literal_key(&Literal::Str("x".into())).is_some());
+    }
+
+    #[test]
+    fn scalar_number_ord_collapses_signed_zero_and_orders_finite_values() {
+        let zero = ScalarNumber::new(0.0).expect("zero");
+        let neg_zero = ScalarNumber::new(-0.0).expect("neg zero");
+        let low = ScalarNumber::new(-2.5).expect("low");
+        let high = ScalarNumber::new(3.0).expect("high");
+        assert_eq!(zero, neg_zero);
+        assert_eq!(zero.partial_cmp(&neg_zero), Some(Ordering::Equal));
+        assert_eq!(low.cmp(&high), Ordering::Less);
+        assert_eq!(high.cmp(&low), Ordering::Greater);
+        assert_eq!(low.partial_cmp(&high), Some(Ordering::Less));
+        let mut values = vec![high, low, zero];
+        values.sort();
+        assert_eq!(values, vec![low, zero, high]);
+    }
+
+    #[test]
+    fn scalar_key_validation_and_json_mapping_cover_supported_shapes() {
+        assert!(ScalarKey::Null.validates(DataType::String));
+        assert!(ScalarKey::Bool(true).validates(DataType::Bool));
+        assert!(!ScalarKey::Bool(true).validates(DataType::String));
+        let number = ScalarKey::Number(ScalarNumber::new(1.0).expect("number"));
+        assert!(number.validates(DataType::Int32));
+        assert!(number.validates(DataType::Double));
+        assert!(!number.validates(DataType::String));
+        assert!(ScalarKey::String("x".into()).validates(DataType::String));
+        assert!(ScalarKey::String("x".into()).validates(DataType::Binary));
+        assert!(!ScalarKey::String("x".into()).validates(DataType::Bool));
+
+        assert_eq!(scalar_key(&FieldValue::Null), Some(ScalarKey::Null));
+        assert_eq!(
+            scalar_key(&FieldValue::Bool(false)),
+            Some(ScalarKey::Bool(false))
+        );
+        assert_eq!(
+            scalar_key(&FieldValue::Int32(7)),
+            Some(ScalarKey::Number(ScalarNumber::new(7.0).expect("7")))
+        );
+        assert_eq!(
+            scalar_key(&FieldValue::String("ok".into())),
+            Some(ScalarKey::String("ok".into()))
+        );
+        assert!(scalar_key(&FieldValue::ArrayString(vec!["a".into()])).is_none());
     }
 }

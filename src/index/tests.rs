@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss)]
 use super::IndexRegistry;
 use crate::doc::DocumentMap;
 use crate::index::ordinals::OrdinalSet;
@@ -397,4 +398,275 @@ fn flat_index_returns_exact_topk_candidates() {
     assert_eq!(selection.count(), 2);
     let ids: Vec<_> = selection.ids().collect();
     assert_eq!(ids, ["a", "c"]);
+}
+
+fn flat_schema() -> CollectionSchema {
+    indexed_schema_with(&IndexParams::flat(MetricType::Cosine).expect("Flat must be valid"))
+}
+
+#[test]
+fn flat_overlay_tombstones_still_select_exact_live_candidates() {
+    let schema = flat_schema();
+    let docs = [
+        ("a".to_string(), vector_doc("a", &[1.0, 0.0])),
+        ("b".to_string(), vector_doc("b", &[0.0, 1.0])),
+        ("c".to_string(), vector_doc("c", &[0.7, 0.3])),
+    ]
+    .into_iter()
+    .collect::<DocumentMap>();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("Flat must build");
+    let mut overlays = indexes.clone();
+    let flat = overlays
+        .indexes
+        .get_mut("embedding")
+        .expect("Flat field must exist");
+    let tombstone = overlays
+        .ordinals
+        .ordinal("b")
+        .expect("ordinal for deleted doc");
+    flat.tombstones.insert(tombstone);
+    // Keep source_revision matched so Flat is selected; overlay forces live scan.
+    assert_eq!(flat.source_revision, 1);
+
+    let query = SearchQuery::new("embedding", &[1.0, 0.0], 2).expect("query");
+    let candidates = overlays
+        .candidates(&docs, 1, &query, None)
+        .expect("selection")
+        .expect("Flat generation must be selected");
+    let ids: BTreeSet<_> = candidates.selection.ids().collect();
+    assert_eq!(ids, BTreeSet::from(["a", "c"]));
+}
+
+#[test]
+fn flat_filtered_allowed_bitmap_uses_live_scan_path() {
+    let schema = flat_schema();
+    let docs = (0..64)
+        .map(|value| {
+            let id = format!("d{value:02}");
+            (id.clone(), vector_doc(&id, &[value as f32, 0.0]))
+        })
+        .collect::<DocumentMap>();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("Flat must build");
+    let mut allowed = RoaringTreemap::new();
+    for value in [1_u64, 2, 3, 10, 20, 30] {
+        if let Some(ordinal) = indexes.ordinals.ordinal(&format!("d{value:02}")) {
+            allowed.insert(ordinal);
+        }
+    }
+    let allowed_set = OrdinalSet::new(&indexes.ordinals, allowed);
+    let query = SearchQuery::new("embedding", &[30.0, 0.0], 6).expect("query");
+    let candidates = indexes
+        .candidates(&docs, 1, &query, Some(&allowed_set))
+        .expect("selection")
+        .expect("Flat with allow-list");
+    let ids: BTreeSet<_> = candidates.selection.ids().collect();
+    assert_eq!(
+        ids,
+        BTreeSet::from(["d01", "d02", "d03", "d10", "d20", "d30"])
+    );
+}
+
+#[test]
+fn rebuild_field_rejects_unknown_and_unsupported_targets() {
+    let schema = mixed_index_schema();
+    let docs: DocumentMap = (0_u16..8)
+        .map(|value| {
+            let id = format!("doc-{value}");
+            let mut doc = Doc::with_pk(&id).expect("document must be valid");
+            doc.add_vector_f32("embedding", &[f32::from(value), 0.0])
+                .expect("vector must be valid");
+            doc.add_string("language", "rust")
+                .expect("language must be valid");
+            doc.add_string("body", "workspace")
+                .expect("body must be valid");
+            (id, Arc::new(doc))
+        })
+        .collect();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("indexes must build");
+    assert!(indexes.rebuild_field(&schema, &docs, 1, "missing").is_err());
+
+    // Unindexed scalar field is not a rebuild target.
+    let mut schema_with_tag = mixed_index_schema();
+    schema_with_tag
+        .fields
+        .push(FieldSchema::new("tag", DataType::String, false, 0).expect("tag"));
+    assert!(indexes
+        .rebuild_field(&schema_with_tag, &docs, 1, "tag")
+        .is_err());
+}
+
+#[test]
+fn build_rejects_incomplete_or_nonpositive_ann_construction_params() {
+    use serde_json::json;
+
+    let docs: DocumentMap = (0_u16..8)
+        .map(|value| {
+            let id = format!("doc-{value}");
+            (id.clone(), vector_doc(&id, &[f32::from(value), 0.0]))
+        })
+        .collect();
+
+    let mut schema = indexed_schema();
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("hnsw")
+        .params
+        .remove("m");
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema = indexed_schema();
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("hnsw")
+        .params
+        .insert("ef_construction".into(), json!(0));
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema =
+        indexed_schema_with(&IndexParams::ivf(MetricType::L2, 4, 1, false).expect("ivf"));
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("ivf")
+        .params
+        .remove("use_soar");
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema =
+        indexed_schema_with(&IndexParams::diskann(MetricType::L2, 8, 16, 0).expect("diskann"));
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("diskann")
+        .params
+        .insert("alpha".into(), json!(f64::NAN));
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema =
+        indexed_schema_with(&IndexParams::vamana(MetricType::L2, 8, 16, 1.2).expect("vamana"));
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("vamana")
+        .params
+        .remove("saturate");
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema =
+        indexed_schema_with(&IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"));
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("hnsw-rabitq")
+        .params
+        .remove("total_bits");
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+
+    let mut schema = indexed_schema_with(
+        &IndexParams::ivf_rabitq(MetricType::L2, 8, 4, 32).expect("ivf-rabitq"),
+    );
+    schema.vectors[0]
+        .index_params
+        .as_mut()
+        .expect("ivf-rabitq")
+        .params
+        .insert("n_list".into(), json!(0));
+    assert!(IndexRegistry::build(&schema, &docs, 1).is_err());
+}
+
+#[test]
+fn missing_packed_ann_reports_incomplete_stats_and_flat_absent_stays_ready() {
+    let schema = indexed_schema();
+    let docs: DocumentMap = (0_u16..8)
+        .map(|value| {
+            let id = format!("doc-{value}");
+            (id.clone(), vector_doc(&id, &[f32::from(value), 0.0]))
+        })
+        .collect();
+    let indexes = IndexRegistry::build(&schema, &docs, 1).expect("indexes must build");
+    let mut stripped = indexes.clone();
+    stripped.indexes.clear();
+    let stats = stripped.stats(&schema, &docs, 1);
+    assert!(
+        stats.iter().any(|stat| {
+            stat.name == "embedding"
+                && stat.state == "missing"
+                && (stat.completeness - 0.0).abs() < f32::EPSILON
+        }),
+        "absent HNSW must surface as missing, got {stats:?}"
+    );
+
+    let flat_schema = flat_schema();
+    let flat_docs = docs.clone();
+    let flat = IndexRegistry::build(&flat_schema, &flat_docs, 1).expect("flat must build");
+    let mut flat_stripped = flat.clone();
+    flat_stripped.indexes.clear();
+    let flat_stats = flat_stripped.stats(&flat_schema, &flat_docs, 7);
+    assert!(
+        flat_stats.iter().any(|stat| {
+            stat.name == "embedding"
+                && stat.index_type == crate::types::IndexType::Flat
+                && stat.state == "ready"
+                && stat.source_revision == 7
+        }),
+        "absent packed Flat remains document-scan ready, got {flat_stats:?}"
+    );
+}
+
+#[test]
+fn binary_flat_stats_remain_document_backed() {
+    let mut field = FieldSchema::new("bits", DataType::VectorBinary32, false, 32).expect("field");
+    field
+        .set_index_params(&IndexParams::flat(MetricType::L2).expect("flat"))
+        .expect("binary flat");
+    let schema = CollectionSchema::builder("binary-flat-stats")
+        .add_field(field)
+        .build()
+        .expect("schema");
+    let mut doc = Doc::with_pk("one").expect("doc");
+    doc.add_vector_binary32("bits", &[0, 0, 0, 0])
+        .expect("binary");
+    let docs: DocumentMap = [("one".to_string(), Arc::new(doc))].into_iter().collect();
+    let indexes = IndexRegistry::build(&schema, &docs, 3).expect("build");
+    let stats = indexes.stats(&schema, &docs, 3);
+    assert!(
+        stats.iter().any(|stat| {
+            stat.name == "bits"
+                && stat.index_type == crate::types::IndexType::Flat
+                && stat.state == "ready"
+                && stat.document_count == 1
+        }),
+        "binary Flat must stay document-backed ready, got {stats:?}"
+    );
+}
+
+#[test]
+fn vector_index_classification_helpers_are_consistent() {
+    use super::{
+        builds_packed_vector_index, is_approximate_ann, is_in_memory_vector, is_incremental_vector,
+    };
+    use crate::types::IndexType;
+
+    assert!(is_in_memory_vector(IndexType::Hnsw));
+    assert!(is_in_memory_vector(IndexType::Flat));
+    assert!(!is_in_memory_vector(IndexType::Invert));
+    assert!(!is_in_memory_vector(IndexType::Fts));
+
+    assert!(builds_packed_vector_index(
+        IndexType::Hnsw,
+        DataType::VectorFp32
+    ));
+    assert!(!builds_packed_vector_index(
+        IndexType::Flat,
+        DataType::VectorBinary32
+    ));
+    assert!(is_incremental_vector(IndexType::Hnsw, DataType::VectorFp32));
+    assert!(!is_incremental_vector(
+        IndexType::Flat,
+        DataType::VectorFp32
+    ));
+    assert!(is_approximate_ann(IndexType::Ivf));
+    assert!(!is_approximate_ann(IndexType::Flat));
 }

@@ -8,11 +8,12 @@ mod pattern;
 mod tests;
 
 use self::parser::Parser;
-use self::pattern::FtsTermMatcher;
 use super::Tokenizer;
 use crate::error::{Error, Result};
 use crate::query::{fts_default_operator, FtsDefaultOperator, SearchQuery};
 use std::collections::BTreeSet;
+
+pub(crate) use self::pattern::FtsTermMatcher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FtsModifier {
@@ -155,7 +156,26 @@ impl ParsedFtsQuery {
             vocabulary.sort_unstable();
             vocabulary.dedup();
         }
-        expand_expression(&mut self.root, &vocabulary);
+        self.expand_matchers(|matcher| {
+            vocabulary
+                .iter()
+                .filter(|term| matcher.matches(term))
+                .map(|term| (*term).to_string())
+                .collect()
+        });
+    }
+
+    /// Expand each term matcher using an index-local candidate source.
+    /// Callers that can prune (for example trigram intersection) supply fewer
+    /// candidates than a full vocabulary scan while remaining recall-safe.
+    pub(crate) fn expand_matchers<F>(&mut self, mut expand: F)
+    where
+        F: FnMut(&FtsTermMatcher) -> Vec<String>,
+    {
+        if !contains_term_matcher(&self.root) {
+            return;
+        }
+        expand_expression_with(&mut self.root, &mut expand);
         self.refresh_metadata();
     }
 
@@ -228,19 +248,18 @@ pub(super) fn combine(operator: FtsDefaultOperator, mut children: Vec<FtsExpr>) 
     })
 }
 
-fn expand_expression(expression: &mut FtsExpr, vocabulary: &[&str]) {
+fn expand_expression_with<F>(expression: &mut FtsExpr, expand: &mut F)
+where
+    F: FnMut(&FtsTermMatcher) -> Vec<String>,
+{
     match &mut expression.kind {
         FtsExprKind::TermMatcher(matcher) => {
-            let terms = vocabulary
-                .iter()
-                .filter(|term| matcher.matches(term))
-                .map(|term| (*term).to_string())
-                .collect();
+            let terms = expand(matcher);
             expression.kind = FtsExprKind::ExpandedTerms(terms);
         }
         FtsExprKind::And(children) | FtsExprKind::Or(children) => {
             for child in children {
-                expand_expression(child, vocabulary);
+                expand_expression_with(child, expand);
             }
         }
         FtsExprKind::Empty

@@ -459,6 +459,7 @@ fn codec() -> impl Options {
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_lines, clippy::type_complexity)]
 mod tests {
     use super::{
         codec, decode_payload, encode, encode_payload, restore, validate_indexes, CachePayload,
@@ -701,5 +702,659 @@ mod tests {
         values[0] = 1.0;
         let drifted = encode_payload(&payload).expect("drifted cache must encode");
         assert!(restore_fixture(&drifted, &schema, &docs, "fixture-source").is_none());
+    }
+
+    fn assert_restore_rejects_after(
+        params: &IndexParams,
+        source: &str,
+        mutate: impl FnOnce(&mut CachePayload),
+    ) {
+        let (mut schema, docs, registry) = if params.index_type == crate::types::IndexType::Flat {
+            // Flat is rebuild-only; incremental apply leaves the packed index absent.
+            let mut field = FieldSchema::new("embedding", DataType::VectorFp32, false, 2)
+                .expect("field must be valid");
+            field.set_index_params(params).expect("index must be valid");
+            let schema = CollectionSchema::builder("cache-fixture-flat")
+                .add_field(field)
+                .build()
+                .expect("schema must be valid");
+            let docs: DocumentMap = (0_u16..128)
+                .map(|value| {
+                    let id = format!("doc-{value:03}");
+                    let mut doc = Doc::with_pk(&id).expect("document must be valid");
+                    doc.add_vector_f32("embedding", &[f32::from(value), 0.0])
+                        .expect("vector must be valid");
+                    (id, Arc::new(doc))
+                })
+                .collect();
+            let registry = IndexRegistry::build(&schema, &docs, 1).expect("flat index must build");
+            (schema, docs, registry)
+        } else {
+            fixture(params)
+        };
+        let bytes = encode(&registry, &schema, 1, source).expect("cache must encode");
+        let mut payload = decode_payload(&bytes).expect("cache payload must decode");
+        mutate(&mut payload);
+        // Keep schema params aligned with the corrupted index so restore reaches
+        // validate_vector_kind instead of failing the shallow params equality check.
+        if let Some(index) = payload.indexes.get("embedding") {
+            if let Some(field) = schema
+                .vectors
+                .iter_mut()
+                .find(|field| field.name == "embedding")
+            {
+                field.index_params = Some(index.params.clone());
+            }
+        }
+        let corrupted = encode_payload(&payload).expect("corrupted fixture must encode");
+        assert!(
+            restore_fixture(&corrupted, &schema, &docs, source).is_none(),
+            "corrupted {source} cache must miss"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_kind_params_and_index_inventory() {
+        use crate::types::IndexType;
+        use serde_json::json;
+
+        // Wrong index_type vs packed kind.
+        assert_restore_rejects_after(
+            &IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+            "hnsw-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Flat;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf(MetricType::L2, 16, 5, false).expect("ivf"),
+            "ivf-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Hnsw;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::flat(MetricType::L2).expect("flat"),
+            "flat-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Hnsw;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 0).expect("diskann"),
+            "diskann-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Vamana;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+            "vamana-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Diskann;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+            "hnsw-rabitq-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Hnsw;
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+            "ivf-rabitq-type",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .index_type = IndexType::Ivf;
+            },
+        );
+
+        // Missing / non-positive construction parameters.
+        assert_restore_rejects_after(
+            &IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+            "hnsw-m-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("m");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+            "hnsw-ef-zero",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .insert("ef_construction".into(), json!(0));
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf(MetricType::L2, 16, 5, true).expect("ivf"),
+            "ivf-nlist-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("n_list");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf(MetricType::L2, 16, 5, true).expect("ivf"),
+            "ivf-soar-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("use_soar");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+            "diskann-degree-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("max_degree");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+            "diskann-list-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("list_size");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+            "diskann-pq-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("pq_chunk_num");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+            "diskann-alpha-nan",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .insert("alpha".into(), json!(f64::NAN));
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+            "vamana-search-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("search_list_size");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::vamana_with_options(MetricType::L2, 16, 64, 1.2, 8, true)
+                .expect("vamana-opts"),
+            "vamana-occlusion-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("max_occlusion");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::vamana_with_options(MetricType::L2, 16, 64, 1.2, 8, true)
+                .expect("vamana-opts"),
+            "vamana-saturate-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("saturate");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+            "hnsw-rabitq-bits-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("total_bits");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+            "hnsw-rabitq-clusters-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("num_clusters");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+            "hnsw-rabitq-sample-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("sample_count");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+            "ivf-rabitq-bits-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("total_bits");
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+            "ivf-rabitq-sample-missing",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .params
+                    .params
+                    .remove("sample_count");
+            },
+        );
+
+        // Inventory mismatch and revision drift.
+        assert_restore_rejects_after(
+            &IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+            "inventory",
+            |payload| {
+                payload.indexes.clear();
+            },
+        );
+        assert_restore_rejects_after(
+            &IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+            "revision",
+            |payload| {
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index")
+                    .source_revision = 99;
+            },
+        );
+    }
+
+    #[test]
+    fn validate_indexes_hits_kind_false_arms_directly() {
+        use crate::types::IndexType;
+        use serde_json::json;
+
+        let cases: Vec<(&str, IndexParams, Box<dyn Fn(&mut VectorIndex)>)> = vec![
+            (
+                "hnsw-type",
+                IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+                Box::new(|index| index.params.index_type = IndexType::Flat),
+            ),
+            (
+                "hnsw-m-missing",
+                IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+                Box::new(|index| {
+                    index.params.params.remove("m");
+                }),
+            ),
+            (
+                "hnsw-ef-zero",
+                IndexParams::hnsw(MetricType::L2, 8, 32).expect("hnsw"),
+                Box::new(|index| {
+                    index
+                        .params
+                        .params
+                        .insert("ef_construction".into(), json!(0));
+                }),
+            ),
+            (
+                "ivf-type",
+                IndexParams::ivf(MetricType::L2, 16, 5, true).expect("ivf"),
+                Box::new(|index| index.params.index_type = IndexType::Hnsw),
+            ),
+            (
+                "ivf-nlist-missing",
+                IndexParams::ivf(MetricType::L2, 16, 5, true).expect("ivf"),
+                Box::new(|index| {
+                    index.params.params.remove("n_list");
+                }),
+            ),
+            (
+                "ivf-soar-missing",
+                IndexParams::ivf(MetricType::L2, 16, 5, true).expect("ivf"),
+                Box::new(|index| {
+                    index.params.params.remove("use_soar");
+                }),
+            ),
+            (
+                "flat-type",
+                IndexParams::flat(MetricType::L2).expect("flat"),
+                Box::new(|index| index.params.index_type = IndexType::Hnsw),
+            ),
+            (
+                "diskann-degree-missing",
+                IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+                Box::new(|index| {
+                    index.params.params.remove("max_degree");
+                }),
+            ),
+            (
+                "diskann-list-missing",
+                IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+                Box::new(|index| {
+                    index.params.params.remove("list_size");
+                }),
+            ),
+            (
+                "diskann-pq-missing",
+                IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+                Box::new(|index| {
+                    index.params.params.remove("pq_chunk_num");
+                }),
+            ),
+            (
+                "diskann-alpha-missing",
+                IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+                Box::new(|index| {
+                    index.params.params.remove("alpha");
+                }),
+            ),
+            (
+                "vamana-degree-missing",
+                IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+                Box::new(|index| {
+                    index.params.params.remove("max_degree");
+                }),
+            ),
+            (
+                "vamana-search-missing",
+                IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+                Box::new(|index| {
+                    index.params.params.remove("search_list_size");
+                }),
+            ),
+            (
+                "vamana-alpha-missing",
+                IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+                Box::new(|index| {
+                    index.params.params.remove("alpha");
+                }),
+            ),
+            (
+                "hnsw-rabitq-m-missing",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("m");
+                }),
+            ),
+            (
+                "hnsw-rabitq-ef-missing",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("ef_construction");
+                }),
+            ),
+            (
+                "ivf-rabitq-nlist-missing",
+                IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("n_list");
+                }),
+            ),
+            (
+                "vamana-occlusion-missing",
+                IndexParams::vamana_with_options(MetricType::L2, 16, 64, 1.2, 8, true)
+                    .expect("vamana"),
+                Box::new(|index| {
+                    index.params.params.remove("max_occlusion");
+                }),
+            ),
+            (
+                "vamana-saturate-missing",
+                IndexParams::vamana_with_options(MetricType::L2, 16, 64, 1.2, 8, true)
+                    .expect("vamana"),
+                Box::new(|index| {
+                    index.params.params.remove("saturate");
+                }),
+            ),
+            (
+                "hnsw-rabitq-bits-missing",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("total_bits");
+                }),
+            ),
+            (
+                "hnsw-rabitq-clusters-missing",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("num_clusters");
+                }),
+            ),
+            (
+                "hnsw-rabitq-sample-missing",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("sample_count");
+                }),
+            ),
+            (
+                "ivf-rabitq-bits-missing",
+                IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("total_bits");
+                }),
+            ),
+            (
+                "ivf-rabitq-sample-missing",
+                IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+                Box::new(|index| {
+                    index.params.params.remove("sample_count");
+                }),
+            ),
+            (
+                "hnsw-rabitq-type",
+                IndexParams::hnsw_rabitq(MetricType::L2, 8, 32).expect("hnsw-rabitq"),
+                Box::new(|index| index.params.index_type = IndexType::Hnsw),
+            ),
+            (
+                "ivf-rabitq-type",
+                IndexParams::ivf_rabitq(MetricType::L2, 16, 4, 64).expect("ivf-rabitq"),
+                Box::new(|index| index.params.index_type = IndexType::Ivf),
+            ),
+            (
+                "diskann-type",
+                IndexParams::diskann(MetricType::L2, 16, 64, 1).expect("diskann"),
+                Box::new(|index| index.params.index_type = IndexType::Vamana),
+            ),
+            (
+                "vamana-type",
+                IndexParams::vamana(MetricType::L2, 16, 64, 1.2).expect("vamana"),
+                Box::new(|index| index.params.index_type = IndexType::Diskann),
+            ),
+        ];
+
+        for (label, params, mutate) in cases {
+            let (mut schema, docs, registry) = if params.index_type == IndexType::Flat {
+                let mut field =
+                    FieldSchema::new("embedding", DataType::VectorFp32, false, 2).expect("field");
+                field.set_index_params(&params).expect("index");
+                let schema = CollectionSchema::builder(&format!("direct-{label}"))
+                    .add_field(field)
+                    .build()
+                    .expect("schema");
+                let docs: DocumentMap = (0_u16..32)
+                    .map(|value| {
+                        let id = format!("doc-{value:03}");
+                        let mut doc = Doc::with_pk(&id).expect("doc");
+                        doc.add_vector_f32("embedding", &[f32::from(value), 0.0])
+                            .expect("vector");
+                        (id, Arc::new(doc))
+                    })
+                    .collect();
+                let registry = IndexRegistry::build(&schema, &docs, 1).expect("build");
+                (schema, docs, registry)
+            } else {
+                fixture(&params)
+            };
+            let bytes = encode(&registry, &schema, 1, label).expect("encode");
+            let mut payload = decode_payload(&bytes).expect("decode");
+            mutate(
+                payload
+                    .indexes
+                    .values_mut()
+                    .next()
+                    .expect("index must exist"),
+            );
+            if let Some(index) = payload.indexes.get("embedding") {
+                if let Some(field) = schema
+                    .vectors
+                    .iter_mut()
+                    .find(|field| field.name == "embedding")
+                {
+                    field.index_params = Some(index.params.clone());
+                }
+            }
+            assert!(
+                !validate_indexes(&schema, &docs, 1, &payload.ordinals, &payload.indexes),
+                "{label} must fail validate_indexes"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_payload_rejects_oversized_and_length_mismatched_headers() {
+        let mut bytes = vec![0_u8; HEADER_BYTES];
+        bytes[..CACHE_MAGIC.len()].copy_from_slice(CACHE_MAGIC);
+        let huge = (super::MAX_PAYLOAD_BYTES + 1).to_le_bytes();
+        bytes[CACHE_MAGIC.len()..CACHE_MAGIC.len() + 8].copy_from_slice(&huge);
+        assert!(decode_payload(&bytes).is_none());
+
+        let mut short = vec![0_u8; HEADER_BYTES];
+        short[..CACHE_MAGIC.len()].copy_from_slice(CACHE_MAGIC);
+        short[CACHE_MAGIC.len()..CACHE_MAGIC.len() + 8].copy_from_slice(&8_u64.to_le_bytes());
+        assert!(decode_payload(&short).is_none());
     }
 }

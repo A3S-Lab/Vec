@@ -110,6 +110,8 @@ fn background_maintenance_checkpoints_the_latest_generation_and_releases_ownersh
         .expect("maintenance must start");
     assert_eq!(runtime.health().phase, CollectionMaintenancePhase::Running);
     assert!(runtime.health().worker_alive);
+    let debug = format!("{runtime:?}");
+    assert!(debug.contains("CollectionMaintenanceRuntime"));
     assert!(
         collection
             .health()

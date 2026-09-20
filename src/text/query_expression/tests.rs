@@ -84,3 +84,87 @@ fn ordered_phrase_slop_counts_total_intervening_tokens() {
     let reversed = ["search", "vector"].map(str::to_string);
     assert!(!contains_ordered_phrase(&tokens, &reversed, 4));
 }
+
+fn try_parse(expression: &str) -> crate::error::Result<super::ParsedFtsQuery> {
+    let params =
+        IndexParams::fts(Some("whitespace"), None, None).expect("FTS params must be valid");
+    let tokenizer = Tokenizer::from_index_params(Some(&params)).expect("tokenizer must be valid");
+    let mut fts = Fts::new().expect("FTS payload must be valid");
+    fts.set_query_string(expression)?;
+    let query = SearchQuery::fts("body", &fts, 10)?;
+    parse_fts_query(&query, &tokenizer)
+}
+
+#[test]
+fn parser_rejects_adversarial_and_oversized_constructs() {
+    for expression in [
+        "",
+        "+++",
+        "+-rust",
+        "rust~~",
+        "\"unterminated",
+        "other:rust",
+        "[mango rust]",
+        "rust^",
+        "((((((",
+        "rust~999",
+        "\"a b\"~9999",
+        "~~~~",
+        "+ +rust",
+        "body:",
+        "{a TO}",
+        "[ TO b]",
+        "AND OR",
+        "NOT",
+        "+AND",
+        "body:other:rust",
+        "rust~0",
+        "rust~3",
+        "rust~~1",
+        "{a TO b TO c}",
+        "[a TO]",
+        "[TO b]",
+        "()",
+        "(rust",
+        "rust)",
+        "\"\"~2",
+        &format!("{}~1", "a".repeat(300)),
+        "w?ld~1",
+        "rust^0",
+        "rust^-1",
+        "rust^1000001",
+        "title:rust",
+        "-only",
+        "\"a b\"~1025",
+        "rust AND NOT +legacy",
+        "[a TO b",
+        "field:",
+        "body:",
+        "rust^1e400",
+        "rust~",
+        "+-",
+        "AND rust",
+        "rust AND",
+        "{a\\ TO b}",
+        "[a TO\\ b]",
+        "{ TO }",
+    ] {
+        assert!(
+            try_parse(expression).is_err(),
+            "expected parse failure for {expression:?}"
+        );
+    }
+}
+
+#[test]
+fn parser_accepts_boundary_valid_constructs_for_contrast() {
+    assert!(try_parse("rust~1").is_ok());
+    assert!(try_parse("rust~2").is_ok());
+    assert!(try_parse("\"vector engine\"~2").is_ok());
+    assert!(try_parse("body:rust^2").is_ok());
+    assert!(try_parse("[mango TO rust]").is_ok());
+    assert!(try_parse("{mango TO rust}").is_ok());
+    assert!(try_parse("[* TO *]").is_ok());
+    assert!(try_parse("rust*").is_ok());
+    assert!(try_parse("+rust -legacy").is_ok());
+}

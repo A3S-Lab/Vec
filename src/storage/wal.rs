@@ -301,3 +301,97 @@ pub(super) fn prune_with_faults(root: &Path, through: u64, faults: &FaultInjecto
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
+mod tests {
+    use super::{
+        append, prune_with_faults, replay, segment_path, validate_record, WalOperation, WalRecord,
+        HEADER_LEN, MAGIC, VERSION,
+    };
+    use crate::doc::Doc;
+    use crate::error::ErrorCode;
+    use crate::storage::fault::FaultInjector;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn insert_record(revision: u64) -> WalRecord {
+        let doc = Doc::with_pk(format!("doc-{revision}")).expect("pk");
+        WalRecord::new(revision, WalOperation::Insert { docs: vec![doc] }).expect("record")
+    }
+
+    #[test]
+    fn wal_record_and_replay_reject_corrupt_and_inconsistent_frames() {
+        assert_eq!(
+            WalRecord::new(0, WalOperation::Delete { ids: vec![] })
+                .expect_err("revision 0")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+
+        let temporary = tempdir().expect("temp");
+        let root = temporary.path();
+        let record = insert_record(1);
+        let written = append(root, 1, 0, &record, true).expect("append");
+        assert!(written > HEADER_LEN as u64);
+        let replayed = replay(root, 1, 1, written).expect("replay");
+        assert_eq!(replayed, vec![record.clone()]);
+        assert!(replay(root, 2, 1, 0).expect("empty range").is_empty());
+
+        let mut bad = record.clone();
+        bad.operation_id = 99;
+        assert!(validate_record(&bad).is_err());
+        bad.revision = 0;
+        bad.operation_id = 0;
+        assert!(validate_record(&bad).is_err());
+
+        let path = segment_path(root, 2);
+        fs::create_dir_all(path.parent().expect("wal dir")).expect("mkdir");
+        fs::write(&path, b"XXXX").expect("short");
+        assert!(replay(root, 2, 2, 4)
+            .expect_err("truncated")
+            .message
+            .contains("truncated"));
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"BAD!");
+        frame.extend_from_slice(&VERSION.to_le_bytes());
+        frame.extend_from_slice(&4u32.to_le_bytes());
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(b"dead");
+        fs::write(&path, &frame).expect("magic");
+        assert!(replay(root, 2, 2, frame.len() as u64)
+            .expect_err("magic")
+            .message
+            .contains("magic"));
+
+        let payload = serde_json::to_vec(&record).expect("json");
+        let mut good = Vec::new();
+        good.extend_from_slice(MAGIC);
+        good.extend_from_slice(&VERSION.to_le_bytes());
+        good.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        good.extend_from_slice(&0u32.to_le_bytes()); // wrong crc
+        good.extend_from_slice(&payload);
+        fs::write(&path, &good).expect("crc");
+        assert!(replay(root, 2, 2, good.len() as u64)
+            .expect_err("checksum")
+            .message
+            .contains("checksum"));
+
+        prune_with_faults(root, 1, &FaultInjector::default()).expect("prune");
+        assert!(!segment_path(root, 1).exists());
+        prune_with_faults(root, 1, &FaultInjector::default()).expect("idempotent");
+    }
+
+    #[test]
+    fn append_rejects_segment_shorter_than_committed_boundary() {
+        let temporary = tempdir().expect("temp");
+        let root = temporary.path();
+        let record = insert_record(1);
+        let written = append(root, 1, 0, &record, false).expect("append");
+        let error =
+            append(root, 1, written + 8, &insert_record(2), false).expect_err("committed boundary");
+        assert_eq!(error.code, ErrorCode::InternalError);
+        assert!(error.message.contains("shorter than the committed"));
+    }
+}

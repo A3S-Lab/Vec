@@ -20,15 +20,16 @@
 vectors, scalar filters, and BM25 live in one durable collection—no server
 process and no C/C++ runtime.
 
-**`0.1.1` is published on [crates.io](https://crates.io/crates/a3s-vec).** Tag
-`0.1.1`, hosted CI, and the published crate checksum bind to one revision
+**`0.1.2` is the current release on [crates.io](https://crates.io/crates/a3s-vec)
+(or the release candidate on `main` until publish completes).** Tag `0.1.2`,
+hosted CI, and the published crate checksum bind to one revision
 ([RELEASE.md](RELEASE.md)). Exact execution stays the correctness oracle when
 an index is missing, stale, or not selective enough. macOS 12 Monterey Intel
 is unsupported.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
-[Benchmarks](BENCHMARKS.md) · [Release](RELEASE.md) ·
-[docs.rs](https://docs.rs/a3s-vec)
+[Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
+[Release](RELEASE.md) · [docs.rs](https://docs.rs/a3s-vec)
 
 ## Why it exists
 
@@ -40,60 +41,68 @@ caller.
 | Need | What you get |
 | --- | --- |
 | Semantic search | Exact dense/sparse scan, HNSW, IVF/SOAR, RaBitQ, Vamana, PQ/ADC DiskANN, then **exact** full-vector re-rank |
-| Workspace text | BM25, Unicode n-grams, structured boolean/phrase/wildcard/fuzzy/range syntax |
+| Workspace text | BM25, Unicode n-grams, structured boolean/phrase/wildcard/fuzzy/range syntax, trigram-pruned matcher expansion |
 | Structured filters | Typed scalar indexes composed with ANN/FTS through one shared `u64` ordinal domain |
 | Durability | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits |
 | Predictable failure | Validation errors and exact fallbacks—no silent approximation |
 
-## Proof vs zvec (honest harness)
+## Proof vs zvec (first-principles harness)
 
-Same host, same fixture, one worker, identical HNSW controls (`m=16`,
-`ef_construction=96`, `ef=64`). a3s-vec keeps exact re-ranking and `f64` public
-scores; the zvec harness sets `is_using_refiner=False`. Medians of three
-independent processes. Methodology and CSVs:
-[BENCHMARKS.md](BENCHMARKS.md).
+Protocol: [docs/scale-compare-protocol.md](docs/scale-compare-protocol.md).
+Evidence: [BENCHMARKS.md](BENCHMARKS.md). Same host, shared SplitMix64
+corpus, one worker, identical HNSW controls (`m=16`, `ef_construction=96`,
+`ef=64`). a3s-vec keeps exact re-ranking and `f64` public scores; the zvec
+harness sets `is_using_refiner=False`. Medians of three independent
+processes on **current HEAD**, Apple M5 Max / macOS 26.6.2
+arm64, zvec 0.7.0. Package identity is `0.1.2`.
 
-### Apple Silicon · 100k × 128 (macOS arm64)
+### Apple Silicon · 100k × 128 (fairness: one worker)
 
 | Engine | Index build | Query p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.1** | **22.4 s** | **99.5 µs** | **0.6000** |
-| zvec 0.7.0 | 50.8 s | 146.0 µs | 0.5844 |
+| **a3s-vec 0.1.2** | **26.3 s** | **103 µs** | **0.6000** |
+| zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
 
-≈ **2.27×** faster build, ≈ **1.47×** lower query p50, higher stable recall.
+≈ **1.75×** faster build, ≈ **1.44×** lower query p50, higher stable recall.
 
-### Windows Xeon · 100k × 128
+### Flat under the same one-worker pin
+
+| Engine | Query p50 | Recall@10 |
+| --- | ---: | ---: |
+| a3s-vec 0.1.2 | 3,550 µs | 1.0000 |
+| zvec 0.7.0 | **1,841 µs** | 1.0000 |
+
+Exact Flat with public `f64` scores is about **1.93×** slower than zvec’s
+native path when Rayon is pinned to one thread. With the host default Rayon
+pool (product default), a3s-vec Flat median p50 falls to **651 µs** on this
+machine (~**2.83×** below zvec’s one-worker Flat)—report that separately; do
+not mix it into the HNSW fairness table.
+
+These rows are directional evidence for one host and parameter point—not an
+SLO. Do not lower `ef`, drop exact re-ranking, or switch public scores to
+`f32` to manufacture a win.
+
+### Windows Xeon · 100k × 128 (historical candidate)
 
 | Engine | Index build | Query p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
 | **a3s-vec 0.1.1** | **49.3 s** | 355 µs | **0.6000** |
 | zvec 0.7.0 | 70.9 s | **349 µs** | 0.5875 |
 
-≈ **1.44×** faster build; query p50 within noise (~2%).
-
-These rows are directional evidence for one host and parameter point—not an
-SLO. Flat keeps the same exact `f64` public score contract (lazy rebuild into a
-contiguous promoted-`f64` base, bit-identical SIMD kernels, Cosine top-k ranked
-by `dot * inv_norm` then re-scored). Exact Flat scan is embarrassingly parallel:
-with the host's default Rayon pool it **beats** zvec Flat query on this machine
-(~2.7× lower p50 in a 3-round median). Pinning `RAYON_NUM_THREADS=1` (the HNSW
-fairness harness) leaves Flat query about **1.5–2×** slower—matching the `f64`
-vs native `f32` arithmetic floor, not a missing index. Flat **insert** beats
-zvec either way. Do not lower `ef`, drop exact re-ranking, or switch public
-scores to `f32` to manufacture a win. HNSW remains ahead on build and query
-under identical 1-worker controls.
+≈ **1.44×** faster build; query p50 within noise (~2%). Retained as the
+Xeon snapshot; re-run before treating as current.
 
 ## Install
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.1"
+a3s-vec = "0.1.2"
 ```
 
 Optional Tokio-safe query entry points:
 
 ```toml
-a3s-vec = { version = "0.1.1", features = ["async"] }
+a3s-vec = { version = "0.1.2", features = ["async"] }
 ```
 
 In the A3S monorepo you can still use a path dependency:

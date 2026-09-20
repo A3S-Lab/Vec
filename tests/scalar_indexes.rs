@@ -197,6 +197,9 @@ fn bitmap_filters_match_the_scan_oracle_for_scalar_and_boolean_semantics() {
         "bucket == 3",
         "bucket >= 12 and active == true",
         "label has_prefix 'src/module-2/' or bucket < 2",
+        "label has_suffix '.rs'",
+        "not label has_suffix '.rs'",
+        "label has_prefix 'src/' and label has_suffix '.rs'",
         "not (bucket in [1, 3, 5])",
         "optional is_null",
         "label like 'src/%/file-0_7.rs'",
@@ -223,7 +226,7 @@ fn bitmap_filters_match_the_scan_oracle_for_scalar_and_boolean_semantics() {
     );
 
     let stats = indexed.stats_snapshot().expect("stats must be readable");
-    assert_eq!(stats.scalar_index_query_count, 8);
+    assert_eq!(stats.scalar_index_query_count, 11);
     assert!(
         stats.candidates_scanned
             < u64::try_from(DOCUMENTS * indexed_filters.len()).expect("candidate bound fits u64")

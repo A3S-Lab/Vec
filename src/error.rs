@@ -181,6 +181,21 @@ mod tests {
 
     #[test]
     fn status_codes_are_stable() {
+        for code in [
+            ErrorCode::NotFound,
+            ErrorCode::AlreadyExists,
+            ErrorCode::InvalidArgument,
+            ErrorCode::PermissionDenied,
+            ErrorCode::FailedPrecondition,
+            ErrorCode::ResourceExhausted,
+            ErrorCode::Unavailable,
+            ErrorCode::InternalError,
+            ErrorCode::NotSupported,
+            ErrorCode::Unknown,
+        ] {
+            assert_eq!(ErrorCode::from(u32::from(code)), code);
+            assert!(!format!("{code}").is_empty());
+        }
         assert_eq!(u32::from(ErrorCode::InvalidArgument), 3);
         assert_eq!(ErrorCode::from(99), ErrorCode::Unknown);
     }
@@ -190,5 +205,88 @@ mod tests {
         let error = Error::not_found("document x");
         assert!(error.is_not_found());
         assert!(error.to_string().contains("document x"));
+        assert_eq!(Error::already_exists("dup").code, ErrorCode::AlreadyExists);
+        assert_eq!(
+            Error::invalid_argument("bad").code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            Error::permission_denied("no").code,
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            Error::failed_precondition("pre").code,
+            ErrorCode::FailedPrecondition
+        );
+        assert_eq!(
+            Error::resource_exhausted("oom").code,
+            ErrorCode::ResourceExhausted
+        );
+        assert_eq!(Error::internal("boom").code, ErrorCode::InternalError);
+        assert_eq!(Error::not_supported("yet").code, ErrorCode::NotSupported);
+        assert_eq!(
+            Error::new(ErrorCode::Unavailable, "down").code,
+            ErrorCode::Unavailable
+        );
+    }
+
+    #[test]
+    fn json_errors_map_to_internal() {
+        let err: Error = serde_json::from_str::<serde_json::Value>("{")
+            .unwrap_err()
+            .into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert!(err.message.contains("JSON"));
+    }
+
+    #[test]
+    fn zvec_errors_map_to_stable_codes() {
+        use zvec_core::error::ZvecError;
+        let cases = [
+            (ZvecError::NotFound("a".into()), ErrorCode::NotFound),
+            (
+                ZvecError::AlreadyExists("b".into()),
+                ErrorCode::AlreadyExists,
+            ),
+            (
+                ZvecError::InvalidArgument("c".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                ZvecError::PermissionDenied("d".into()),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                ZvecError::FailedPrecondition("e".into()),
+                ErrorCode::FailedPrecondition,
+            ),
+            (
+                ZvecError::ResourceExhausted("f".into()),
+                ErrorCode::ResourceExhausted,
+            ),
+            (ZvecError::Unavailable("g".into()), ErrorCode::Unavailable),
+            (ZvecError::Internal("h".into()), ErrorCode::InternalError),
+            (ZvecError::NotSupported("i".into()), ErrorCode::NotSupported),
+            (ZvecError::Unknown("j".into()), ErrorCode::Unknown),
+        ];
+        for (source, code) in cases {
+            let mapped: Error = source.into();
+            assert_eq!(mapped.code, code);
+            assert!(!mapped.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn io_and_predicate_helpers_cover_surface() {
+        let not_found: Error = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        assert!(not_found.is_not_found());
+        let exists: Error = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "here").into();
+        assert!(exists.is_already_exists());
+        let denied: Error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no").into();
+        assert_eq!(denied.code, ErrorCode::PermissionDenied);
+        let other: Error = std::io::Error::other("boom").into();
+        assert_eq!(other.code, ErrorCode::InternalError);
+        assert!(Error::invalid_argument("x").is_invalid_argument());
+        assert!(!Error::not_found("y").is_invalid_argument());
     }
 }

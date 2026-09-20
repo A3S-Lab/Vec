@@ -143,7 +143,7 @@ impl FtsIndex {
         Ok(candidates)
     }
 
-    fn estimated_candidates(&self, expression: &FtsExpr) -> usize {
+    pub(super) fn estimated_candidates(&self, expression: &FtsExpr) -> usize {
         match &expression.kind {
             FtsExprKind::Empty => 0,
             FtsExprKind::MatchAll | FtsExprKind::TermMatcher(_) => self.document_lengths.len(),
@@ -188,7 +188,7 @@ impl FtsIndex {
         }
     }
 
-    fn candidate_matches(&self, expression: &FtsExpr, ordinal: u64) -> bool {
+    pub(super) fn candidate_matches(&self, expression: &FtsExpr, ordinal: u64) -> bool {
         match &expression.kind {
             FtsExprKind::Empty | FtsExprKind::TermMatcher(_) => false,
             FtsExprKind::MatchAll => true,

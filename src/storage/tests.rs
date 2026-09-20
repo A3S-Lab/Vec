@@ -2,6 +2,7 @@ use super::fault::FaultInjector;
 use super::test_support::{doc, schema};
 use super::{manifest, snapshot, wal, StorageHandle, WalOperation};
 use crate::config::{ConfigBuilder, Durability};
+use crate::doc::Doc;
 use crate::error::ErrorCode;
 use crate::schema::FieldSchema;
 use crate::types::DataType;
@@ -480,4 +481,269 @@ fn interval_checkpoint_limits_are_consumed_by_storage() {
         .durability(Durability::Interval)
         .wal_max_bytes(1);
     assert!(storage.should_checkpoint(&byte_limit));
+}
+
+#[test]
+fn storage_handle_rejects_duplicate_create_missing_open_and_readonly_writes() {
+    let temporary = tempdir().expect("temp");
+    let root = temporary.path().join("collection");
+    let schema = schema();
+    let created = StorageHandle::create(&root, &schema, false).expect("create");
+    assert!(StorageHandle::create(&root, &schema, false).is_err());
+    drop(created);
+
+    let missing = temporary.path().join("missing");
+    assert!(StorageHandle::open(&missing, false).is_err());
+
+    let (exclusive, _, _docs) = StorageHandle::open(&root, false).expect("exclusive open");
+    exclusive
+        .write_index_cache(b"cache-bytes", false)
+        .expect("exclusive cache write");
+    exclusive
+        .write_diskann_file(b"diskann-bytes", false)
+        .expect("exclusive diskann write");
+    drop(exclusive);
+
+    let (readonly, _, _) = StorageHandle::open(&root, true).expect("readonly open");
+    assert!(readonly
+        .write_index_cache(b"cache", false)
+        .expect_err("readonly cache")
+        .message
+        .contains("read-only"));
+    assert!(readonly
+        .write_diskann_file(b"diskann", false)
+        .expect_err("readonly diskann")
+        .message
+        .contains("read-only"));
+    drop(readonly);
+
+    let config = ConfigBuilder::new();
+    let (mut readonly_handle, schema_ro, readonly_docs) =
+        StorageHandle::open(&root, true).expect("ro");
+    assert!(readonly_handle
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("x")]
+            },
+            &config
+        )
+        .is_err());
+    assert!(readonly_handle
+        .checkpoint(&schema_ro, &readonly_docs, 0, false)
+        .is_err());
+    drop(readonly_handle);
+
+    let (mut exclusive, schema_ex, docs) = StorageHandle::open(&root, false).expect("exclusive");
+    let next = exclusive.manifest.revision.saturating_add(2).max(2);
+    assert!(exclusive
+        .append(
+            next,
+            WalOperation::Insert {
+                docs: vec![doc("y")]
+            },
+            &config
+        )
+        .is_err());
+    if exclusive.manifest.revision > 0 {
+        assert!(exclusive
+            .checkpoint(&schema_ex, &docs, exclusive.manifest.revision - 1, false)
+            .is_err());
+    }
+}
+
+#[test]
+fn wal_replay_applies_upsert_update_delete_operations() {
+    let temporary = tempdir().expect("temp");
+    let root = temporary.path().join("wal-ops");
+    let schema = schema();
+    let mut storage = StorageHandle::create(&root, &schema, false).expect("create");
+    let config = ConfigBuilder::new();
+
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("a"), doc("b")],
+            },
+            &config,
+        )
+        .expect("insert");
+    storage
+        .append(
+            2,
+            WalOperation::Upsert {
+                docs: vec![doc("a"), doc("c")],
+            },
+            &config,
+        )
+        .expect("upsert");
+
+    let mut scored = doc("b");
+    scored.set_score(0.5).expect("score");
+    storage
+        .append(3, WalOperation::Update { docs: vec![scored] }, &config)
+        .expect("update");
+    storage
+        .append(
+            4,
+            WalOperation::Delete {
+                ids: vec!["c".into()],
+            },
+            &config,
+        )
+        .expect("delete");
+
+    // SchemaOnly with the same name keeps the collection openable.
+    storage
+        .append(
+            5,
+            WalOperation::SchemaOnly {
+                schema: schema.clone(),
+            },
+            &config,
+        )
+        .expect("schema only");
+
+    drop(storage);
+    let (_reopened, _, docs) = StorageHandle::open(&root, false).expect("reopen");
+    let ids: Vec<_> = docs.iter().filter_map(Doc::get_pk).collect();
+    assert!(ids.contains(&"a"));
+    assert!(ids.contains(&"b"));
+    assert!(!ids.contains(&"c"));
+    let b = docs.iter().find(|d| d.get_pk() == Some("b")).expect("b");
+    assert!((b.get_score() - 0.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn wal_replay_rejects_non_monotonic_revision_and_schema_name_mismatch() {
+    let temporary = tempdir().expect("temp");
+    let root = temporary.path().join("wal-bad");
+    let schema = schema();
+    let mut storage = StorageHandle::create(&root, &schema, false).expect("create");
+    let config = ConfigBuilder::new();
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("a")],
+            },
+            &config,
+        )
+        .expect("insert");
+    drop(storage);
+
+    // Corrupt the WAL frame revision by rewriting a second append with a gap
+    // through a fresh exclusive handle, then patching the manifest revision
+    // ahead of recoverable history.
+    let (mut storage, _, _) = StorageHandle::open(&root, false).expect("open");
+    storage
+        .append(
+            2,
+            WalOperation::Insert {
+                docs: vec![doc("b")],
+            },
+            &config,
+        )
+        .expect("second insert");
+    let mut broken = storage.manifest.clone();
+    broken.revision = 9;
+    manifest::write_with_faults(&root, &broken, true, &FaultInjector::default())
+        .expect("write broken manifest");
+    drop(storage);
+
+    let error = StorageHandle::open(&root, false).expect_err("gap must fail closed");
+    assert!(
+        error.message.contains("not recoverable")
+            || error.message.contains("non-monotonic")
+            || error.message.contains("revision")
+    );
+}
+
+#[test]
+fn snapshot_checksum_and_generation_mismatches_fail_closed() {
+    let temporary = tempdir().expect("temp");
+    let root = temporary.path().join("snap-bad");
+    let schema = schema();
+    let mut storage = StorageHandle::create(&root, &schema, false).expect("create");
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("a")],
+            },
+            &ConfigBuilder::new(),
+        )
+        .expect("insert");
+    storage
+        .checkpoint(&schema, &[doc("a")], 1, true)
+        .expect("checkpoint");
+    let mut broken = storage.manifest.clone();
+    broken.docs_checksum ^= 0xffff_ffff;
+    manifest::write_with_faults(&root, &broken, true, &FaultInjector::default())
+        .expect("write broken checksum");
+    drop(storage);
+
+    let error = StorageHandle::open(&root, false).expect_err("checksum");
+    assert!(
+        error.message.contains("checksum mismatch") || error.message.contains("checksum"),
+        "{}",
+        error.message
+    );
+
+    // Restore a valid collection then corrupt generation identity.
+    let temporary = tempdir().expect("temp2");
+    let root = temporary.path().join("snap-gen");
+    let mut storage = StorageHandle::create(&root, &schema, false).expect("create");
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("b")],
+            },
+            &ConfigBuilder::new(),
+        )
+        .expect("insert");
+    storage
+        .checkpoint(&schema, &[doc("b")], 1, true)
+        .expect("checkpoint");
+    let mut broken = storage.manifest.clone();
+    broken.generation = broken.generation.saturating_add(9);
+    manifest::write_with_faults(&root, &broken, true, &FaultInjector::default())
+        .expect("write broken generation");
+    drop(storage);
+    let error = StorageHandle::open(&root, false).expect_err("generation");
+    assert!(
+        error.message.contains("generation") || error.message.contains("snapshot"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn checkpoint_rejects_read_only_and_regressive_revision() {
+    let temporary = tempdir().expect("temp");
+    let root = temporary.path().join("ckpt");
+    let schema = schema();
+    let mut storage = StorageHandle::create(&root, &schema, false).expect("create");
+    storage
+        .append(
+            1,
+            WalOperation::Insert {
+                docs: vec![doc("a")],
+            },
+            &ConfigBuilder::new(),
+        )
+        .expect("insert");
+    let error = storage
+        .checkpoint(&schema, &[doc("a")], 0, true)
+        .expect_err("regressive");
+    assert!(error.message.contains("precedes") || error.message.contains("revision"));
+    drop(storage);
+
+    let (mut readonly, _, _) = StorageHandle::open(&root, true).expect("ro");
+    let error = readonly
+        .checkpoint(&schema, &[doc("a")], 1, true)
+        .expect_err("readonly");
+    assert_eq!(error.code, crate::error::ErrorCode::PermissionDenied);
 }

@@ -814,9 +814,14 @@ pub(super) fn normalize_scores(docs: &mut [Doc], method: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison, clippy::float_cmp)]
 mod tests {
-    use super::{sort_scored_docs, TopKCollector};
+    use super::{
+        parse_filter_expression, parse_optional_filter, sort_scored_docs, ScoredCandidate,
+        TopKCollector,
+    };
     use crate::doc::Doc;
+    use std::cmp::Ordering;
 
     #[test]
     fn bounded_topk_keeps_exact_scores_and_primary_key_ties() {
@@ -843,5 +848,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["best", "a-tie", "b-tie"]
         );
+    }
+
+    #[test]
+    fn filter_parsers_reject_empty_and_accept_optional_none() {
+        assert!(parse_filter_expression("").is_err());
+        assert!(parse_filter_expression("   ").is_err());
+        assert!(parse_optional_filter(None).expect("none").is_none());
+        assert!(parse_optional_filter(Some("bucket == 1"))
+            .expect("parse")
+            .is_some());
+    }
+
+    #[test]
+    fn topk_zero_limit_and_scored_candidate_ordering() {
+        let a = Doc::with_pk("a").expect("a");
+        let b = Doc::with_pk("b").expect("b");
+        let mut empty = TopKCollector::new(0);
+        empty.push(1.0, &a).expect("limit zero accepts");
+        assert!(empty.into_scored_docs().expect("ok").is_empty());
+
+        let left = ScoredCandidate::new(1.0, &a).expect("left");
+        let right = ScoredCandidate::new(1.0, &b).expect("right");
+        assert_eq!(left.cmp(&right), Ordering::Less);
+        assert_eq!(left.partial_cmp(&right), Some(Ordering::Less));
+        assert!(!left.eq(&right));
+    }
+
+    #[test]
+    fn score_conversion_binary_scoring_and_doc_sort_cover_edge_paths() {
+        use super::{binary_score, count_to_f64, score_to_f32, sort_docs};
+        use crate::doc::VectorValue;
+
+        assert_eq!(score_to_f32(1.5).expect("ok"), 1.5);
+        assert!(score_to_f32(f64::NAN).is_err());
+        assert!(score_to_f32(f64::INFINITY).is_err());
+        assert!(score_to_f32(f64::from(f32::MAX) * 2.0).is_err());
+        assert_eq!(count_to_f64(7), 7.0);
+
+        assert!(binary_score(&[0xff], &VectorValue::Fp32(vec![1.0])).is_none());
+        assert!(binary_score(&[0xff, 0x00], &VectorValue::Binary32(vec![0xff])).is_none());
+        assert_eq!(
+            binary_score(&[0xff, 0x00], &VectorValue::Binary32(vec![0x0f, 0xff])),
+            Some(-(4.0 + 8.0))
+        );
+
+        let mut docs = vec![Doc::with_pk("b").expect("b"), Doc::with_pk("a").expect("a")];
+        docs[0].set_score(1.0).expect("score");
+        docs[1].set_score(1.0).expect("score");
+        sort_docs(&mut docs);
+        assert_eq!(docs[0].get_pk(), Some("a"));
+        assert_eq!(docs[1].get_pk(), Some("b"));
     }
 }

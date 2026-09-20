@@ -230,3 +230,105 @@ impl From<BinaryVectorValue> for VectorValue {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BinarySnapshot;
+    use crate::doc::{Doc, FieldValue, VectorValue};
+    use crate::schema::{CollectionSchema, FieldSchema};
+    use crate::types::DataType;
+    use serde_json::json;
+
+    fn empty_schema() -> CollectionSchema {
+        CollectionSchema::builder("codec-roundtrip")
+            .add_field(FieldSchema::new("title", DataType::String, false, 0).expect("field"))
+            .build()
+            .expect("schema")
+    }
+
+    #[test]
+    fn binary_snapshot_roundtrips_every_field_and_vector_variant() {
+        let mut doc = Doc::with_pk("pk").expect("pk");
+        doc.set_score(0.5).expect("score");
+        doc.set_field_null("null").expect("null");
+        doc.add_binary("bin", &[1, 2]).expect("bin");
+        doc.add_string("s", "x").expect("s");
+        doc.add_bool("b", true).expect("b");
+        doc.add_i32("i32", -1).expect("i32");
+        doc.add_i64("i64", -2).expect("i64");
+        doc.add_u32("u32", 3).expect("u32");
+        doc.add_u64("u64", 4).expect("u64");
+        doc.add_f32("f32", 1.5).expect("f32");
+        doc.add_f64("f64", 2.5).expect("f64");
+        doc.add_array_binary("ab", &[vec![9]]).expect("ab");
+        doc.add_array_string("as", &["a"]).expect("as");
+        doc.add_array_bool("abo", &[true]).expect("abo");
+        doc.add_array_i32("ai32", &[1]).expect("ai32");
+        doc.add_array_i64("ai64", &[2]).expect("ai64");
+        doc.add_array_u32("au32", &[3]).expect("au32");
+        doc.add_array_u64("au64", &[4]).expect("au64");
+        doc.add_array_f32("af32", &[1.25]).expect("af32");
+        doc.add_array_f64("af64", &[2.5]).expect("af64");
+        doc.set_field_value("json", FieldValue::Json(json!({"k": 1})))
+            .expect("json");
+
+        doc.set_vector_value("v_bin32", VectorValue::Binary32(vec![0xff; 4]))
+            .expect("v_bin32");
+        doc.set_vector_value("v_bin64", VectorValue::Binary64(vec![0xaa; 8]))
+            .expect("v_bin64");
+        doc.set_vector_value("v_fp16", VectorValue::Fp16(vec![0x3c00]))
+            .expect("v_fp16");
+        doc.set_vector_value("v_fp32", VectorValue::Fp32(vec![1.0, 0.0]))
+            .expect("v_fp32");
+        doc.set_vector_value("v_fp64", VectorValue::Fp64(vec![1.0, 0.0]))
+            .expect("v_fp64");
+        doc.set_vector_value("v_i4", VectorValue::Int4(vec![1, -1]))
+            .expect("v_i4");
+        doc.set_vector_value("v_i8", VectorValue::Int8(vec![2, -2]))
+            .expect("v_i8");
+        doc.set_vector_value("v_i16", VectorValue::Int16(vec![3, -3]))
+            .expect("v_i16");
+        doc.set_vector_value(
+            "v_s16",
+            VectorValue::SparseFp16 {
+                indices: vec![0, 2],
+                values: vec![0x3c00, 0x4000],
+            },
+        )
+        .expect("v_s16");
+        doc.set_vector_value(
+            "v_s32",
+            VectorValue::SparseFp32 {
+                indices: vec![1],
+                values: vec![0.5],
+            },
+        )
+        .expect("v_s32");
+
+        let snapshot = BinarySnapshot::new(4, 1, 2, &empty_schema(), &[doc.clone()]);
+        let (format, generation, revision, _schema, docs) = snapshot.into_parts();
+        assert_eq!((format, generation, revision), (4, 1, 2));
+        assert_eq!(docs.len(), 1);
+        let restored = &docs[0];
+        assert_eq!(restored.get_pk(), Some("pk"));
+        assert!((restored.get_score() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(restored.field("s"), Some(&FieldValue::String("x".into())));
+        assert_eq!(
+            restored.field("json"),
+            Some(&FieldValue::Json(json!({"k": 1})))
+        );
+        assert_eq!(
+            restored.vector("v_fp32"),
+            Some(&VectorValue::Fp32(vec![1.0, 0.0]))
+        );
+        assert_eq!(
+            restored.vector("v_s32"),
+            Some(&VectorValue::SparseFp32 {
+                indices: vec![1],
+                values: vec![0.5],
+            })
+        );
+        assert_eq!(restored.fields().len(), doc.fields().len());
+        assert_eq!(restored.vectors().len(), doc.vectors().len());
+    }
+}

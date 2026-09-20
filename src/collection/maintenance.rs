@@ -487,8 +487,54 @@ mod tests {
     }
 
     #[test]
+    fn validate_interval_rejects_out_of_range_durations() {
+        assert!(validate_interval(Duration::from_millis(1)).is_err());
+        assert!(validate_interval(MIN_INTERVAL).is_ok());
+        assert!(validate_interval(MAX_INTERVAL).is_ok());
+        assert!(validate_interval(MAX_INTERVAL + Duration::from_secs(1)).is_err());
+        assert_eq!(duration_ms(Duration::from_millis(12)), 12);
+    }
+
+    #[test]
     fn runtime_contract_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CollectionMaintenanceRuntime>();
+    }
+
+    #[test]
+    fn options_and_health_surface_interval_debug_and_closed_health() {
+        let options = CollectionMaintenanceOptions::new();
+        assert_eq!(options.interval(), DEFAULT_INTERVAL);
+        let tuned = options
+            .try_with_interval(Duration::from_millis(25))
+            .expect("interval");
+        assert_eq!(tuned.interval(), Duration::from_millis(25));
+
+        let healthy = CollectionMaintenanceHealth {
+            phase: CollectionMaintenancePhase::Running,
+            interval_ms: 25,
+            worker_alive: true,
+            run_in_progress: false,
+            successful_runs: 1,
+            failed_runs: 0,
+            skipped_runs: 0,
+            last_attempted_revision: Some(1),
+            last_successful_revision: Some(1),
+            last_error: None,
+        };
+        assert!(healthy.is_healthy());
+        let closed = CollectionMaintenanceHealth {
+            phase: CollectionMaintenancePhase::Closed,
+            ..healthy.clone()
+        };
+        assert!(closed.is_healthy());
+        let degraded = CollectionMaintenanceHealth {
+            phase: CollectionMaintenancePhase::Degraded,
+            last_error: Some("boom".into()),
+            ..healthy
+        };
+        assert!(!degraded.is_healthy());
+        let debug = format!("{degraded:?}");
+        assert!(debug.contains("Degraded") || debug.contains("boom"));
     }
 }

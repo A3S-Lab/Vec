@@ -19,13 +19,13 @@
 `a3s-vec` 是原生 Rust 的**进程内**检索引擎：稠密/稀疏向量、标量过滤与 BM25
 落在同一持久化集合中——无需服务端进程，也无需 C/C++ 运行时。
 
-**`0.1.1` 已发布到 [crates.io](https://crates.io/crates/a3s-vec)。** 标签
-`0.1.1`、托管 CI 与已发布 crate 校验和绑定同一修订
-（[RELEASE.md](RELEASE.md)）。索引缺失、过期或不够选择性时，精确执行仍是
-正确性预言机。macOS 12 Monterey Intel 不受支持。
+**`0.1.2` 是当前 [crates.io](https://crates.io/crates/a3s-vec) 发布线**
+（发布完成前为 `main` 上的候选）。标签 `0.1.2`、托管 CI 与已发布 crate
+校验和绑定同一修订（[RELEASE.md](RELEASE.md)）。索引缺失、过期或不够选择性时，
+精确执行仍是正确性预言机。macOS 12 Monterey Intel 不受支持。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
-[基准](BENCHMARKS.md) · [发布](RELEASE.md) ·
+[测试](TESTING.md) · [基准](BENCHMARKS.md) · [发布](RELEASE.md) ·
 [docs.rs](https://docs.rs/a3s-vec)
 
 ## 存在理由
@@ -41,45 +41,58 @@ WAL/快照、索引与查询规划；嵌入模型、工作区扫描与 UI 策略
 | 持久化 | WAL、校验和快照、文件锁、派生索引缓存、类型化资源限额 |
 | 可预期失败 | 校验错误与精确回退——不做静默近似 |
 
-## 相对 zvec 的证据（诚实 harness）
+## 相对 zvec 的证据（第一性 harness）
 
-同一主机、同一夹具、单 worker、相同 HNSW 控制（`m=16`、
-`ef_construction=96`、`ef=64`）。a3s-vec 保留 exact re-ranking 与 `f64` 公开
-分数；zvec harness 设置 `is_using_refiner=False`。三次独立进程中位数。方法与
-CSV：[BENCHMARKS.md](BENCHMARKS.md)。
+协议：[docs/scale-compare-protocol.md](docs/scale-compare-protocol.md)。
+证据：[BENCHMARKS.md](BENCHMARKS.md)。同一主机、共享 SplitMix64 语料、单
+worker、相同 HNSW 控制（`m=16`、`ef_construction=96`、`ef=64`）。a3s-vec
+保留 exact re-ranking 与 `f64` 公开分数；zvec harness 设置
+`is_using_refiner=False`。三次独立进程中位数，包版本 `0.1.2`，Apple M5 Max /
+macOS 26.6.2 arm64。
 
-### Apple Silicon · 100k × 128（macOS arm64）
+### Apple Silicon · 100k × 128（公平：单 worker）
 
 | 引擎 | 索引构建 | 查询 p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.1** | **22.4 s** | **99.5 µs** | **0.6000** |
-| zvec 0.7.0 | 50.8 s | 146.0 µs | 0.5844 |
+| **a3s-vec 0.1.2** | **26.3 s** | **103 µs** | **0.6000** |
+| zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
 
-构建约快 **2.27×**，查询 p50 约低 **1.47×**，recall 更高且稳定。
+构建约快 **1.75×**，查询 p50 约低 **1.44×**，recall 更高且稳定。
 
-### Windows Xeon · 100k × 128
+### 同一单 worker 下的 Flat
+
+| 引擎 | 查询 p50 | Recall@10 |
+| --- | ---: | ---: |
+| a3s-vec 0.1.2 | 3,550 µs | 1.0000 |
+| zvec 0.7.0 | **1,841 µs** | 1.0000 |
+
+公开 `f64` 精确 Flat 在 `RAYON_NUM_THREADS=1` 时约慢 **1.93×**。主机默认
+Rayon 池下 a3s-vec Flat 中位 p50 约 **651 µs**（约快 **2.83×**）——单独报告，
+勿混入 HNSW 公平表。
+
+### Windows Xeon · 100k × 128（历史候选）
 
 | 引擎 | 索引构建 | 查询 p50 | Recall@10 |
 | --- | ---: | ---: | ---: |
 | **a3s-vec 0.1.1** | **49.3 s** | 355 µs | **0.6000** |
 | zvec 0.7.0 | 70.9 s | **349 µs** | 0.5875 |
 
-构建约快 **1.44×**；查询 p50 落在噪声内（约 2%）。
+构建约快 **1.44×**；查询 p50 落在噪声内（约 2%）。保留为 Xeon 快照。
 
-以上是单主机、单参数点的方向性证据，不是 SLO。公开 `f64` Flat 路径按契约可能
-仍慢于 zvec 原生路径。不以降低 `ef` 或关闭 re-ranking 制造胜负。
+以上是单主机、单参数点的方向性证据，不是 SLO。不以降低 `ef`、关闭
+re-ranking 或把公开分数改成 `f32` 制造胜负。
 
 ## 安装
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.1"
+a3s-vec = "0.1.2"
 ```
 
 可选 Tokio 安全查询入口：
 
 ```toml
-a3s-vec = { version = "0.1.1", features = ["async"] }
+a3s-vec = { version = "0.1.2", features = ["async"] }
 ```
 
 在 A3S monorepo 中仍可使用 path 依赖：

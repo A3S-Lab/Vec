@@ -245,7 +245,11 @@ directions, while reverse lookup avoids ordered-map key comparisons. Retired
 ordinals trigger one complete derived-index rebuild so those domains cannot
 drift. The FTS term dictionary, each term posting, and the direct-address
 document-length table own sorted or ordinal-addressed contiguous immutable
-bases plus persistent ordered change maps. Term lookup checks the small delta
+bases plus persistent ordered change maps. A parallel character-trigram → term
+map is maintained with the dictionary so wildcard (and selective fuzzy)
+matcher expansion can intersect required trigrams before running the full
+pattern matcher; expansions without a long enough literal run still scan the
+vocabulary. Term lookup checks the small delta
 before binary-searching the base; posting queries merge both layers in ordinal
 order. Mutations copy only affected change-map paths and compact once after the
 document batch. At one eighth of the base, bounded to 64..=2,048 changes, each

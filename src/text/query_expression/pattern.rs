@@ -39,6 +39,30 @@ impl WildcardPattern {
         Self { atoms: compact }
     }
 
+    /// Literal runs of length ≥ 3 contribute overlapping character trigrams that
+    /// every matching term must contain. Returns `None` when no such run exists.
+    pub(crate) fn required_trigrams(&self) -> Option<Vec<String>> {
+        let mut required = Vec::new();
+        let mut run = String::new();
+        for atom in &self.atoms {
+            match atom {
+                WildcardAtom::Literal(character) => run.push(*character),
+                WildcardAtom::AnyOne | WildcardAtom::AnyMany => {
+                    extend_run_trigrams(&run, &mut required);
+                    run.clear();
+                }
+            }
+        }
+        extend_run_trigrams(&run, &mut required);
+        if required.is_empty() {
+            None
+        } else {
+            required.sort_unstable();
+            required.dedup();
+            Some(required)
+        }
+    }
+
     fn matches(&self, candidate: &str) -> bool {
         let candidate: Vec<char> = candidate.chars().collect();
         let mut previous = vec![false; candidate.len().saturating_add(1)];
@@ -89,6 +113,16 @@ impl FtsTermMatcher {
                     })
             }
         }
+    }
+}
+
+fn extend_run_trigrams(run: &str, required: &mut Vec<String>) {
+    let chars: Vec<char> = run.chars().collect();
+    if chars.len() < 3 {
+        return;
+    }
+    for window in chars.windows(3) {
+        required.push(window.iter().collect());
     }
 }
 
@@ -170,5 +204,29 @@ mod tests {
         assert!(matcher.matches("alpha"));
         assert!(matcher.matches("beta"));
         assert!(!matcher.matches("gamma"));
+    }
+
+    #[test]
+    fn required_trigrams_come_from_literal_runs_of_length_at_least_three() {
+        let with_run = WildcardPattern::new([
+            WildcardAtom::AnyMany,
+            WildcardAtom::Literal('r'),
+            WildcardAtom::Literal('u'),
+            WildcardAtom::Literal('s'),
+            WildcardAtom::Literal('t'),
+            WildcardAtom::AnyMany,
+        ]);
+        assert_eq!(
+            with_run.required_trigrams(),
+            Some(vec!["rus".into(), "ust".into()])
+        );
+
+        let short_runs = WildcardPattern::new([
+            WildcardAtom::Literal('r'),
+            WildcardAtom::AnyMany,
+            WildcardAtom::Literal('u'),
+            WildcardAtom::Literal('s'),
+        ]);
+        assert_eq!(short_runs.required_trigrams(), None);
     }
 }

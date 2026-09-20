@@ -1,25 +1,32 @@
 # Release Qualification
 
-`a3s-vec` `0.1.1` is published. Tag `0.1.1`, hosted CI run
-`35486636866`, and crates.io SHA-256
-`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3` all bind to
-revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. macOS 12 Monterey Intel
-is deliberately unsupported: the project no longer requires, tests, or
-advertises that runtime.
+`a3s-vec` `0.1.2` is the current release line. Tag `0.1.2`, hosted CI, and the
+crates.io checksum must bind to one revision after `cargo publish`. The prior
+`0.1.1` package remains on the registry as a historical artifact (tag `0.1.1`
+@ `af22076eb32386b7272c2d2acfa2fef742cb2f73`, SHA-256
+`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`). macOS 12
+Monterey Intel is deliberately unsupported.
 
-## 0.1.1 release notes
+## 0.1.2 release notes
 
-This patch release carries the qualified HNSW traversal improvements from the
-previous candidate: runtime-dispatched `f32` SIMD scoring for unquantized
-navigation, lazy primary-key resolution on exact ties, and a bounded visited
-ordinal bitset. Graph construction, encoded-vector scoring, and final public
-re-ranking retain their authoritative arithmetic and fallbacks. The change
-also refreshes the reproducible performance and cross-project qualification
-record without changing the public storage or query contracts.
+This patch release keeps the public storage and query contracts and adds:
 
-Supported platforms for this release are Linux x86_64/aarch64, Windows
-x86_64, and macOS arm64/x86_64 on current hosted images (macOS deployment
-target 15.0). Older macOS 12 Intel hosts are out of scope.
+- Character-trigram prefilter for FTS wildcard/fuzzy matcher expansion
+  (recall-safe prune before the pattern matcher; full vocabulary fallback when
+  no long enough literal run exists).
+- Packed dense Flat acceleration on the ANN path while binary Flat stays on
+  `DocumentMap`; bit-identical `f64` public scores and exact re-ranking retained.
+- Parallel Flat Cosine scan under the default Rayon pool (product default),
+  with the one-worker fairness harness unchanged for HNSW comparisons.
+- First-principles a3s-vec ↔ zvec remeasure protocol and fresh Apple Silicon
+  medians (`docs/scale-compare-protocol.md`, `scripts/run_fp_compare.sh`).
+- Expanded invariant-driven integration coverage (`TESTING.md`).
+
+Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
+manufacture a benchmark win.
+
+Supported platforms: Linux x86_64/aarch64, Windows x86_64, and macOS
+arm64/x86_64 on current hosted images (macOS deployment target 15.0).
 
 ## Public API review
 
@@ -41,7 +48,7 @@ The release-facing contract has the following boundaries:
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.1` identity.
+  against the package's `0.1.2` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -67,9 +74,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.1.crate`;
-- `a3s-vec-0.1.1.crate.sha256`;
-- `a3s-vec-0.1.1.release.json`, which records the package version, source
+- `a3s-vec-0.1.2.crate`;
+- `a3s-vec-0.1.2.crate.sha256`;
+- `a3s-vec-0.1.2.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the
@@ -106,45 +113,15 @@ cargo publish --dry-run --locked
 The candidate artifact is not itself a crates.io publication until the formal
 tag and `cargo publish` step below.
 
-The previous `0.1.0` candidate was produced by
-[CI run 33772179017](https://github.com/A3S-Lab/Vec/actions/runs/33772179017)
-for revision `13585ccd3f956f6cb7d669b2ee6acc7096fca03d`; its manifest and
-checksum remain historical evidence.
-
-The current `0.1.1` candidate was produced by
-[CI run 35486636866](https://github.com/A3S-Lab/Vec/actions/runs/35486636866)
-for revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. Hosted matrix jobs
-(Linux/Windows/macOS Intel & arm64), the public feature performance matrix,
-and the versioned release-candidate packaging job are green for that
-revision. Artifact
-`a3s-vec-0.1.1-af22076eb32386b7272c2d2acfa2fef742cb2f73` binds:
-
-- package version `0.1.1`;
-- source revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`;
-- crate SHA-256
-  `94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`;
-- runner `Linux/X64`.
-
-The prior `0.1.1` candidate from
-[CI run 35481932811](https://github.com/A3S-Lab/Vec/actions/runs/35481932811)
-(`a08413a…`, SHA-256 `9688ce6a…`) is superseded by this tip. Same-host HNSW
-directional evidence versus zvec 0.7.0 (three-process medians, exact re-rank
-retained), including the Apple Silicon query win after ordinal re-rank, is
-recorded in [`README.md`](README.md) and [`BENCHMARKS.md`](BENCHMARKS.md).
-
 ## Registry status
 
-The crates.io index contains `a3s-vec` `0.1.1`, published from tag `0.1.1`
-at revision `af22076eb32386b7272c2d2acfa2fef742cb2f73`. The published crate
-SHA-256 is
-`94b28f42fbc14967cab8368aabd4187bddac11f706e3f8fd11befffc2110cfa3`, matching
-the hosted release-candidate artifact from
-[CI run 35486636866](https://github.com/A3S-Lab/Vec/actions/runs/35486636866).
-The earlier `0.1.0` package remains historical.
+Pending `cargo publish` of `0.1.2`. After publish, this section records the
+tag revision and crates.io SHA-256. The crates.io index already contains
+`a3s-vec` `0.1.1` as a historical package.
 
 ## Release gates
 
-Enterprise GA for `0.1.1` is closed when all of the following bind to one
+Enterprise GA for `0.1.2` closes when all of the following bind to one
 revision:
 
 1. Hosted CI on `main` is green for that revision (quality, MSRV, recovery
@@ -152,14 +129,8 @@ revision:
    and arm64, and the versioned release-candidate package job).
 2. The published crate SHA-256 matches the release-candidate artifact for
    that revision.
-3. The formal git tag `0.1.1` (or `v0.1.1` if the repository adopts a `v`
-   prefix) points at that revision, and `cargo publish` uploads the matching
-   crate.
-
-Root submodule / Cloud lock bumps are separate consumers and must not invent
-new engine work. Code commit `ff226ebe` removed the Vec shadow migration note
-and made official `zvec-rust` 0.7 FTS the workspace lexical default; a Vec
-shadow re-qualification is not a publish blocker.
+3. The formal git tag `0.1.2` points at that revision, and `cargo publish`
+   uploads the matching crate.
 
 ## Deliberate non-support
 

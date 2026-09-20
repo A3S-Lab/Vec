@@ -157,6 +157,7 @@ fn special_fold(character: char) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{StemmerAlgorithm, TokenFilter};
+    use rust_stemmers::Algorithm;
 
     #[test]
     fn filters_apply_in_place_without_changing_token_cardinality() {
@@ -173,5 +174,39 @@ mod tests {
                 .apply(vec!["running".into(), "repositories".into()]),
             ["run", "repositori"]
         );
+    }
+
+    #[test]
+    fn stemmer_languages_and_special_folds_cover_surface() {
+        for language in [
+            "arabic",
+            "danish",
+            "dutch",
+            "english",
+            "finnish",
+            "french",
+            "german",
+            "greek",
+            "hungarian",
+            "italian",
+            "norwegian",
+            "portuguese",
+            "romanian",
+            "russian",
+            "spanish",
+            "swedish",
+            "tamil",
+            "turkish",
+        ] {
+            let algorithm = StemmerAlgorithm::parse(language).expect(language);
+            let _ = Algorithm::from(algorithm);
+            let filter = TokenFilter::Stemmer(algorithm);
+            let out = filter.apply(vec!["testing".into()]);
+            assert_eq!(out.len(), 1);
+        }
+        assert!(StemmerAlgorithm::parse("klingon").is_err());
+        let folded = TokenFilter::AsciiFolding.apply(vec!["ÆæÐðØøÞþßẞĦħıĲĳŁłŊŋŒœŦŧ".into()]);
+        assert_eq!(folded.len(), 1);
+        assert!(folded[0].is_ascii());
     }
 }

@@ -17,9 +17,8 @@ derived indexes that can always be rebuilt. The six invariants in
 [ARCHITECTURE.md](ARCHITECTURE.md) are the filter. A proposal that does not
 make one of those invariants more true is not scheduled.
 
-Phases 0 through 7 are complete on `main`. The current `0.1.1` release
-candidate is `a08413a` (hosted artifact CI run `35481932811`); later
-docs-only commits such as `e6d067f` do not change the package bytes. Do not
+Phases 0 through 7 are complete on `main`. The current release line is
+`0.1.2` (see [RELEASE.md](RELEASE.md)). Do not
 reopen a completed index family to add a variant. There are no open engine
 issues that pass the six-invariant filter.
 
@@ -34,7 +33,8 @@ Hosted macOS Intel CI remains on `macos-15-intel` with deployment target
 
 The next engine change is a failing test against one of the six invariants on
 a workload this crate already claims. Empty queues are not a reason to invent
-the next index.
+the next index. The comprehensive case catalog and landing waves live in
+[TESTING.md](TESTING.md).
 
 The following are refused until that test exists:
 
@@ -986,8 +986,9 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.1` is closed: tag `0.1.1` and crates.io publish bind
-   to revision `af22076` / CI run `35486636866` per [RELEASE.md](RELEASE.md).
+2. Enterprise GA for `0.1.1` is closed (tag `0.1.1` / crates.io bind to
+   `af22076`). Ship `0.1.2` per [RELEASE.md](RELEASE.md) when hosted CI and
+   the versioned release-candidate artifact bind to one revision.
    macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index

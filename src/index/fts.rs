@@ -5,6 +5,7 @@ mod expression;
 mod posting_list;
 mod query_context;
 mod term_dictionary;
+mod trigram;
 
 #[cfg(test)]
 mod tests;
@@ -15,7 +16,9 @@ use crate::error::{Error, Result};
 use crate::query::{FtsDefaultOperator, SearchQuery};
 use crate::schema::{CollectionSchema, FieldSchema, IndexParams};
 use crate::stats::IndexStat;
-use crate::text::{bm25_term_score, parse_fts_query, text_value, ParsedFtsQuery, Tokenizer};
+use crate::text::{
+    bm25_term_score, parse_fts_query, text_value, FtsTermMatcher, ParsedFtsQuery, Tokenizer,
+};
 use crate::types::IndexType;
 use document_lengths::DocumentLengths;
 use posting_list::PostingList;
@@ -24,6 +27,7 @@ use roaring::RoaringTreemap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use term_dictionary::TermDictionary;
+use trigram::{char_trigrams, TrigramTermIndex};
 
 const DENSE_SCORE_MIN_VISITS: usize = 4_096;
 const DENSE_SCORE_MAX_SPAN_FACTOR: usize = 8;
@@ -40,6 +44,8 @@ struct FtsIndex {
     params: IndexParams,
     tokenizer: Tokenizer,
     postings: TermDictionary,
+    /// Character-trigram → term map used to prune wildcard/fuzzy expansion.
+    trigrams: TrigramTermIndex,
     document_lengths: DocumentLengths,
     total_tokens: u64,
 }
@@ -194,7 +200,7 @@ impl FtsIndexRegistry {
             return Ok(None);
         };
         let mut parsed = parse_fts_query(query, &index.tokenizer)?;
-        parsed.expand_terms(index.postings.iter().map(|(term, _)| term));
+        index.expand_parsed_query(&mut parsed);
         let allowed = candidates.map(OrdinalSet::bitmap);
         let scores = if let Some((terms, operator)) = parsed.simple() {
             index.search(terms, allowed, operator)?
@@ -308,12 +314,14 @@ impl FtsIndex {
                 );
             }
         }
+        let trigrams = TrigramTermIndex::from_terms(postings.keys().map(String::as_str));
         Ok(Self {
             params: params.clone(),
             tokenizer,
             postings: TermDictionary::from_sorted_entries(postings.into_iter().map(
                 |(term, posting)| (term, Arc::new(PostingList::from_sorted_entries(posting))),
             )),
+            trigrams,
             document_lengths: DocumentLengths::from_sorted_entries(document_lengths)?,
             total_tokens,
         })
@@ -351,6 +359,7 @@ impl FtsIndex {
                 Arc::make_mut(&mut posting).insert(ordinal, entry)?;
                 self.postings.insert(term, posting)?;
             } else {
+                self.trigrams.insert_term(&term);
                 self.postings
                     .insert(term, Arc::new(PostingList::single(ordinal, entry)))?;
             }
@@ -373,6 +382,7 @@ impl FtsIndex {
                 let mut posting = posting;
                 Arc::make_mut(&mut posting).remove(ordinal);
                 if posting.is_empty() {
+                    self.trigrams.remove_term(&term);
                     self.postings.remove(&term);
                 } else {
                     self.postings.insert(term, posting)?;
@@ -417,6 +427,57 @@ impl FtsIndex {
             && self.postings.iter().all(|(_, posting)| {
                 !posting.is_empty() && posting.validates(&self.document_lengths)
             })
+    }
+
+    fn expand_parsed_query(&self, parsed: &mut ParsedFtsQuery) {
+        parsed.expand_matchers(|matcher| self.expand_matcher(matcher));
+    }
+
+    fn expand_matcher(&self, matcher: &FtsTermMatcher) -> Vec<String> {
+        match matcher {
+            FtsTermMatcher::Wildcard(pattern) => {
+                if let Some(required) = pattern.required_trigrams() {
+                    let mut terms: Vec<String> = self
+                        .trigrams
+                        .terms_containing_all(&required)
+                        .into_iter()
+                        .filter(|term| matcher.matches(term))
+                        .collect();
+                    terms.sort();
+                    terms
+                } else {
+                    self.expand_matcher_scan(matcher)
+                }
+            }
+            FtsTermMatcher::Fuzzy { term, distance } => {
+                // Each edit can destroy at most three overlapping trigrams.
+                // When the bound drops to zero, fall back to a full scan.
+                let grams = char_trigrams(term);
+                let minimum = grams
+                    .len()
+                    .saturating_sub(3usize.saturating_mul(usize::from(*distance)));
+                if minimum == 0 || grams.is_empty() {
+                    return self.expand_matcher_scan(matcher);
+                }
+                let mut terms: Vec<String> = self
+                    .trigrams
+                    .terms_sharing_at_least(&grams, minimum)
+                    .into_iter()
+                    .filter(|candidate| matcher.matches(candidate))
+                    .collect();
+                terms.sort();
+                terms
+            }
+            FtsTermMatcher::Range { .. } => self.expand_matcher_scan(matcher),
+        }
+    }
+
+    fn expand_matcher_scan(&self, matcher: &FtsTermMatcher) -> Vec<String> {
+        self.postings
+            .iter()
+            .filter(|(term, _)| matcher.matches(term))
+            .map(|(term, _)| term.to_string())
+            .collect()
     }
 
     fn search(
@@ -759,4 +820,24 @@ fn use_dense_score_scratch(estimated_visits: usize, ordinal_span: usize) -> bool
 #[allow(clippy::cast_precision_loss)]
 fn count_to_f64(value: u64) -> f64 {
     value as f64
+}
+
+#[cfg(test)]
+mod dense_scratch_tests {
+    use super::{use_dense_score_scratch, DENSE_SCORE_MAX_SPAN_FACTOR, DENSE_SCORE_MIN_VISITS};
+
+    #[test]
+    fn dense_scratch_gate_requires_large_visits_and_bounded_span() {
+        assert!(!use_dense_score_scratch(DENSE_SCORE_MIN_VISITS - 1, 1));
+        assert!(use_dense_score_scratch(
+            DENSE_SCORE_MIN_VISITS,
+            DENSE_SCORE_MIN_VISITS
+        ));
+        assert!(!use_dense_score_scratch(
+            DENSE_SCORE_MIN_VISITS,
+            DENSE_SCORE_MIN_VISITS
+                .saturating_mul(DENSE_SCORE_MAX_SPAN_FACTOR)
+                .saturating_add(1)
+        ));
+    }
 }

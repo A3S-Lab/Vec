@@ -370,3 +370,70 @@ fn unsupported_or_malformed_structured_syntax_fails_explicitly() {
         assert_eq!(error.code, ErrorCode::InvalidArgument, "{expression}");
     }
 }
+
+#[test]
+fn boolean_must_must_not_expressions_match_scan_oracle() {
+    let temporary = tempdir().expect("temp");
+    let indexed = Collection::create(
+        temporary
+            .path()
+            .join("bool-indexed")
+            .to_str()
+            .expect("utf8"),
+        &schema("bool-indexed", true),
+        None,
+    )
+    .expect("indexed");
+    let scan = Collection::create(
+        temporary.path().join("bool-scan").to_str().expect("utf8"),
+        &schema("bool-scan", false),
+        None,
+    )
+    .expect("scan");
+    let docs = docs();
+    let refs: Vec<_> = docs.iter().collect();
+    indexed.insert(&refs).expect("insert");
+    scan.insert(&refs).expect("insert");
+
+    for expression in [
+        "+rust +database",
+        "+rust -python",
+        "rust -python",
+        "+database -(python OR omega)",
+        "\"vector database\" -python",
+    ] {
+        let indexed_result = query(&indexed, expression, None);
+        let scan_result = query(&scan, expression, None);
+        assert_eq!(
+            comparable(&indexed_result),
+            comparable(&scan_result),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn malformed_fts_expressions_fail_closed_with_typed_errors() {
+    let temporary = tempdir().expect("temp");
+    let collection = Collection::create(
+        temporary.path().join("fts-errors").to_str().expect("utf8"),
+        &schema("fts-errors", true),
+        None,
+    )
+    .expect("create");
+    insert_fixture(&collection);
+
+    for expression in ["+++", "+ -rust", "\"unterminated", "((((((", "[mango rust]"] {
+        let mut fts = Fts::new().expect("fts");
+        if fts.set_query_string(expression).is_err() {
+            continue;
+        }
+        let Ok(query) = SearchQuery::fts("body", &fts, 8) else {
+            continue;
+        };
+        assert!(
+            collection.query(&query).is_err(),
+            "expected query failure for {expression:?}"
+        );
+    }
+}

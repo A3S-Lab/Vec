@@ -207,3 +207,66 @@ fn boolean_parameter(params: &IndexParams, name: &str) -> Result<bool> {
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| Error::invalid_argument(format!("index parameter '{name}' must be boolean")))
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::{boolean_parameter, finite_parameter, nonnegative_parameter, positive_parameter};
+    use crate::error::ErrorCode;
+    use crate::schema::IndexParams;
+    use crate::types::MetricType;
+    use serde_json::json;
+
+    #[test]
+    fn construction_parameter_helpers_reject_missing_zero_and_non_finite() {
+        let mut base = IndexParams::hnsw(MetricType::L2, 8, 64).expect("hnsw");
+        base.params.remove("m");
+        assert_eq!(
+            positive_parameter(&base, "m").expect_err("missing").code,
+            ErrorCode::InvalidArgument
+        );
+        base.params.insert("m".into(), json!(0));
+        assert_eq!(
+            positive_parameter(&base, "m").expect_err("zero").code,
+            ErrorCode::InvalidArgument
+        );
+        base.params.insert("m".into(), json!(8));
+        assert_eq!(positive_parameter(&base, "m").expect("ok"), 8);
+
+        base.params.insert("sample_count".into(), json!(0));
+        assert_eq!(
+            nonnegative_parameter(&base, "sample_count").expect("zero ok"),
+            0
+        );
+        assert_eq!(
+            nonnegative_parameter(&base, "missing")
+                .expect_err("missing")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+
+        base.params.insert("alpha".into(), json!(f64::NAN));
+        assert_eq!(
+            finite_parameter(&base, "alpha").expect_err("nan").code,
+            ErrorCode::InvalidArgument
+        );
+        base.params.insert("alpha".into(), json!(1.2));
+        assert_eq!(finite_parameter(&base, "alpha").expect("ok"), 1.2);
+
+        base.params.insert("saturate".into(), json!(true));
+        assert!(boolean_parameter(&base, "saturate").expect("ok"));
+        assert_eq!(
+            boolean_parameter(&base, "missing")
+                .expect_err("missing")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+
+        let invert = IndexParams::invert(false, false).expect("invert");
+        let docs = crate::doc::DocumentMap::new();
+        let ordinals = crate::index::ordinals::OrdinalTable::build(&docs).expect("ordinals");
+        let error = super::build_vector_index(&docs, "embedding", 2, &invert, 1, &ordinals)
+            .expect_err("invert is not ANN");
+        assert_eq!(error.code, ErrorCode::NotSupported);
+    }
+}

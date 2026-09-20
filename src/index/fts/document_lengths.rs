@@ -237,4 +237,62 @@ mod tests {
             (0..u64::try_from(MIN_DELTA_COMPACTION).expect("limit fits u64")).collect();
         assert!(lengths.validates(MIN_DELTA_COMPACTION, &live));
     }
+
+    #[test]
+    fn validates_rejects_stale_changes_and_accepts_live_sets() {
+        let mut lengths =
+            DocumentLengths::from_sorted_entries([(0, 2), (1, 3), (2, 4)]).expect("base");
+        let live: RoaringTreemap = [0_u64, 1, 2].into_iter().collect();
+        assert!(lengths.validates(8, &live));
+        assert!(!lengths.validates(2, &live));
+
+        lengths.remove(1);
+        let live_after: RoaringTreemap = [0_u64, 2].into_iter().collect();
+        assert!(lengths.validates(8, &live_after));
+        let stale_live: RoaringTreemap = [0_u64].into_iter().collect();
+        assert!(!lengths.validates(8, &stale_live));
+
+        lengths.insert(1, 3).expect("reinsert");
+        lengths.finish_changes().expect("finish small");
+        for ordinal in 10..80_u64 {
+            lengths.insert(ordinal, 1).expect("bulk");
+        }
+        lengths.finish_changes().expect("compact");
+        assert!(lengths.changes.is_empty());
+        let live_bulk: RoaringTreemap = lengths.keys().collect();
+        assert!(lengths.validates(lengths.base.len(), &live_bulk));
+    }
+
+    #[test]
+    fn from_sorted_entries_and_insert_reject_duplicates() {
+        let error = DocumentLengths::from_sorted_entries([(0, 1), (0, 2)]).expect_err("dup");
+        assert!(error.message.contains("already indexed"));
+
+        let mut lengths = DocumentLengths::from_sorted_entries([(0, 1), (2, 3)]).expect("base");
+        assert!(lengths.insert(0, 9).is_err());
+        assert!(lengths.contains_key(0));
+        assert!(!lengths.contains_key(1));
+        assert!(!lengths.is_empty());
+        assert_eq!(lengths.len(), 2);
+        assert_eq!(lengths.values().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(lengths.remove(99), None);
+        // Re-inserting the base value after remove clears the tombstone shadow.
+        assert_eq!(lengths.remove(0), Some(1));
+        lengths.insert(0, 1).expect("restore base value");
+        lengths.finish_changes().expect("noop compact");
+        assert_eq!(lengths.get(0), Some(&1));
+    }
+
+    #[test]
+    fn extreme_ordinals_fail_closed_before_allocation() {
+        let error = DocumentLengths::from_sorted_entries([(usize::MAX as u64, 1)])
+            .expect_err("huge ordinal");
+        assert!(error.message.contains("exceeds addressable"));
+
+        let mut lengths = DocumentLengths::from_sorted_entries([(0, 1)]).expect("base");
+        let error = lengths
+            .insert(usize::MAX as u64, 2)
+            .expect_err("insert huge");
+        assert!(error.message.contains("exceeds addressable"));
+    }
 }

@@ -3,5 +3,6 @@
 /fuzz/corpus/
 /fuzz/target/
 /.a3s-vec-test/
+/.venv-zvec/
 scripts/__pycache__/
 .DS_Store

@@ -549,3 +549,70 @@ fn fts_readers_observe_only_complete_posting_generations() {
         .expect("FTS index stats must exist");
     assert_eq!(fts.source_revision, stats.revision);
 }
+
+#[test]
+fn large_or_fts_query_exercises_dense_score_scratch() {
+    // Dense BM25 scratch activates when estimated posting visits ≥ 4096.
+    const LARGE: usize = 4_500;
+    let temporary = tempdir().expect("temp");
+    let options = manual_options();
+    let indexed = Collection::create(
+        temporary.path().join("fts-dense").to_str().expect("utf8"),
+        &schema("fts-dense", true),
+        Some(&options),
+    )
+    .expect("create");
+    let fallback = Collection::create(
+        temporary
+            .path()
+            .join("fts-dense-fallback")
+            .to_str()
+            .expect("utf8"),
+        &schema("fts-dense-fallback", false),
+        Some(&options),
+    )
+    .expect("create fallback");
+
+    let docs: Vec<Doc> = (0..LARGE)
+        .map(|index| {
+            let mut doc = Doc::with_pk(format!("doc-{index:05}")).expect("pk");
+            doc.add_i32("bucket", i32::try_from(index % 16).expect("bucket"))
+                .expect("bucket");
+            doc.add_string(
+                "body",
+                &format!(
+                    "workspace vector search token{} group{}",
+                    index % 13,
+                    index % 7
+                ),
+            )
+            .expect("body");
+            doc
+        })
+        .collect();
+    let refs: Vec<&Doc> = docs.iter().collect();
+    assert_eq!(
+        indexed.insert(&refs).expect("insert").success_count,
+        LARGE as u64
+    );
+    assert_eq!(
+        fallback.insert(&refs).expect("insert").success_count,
+        LARGE as u64
+    );
+
+    let mut fts = Fts::new().expect("fts");
+    fts.set_match_string("workspace vector")
+        .expect("expression");
+    let mut query = SearchQuery::fts("body", &fts, 20).expect("query");
+    // Explicit OR so both postings contribute to the visit estimate.
+    query
+        .set_fts_params(FtsQueryParams::new(Some("or")).expect("operator"))
+        .expect("fts params");
+    let before = indexed.stats_snapshot().expect("stats");
+    let actual = indexed.query(&query).expect("dense path query");
+    let expected = fallback.query(&query).expect("fallback");
+    assert_eq!(comparable_results(&actual), comparable_results(&expected));
+    assert!(!actual.is_empty());
+    let after = indexed.stats_snapshot().expect("stats");
+    assert!(after.fts_query_count > before.fts_query_count);
+}

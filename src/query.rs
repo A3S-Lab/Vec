@@ -892,3 +892,115 @@ fn validate_query_header(name: &str, topk: i32) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Map;
+
+    #[test]
+    fn ann_query_controls_reject_non_positive_and_non_finite_values() {
+        let mut params = Map::new();
+        assert!(
+            apply_hnsw_query_controls(&mut params, HnswQueryParams::new(0, 0.0, false, false))
+                .is_err()
+        );
+        assert!(apply_hnsw_query_controls(
+            &mut params,
+            HnswQueryParams::new(8, f32::NAN, false, false)
+        )
+        .is_err());
+        assert!(
+            apply_hnsw_query_controls(&mut params, HnswQueryParams::new(8, 1.0, false, false))
+                .is_ok()
+        );
+        assert!(params.get("radius").is_some());
+        assert!(
+            apply_hnsw_query_controls(&mut params, HnswQueryParams::new(8, 0.0, true, true))
+                .is_ok()
+        );
+        assert!(params.get("radius").is_none());
+
+        assert!(apply_ivf_query_controls(&mut params, IvfQueryParams::new(0, false, 1.0)).is_err());
+        assert!(apply_ivf_query_controls(
+            &mut params,
+            IvfQueryParams::new(4, false, f32::INFINITY)
+        )
+        .is_err());
+        assert!(apply_ivf_query_controls(&mut params, IvfQueryParams::new(4, true, 2.0)).is_ok());
+
+        assert!(apply_ivf_rabitq_query_controls(
+            &mut params,
+            IvfRabitqQueryParams::new(0, 0.0, false, false)
+        )
+        .is_err());
+        assert!(apply_ivf_rabitq_query_controls(
+            &mut params,
+            IvfRabitqQueryParams::new(2, f32::NAN, false, false)
+        )
+        .is_err());
+        let mut bad_scale = IvfRabitqQueryParams::new(2, 0.0, false, false);
+        bad_scale.scale_factor = 0.0;
+        assert!(apply_ivf_rabitq_query_controls(&mut params, bad_scale).is_err());
+        let mut good = IvfRabitqQueryParams::new(2, 1.5, true, true);
+        good.scale_factor = 3.0;
+        assert!(apply_ivf_rabitq_query_controls(&mut params, good).is_ok());
+        assert!(params.get("radius").is_some());
+        assert!(apply_ivf_rabitq_query_controls(
+            &mut params,
+            IvfRabitqQueryParams::new(2, 0.0, false, false)
+        )
+        .is_ok());
+        assert!(params.get("radius").is_none());
+
+        assert!(apply_diskann_query_controls(&mut params, DiskannQueryParams::new(0)).is_err());
+        assert!(apply_diskann_query_controls(&mut params, DiskannQueryParams::new(64)).is_ok());
+
+        assert!(unsupported_query_controls("Flat refinement").is_err());
+        let mut query = SearchQuery::new("embedding", &[1.0, 0.0], 8).expect("query");
+        assert!(query
+            .set_flat_params(FlatQueryParams::new(false, 1.0))
+            .is_err());
+        assert!(HnswQueryParams::new(8, 0.0, false, false)
+            .set_ef(0)
+            .is_err());
+        assert!(IvfQueryParams::new(4, false, 1.0).set_nprobe(0).is_err());
+        assert!(IvfQueryParams::new(4, false, 1.0)
+            .set_scale_factor(-1.0)
+            .is_err());
+        assert!(DiskannQueryParams::new(8).set_list_size(0).is_err());
+    }
+
+    #[test]
+    fn fts_and_group_by_query_builders_cover_validation_edges() {
+        assert!(FtsQueryParams::new(Some("xor")).is_err());
+        assert!(FtsQueryParams::new(Some("AND")).is_ok());
+        assert!(FtsQueryParams::new(Some("nope")).is_err());
+        let params = FtsQueryParams::new(Some("OR")).expect("or");
+        let mut map = Map::new();
+        apply_fts_query_controls(&mut map, params).expect("apply");
+        assert_eq!(
+            map.get("default_operator").and_then(|v| v.as_str()),
+            Some("or")
+        );
+        apply_fts_query_controls(&mut map, FtsQueryParams::new(None).expect("none"))
+            .expect("clear");
+        assert!(!map.contains_key("default_operator"));
+
+        assert!(SearchQuery::new("", &[1.0], 1).is_err());
+        assert!(SearchQuery::new("embedding", &[1.0], 0).is_err());
+        assert!(SearchQuery::binary("embedding", &[], 8).is_err());
+        assert!(SearchQuery::sparse("embedding", &[0], &[1.0, 2.0], 8).is_err());
+        let mut fts = Fts::new().expect("fts");
+        assert!(SearchQuery::fts("body", &fts, 8).is_err());
+        fts.set_query_string("rust").expect("q");
+        let mut query = SearchQuery::fts("body", &fts, 8).expect("fts query");
+        query
+            .set_fts_params(FtsQueryParams::new(Some("AND")).expect("and"))
+            .expect("set");
+        query.set_filter("").expect("empty filter");
+        query.set_include_vector(true).expect("include");
+        assert!(query.set_output_fields(&["", "body"]).is_err());
+        query.set_output_fields(&["body"]).expect("fields");
+    }
+}

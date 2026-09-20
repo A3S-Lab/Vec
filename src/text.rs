@@ -5,7 +5,7 @@ mod query_expression;
 
 pub(crate) use query_expression::{
     contains_ordered_phrase, parse_fts_query, FtsEvalContext, FtsExpr, FtsExprKind, FtsModifier,
-    ParsedFtsQuery,
+    FtsTermMatcher, ParsedFtsQuery,
 };
 
 use crate::doc::{Doc, FieldValue};
@@ -529,5 +529,75 @@ mod tests {
                 .expect_err("invalid token length must fail");
             assert_eq!(error.code, ErrorCode::InvalidArgument);
         }
+    }
+
+    #[test]
+    fn tokenizer_rejects_invalid_filters_ngram_bounds_and_extra_keys() {
+        let bad_filters = IndexParams::fts(Some("standard"), Some(&["lowercase", "mystery"]), None)
+            .expect("params");
+        assert!(Tokenizer::from_index_params(Some(&bad_filters)).is_err());
+
+        let mut mutated =
+            IndexParams::fts(Some("standard"), Some(&["lowercase"]), None).expect("params");
+        mutated
+            .params
+            .insert("filters".into(), serde_json::json!([1]));
+        assert!(Tokenizer::from_index_params(Some(&mutated)).is_err());
+
+        let bad_ngram = IndexParams::fts(
+            Some("ngram"),
+            None,
+            Some(r#"{"ngram_min":3,"ngram_max":2}"#),
+        )
+        .expect("params");
+        assert!(Tokenizer::from_index_params(Some(&bad_ngram)).is_err());
+
+        let wide_ngram = IndexParams::fts(
+            Some("ngram"),
+            None,
+            Some(r#"{"ngram_min":1,"ngram_max":3}"#),
+        )
+        .expect("params");
+        assert!(Tokenizer::from_index_params(Some(&wide_ngram)).is_err());
+
+        let mystery_key =
+            IndexParams::fts(Some("standard"), None, Some(r#"{"mystery":1}"#)).expect("params");
+        assert!(Tokenizer::from_index_params(Some(&mystery_key)).is_err());
+
+        let stemmer = IndexParams::fts(
+            Some("standard"),
+            Some(&["stemmer"]),
+            Some(r#"{"stemmer_lang":""}"#),
+        )
+        .expect("params");
+        assert!(Tokenizer::from_index_params(Some(&stemmer)).is_err());
+
+        let stemmer_ok = IndexParams::fts(
+            Some("standard"),
+            Some(&["stemmer", "ascii_folding", "lowercase"]),
+            Some(r#"{"stemmer_lang":"english"}"#),
+        )
+        .expect("params");
+        assert!(Tokenizer::from_index_params(Some(&stemmer_ok)).is_ok());
+
+        let unknown = IndexParams::fts(Some("mystery-tokenizer"), None, None).expect("params");
+        assert!(Tokenizer::from_index_params(Some(&unknown)).is_err());
+
+        let jieba = IndexParams::fts(Some("jieba"), None, None).expect("params");
+        let jieba_result = Tokenizer::from_index_params(Some(&jieba));
+        if cfg!(feature = "jieba") {
+            assert!(jieba_result.is_ok());
+        } else {
+            assert_eq!(
+                jieba_result.expect_err("jieba optional").code,
+                ErrorCode::NotSupported
+            );
+        }
+        // Schema validation accepts jieba without requiring the feature at
+        // attach time; execution still needs the optional feature later.
+        assert!(super::validate_tokenizer_params(Some(&jieba)).is_ok());
+
+        let _ = super::NgramConfig::default();
+        assert!(super::text_value(&crate::doc::Doc::with_pk("x").unwrap(), "missing").is_none());
     }
 }

@@ -309,4 +309,74 @@ mod tests {
             .expect_err("out-of-range snapshot read must fail");
         assert_eq!(error.code, ErrorCode::InternalError);
     }
+
+    #[test]
+    fn positioned_backend_and_empty_mmap_fail_closed() {
+        let temporary = tempdir().expect("temporary directory must be available");
+        let relative = Path::new("positioned.bin");
+        let path = temporary.path().join(relative);
+        fs::write(&path, b"abcdefgh").expect("fixture must write");
+        let file = open(temporary.path(), relative, 8, "positioned fixture")
+            .expect("open")
+            .expect("exists");
+        assert_eq!(file.len(), 8);
+        let bytes = file.read_all().expect("read_all");
+        assert_eq!(bytes, b"abcdefgh");
+        let positioned = open(temporary.path(), relative, 8, "positioned fixture")
+            .expect("reopen")
+            .expect("exists")
+            .into_random_access(IoBackend::Positioned, &bytes)
+            .expect("positioned backend");
+        assert_eq!(positioned.io_backend(), IoBackend::Positioned);
+        let mut selected = [0_u8; 3];
+        positioned
+            .read_exact_at(2, &mut selected)
+            .expect("positioned read");
+        assert_eq!(&selected, b"cde");
+
+        let empty = open(temporary.path(), relative, 8, "empty-mmap")
+            .expect("open")
+            .expect("exists");
+        let error = empty
+            .into_random_access(IoBackend::Mmap, &[])
+            .expect_err("empty mmap must fail");
+        assert_eq!(error.code, ErrorCode::InternalError);
+
+        assert!(
+            open(temporary.path(), Path::new("missing.bin"), 4, "missing")
+                .expect("missing is ok")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn write_rejects_oversized_payloads_before_creating_artifacts() {
+        use super::write;
+        let temporary = tempdir().expect("temp");
+        let error = write(
+            temporary.path(),
+            Path::new("too-big.bin"),
+            b"12345",
+            4,
+            "test artifact",
+            true,
+        )
+        .expect_err("oversized write");
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(!temporary.path().join("too-big.bin").exists());
+
+        write(
+            temporary.path(),
+            Path::new("nested/ok.bin"),
+            b"ok",
+            16,
+            "nested artifact",
+            false,
+        )
+        .expect("write");
+        assert_eq!(
+            fs::read(temporary.path().join("nested/ok.bin")).expect("read"),
+            b"ok"
+        );
+    }
 }

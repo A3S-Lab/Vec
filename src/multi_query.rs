@@ -318,3 +318,75 @@ impl MultiQuery {
         self.filter.as_deref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subquery_and_multi_query_reject_invalid_payloads() {
+        let mut sub = SubQuery::new().expect("sub");
+        assert!(sub.set_num_candidates(0).is_err());
+        assert!(sub.set_field_name("").is_err());
+        assert!(sub.set_query_vector(&[]).is_err());
+        assert!(sub.set_query_vector(&[f32::NAN]).is_err());
+        sub.set_field_name("embedding").expect("field");
+        sub.set_query_vector(&[1.0, 0.0]).expect("vector");
+        assert!(sub
+            .set_flat_params(FlatQueryParams::new(false, 1.0))
+            .is_err());
+        assert!(sub
+            .set_hnsw_params(HnswQueryParams::new(0, 0.0, false, false))
+            .is_err());
+        assert!(sub.set_sparse_indices(&[]).is_err());
+        assert!(sub.set_sparse_values(&[]).is_err());
+        sub.set_sparse_values(&[1.0, 2.0]).expect("sparse values");
+        assert!(sub.set_sparse_indices(&[0]).is_err());
+        sub.set_sparse_indices(&[0, 1]).expect("indices");
+        let empty_fts = Fts::new().expect("fts");
+        assert!(sub.set_fts(&empty_fts).is_err());
+        let mut fts = Fts::new().expect("fts");
+        fts.set_query_string("rust").expect("q");
+        sub.set_fts(&fts).expect("fts");
+        assert!(sub.to_search_query().is_ok());
+
+        let mut multi = MultiQuery::new().expect("multi");
+        assert!(multi.set_topk(0).is_err());
+        assert!(multi.set_rerank_rrf(0).is_err());
+        assert!(multi.set_rerank_weighted(&[]).is_err());
+        assert!(multi.set_rerank_weighted(&[f64::NAN]).is_err());
+        multi.set_rerank_weighted(&[1.0, 2.0]).expect("weights");
+        assert_eq!(
+            RerankMethod::default(),
+            RerankMethod::Weighted { weights: vec![] }
+        );
+        multi.set_rerank_rrf(60).expect("rrf");
+        assert!(multi.set_normalization("bogus").is_err());
+        multi.set_normalization("minmax").expect("norm");
+        multi.set_filter(" ").expect("blank filter");
+        assert!(multi.filter.is_none());
+        multi.set_include_vector(true).expect("include");
+        assert!(multi.set_output_fields(&["ok", ""]).is_err());
+        multi.set_output_fields(&["a"]).expect("fields");
+        multi.add_sub_query(&sub).expect("add");
+        assert_eq!(multi.sub_query_count(), 1);
+        assert_eq!(multi.topk(), 10);
+        assert!(multi.include_vector());
+
+        let mut binary = SubQuery::new().expect("binary");
+        binary.set_field_name("bits").expect("field");
+        binary.set_binary_vector(&[1, 2, 3, 4]).expect("bits");
+        assert!(binary.to_search_query().is_ok());
+
+        let mut sparse = SubQuery::new().expect("sparse");
+        sparse.set_field_name("sparse").expect("field");
+        sparse
+            .set_sparse_vector(&[0, 2], &[1.0, 0.5])
+            .expect("sparse");
+        assert!(sparse.to_search_query().is_ok());
+
+        let mut empty = SubQuery::new().expect("empty");
+        empty.set_field_name("embedding").expect("field");
+        assert!(empty.to_search_query().is_err());
+    }
+}

@@ -244,7 +244,8 @@ pub fn checksum(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::{atomic_write, read, write_with_faults, Manifest, FORMAT_VERSION};
+    use crate::storage::fault::FaultInjector;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
@@ -268,5 +269,59 @@ mod tests {
             .map(|entry| entry.expect("directory entry must be readable").file_name())
             .collect();
         assert_eq!(entries, [target.as_os_str()]);
+    }
+
+    fn valid_manifest() -> Manifest {
+        Manifest {
+            format_version: FORMAT_VERSION,
+            collection_name: "fixture".into(),
+            schema_digest: "digest".into(),
+            generation: 1,
+            revision: 2,
+            checkpoint_revision: 1,
+            wal_active_seq: 1,
+            wal_checkpoint_seq: 0,
+            wal_ops_since_checkpoint: 0,
+            wal_bytes_since_checkpoint: 0,
+            docs_checksum: 0,
+        }
+    }
+
+    #[test]
+    fn manifest_read_rejects_corrupt_and_inconsistent_state() {
+        let temporary = tempdir().expect("temp");
+        let root = temporary.path();
+        write_with_faults(root, &valid_manifest(), true, &FaultInjector::default()).expect("seed");
+
+        let mut bad = valid_manifest();
+        bad.generation = 0;
+        write_with_faults(root, &bad, true, &FaultInjector::default()).expect("write");
+        assert!(read(root)
+            .expect_err("generation 0")
+            .message
+            .contains("generation"));
+
+        bad = valid_manifest();
+        bad.format_version = FORMAT_VERSION + 10;
+        write_with_faults(root, &bad, true, &FaultInjector::default()).expect("write");
+        assert!(read(root).is_err());
+
+        bad = valid_manifest();
+        bad.checkpoint_revision = 9;
+        bad.revision = 2;
+        write_with_faults(root, &bad, true, &FaultInjector::default()).expect("write");
+        assert!(read(root)
+            .expect_err("checkpoint ahead")
+            .message
+            .contains("checkpoint"));
+
+        bad = valid_manifest();
+        bad.wal_checkpoint_seq = 5;
+        bad.wal_active_seq = 5;
+        write_with_faults(root, &bad, true, &FaultInjector::default()).expect("write");
+        assert!(read(root).expect_err("wal seq").message.contains("WAL"));
+
+        fs::write(root.join("manifest.json"), b"{not-json").expect("corrupt");
+        assert!(read(root).is_err());
     }
 }
