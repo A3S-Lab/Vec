@@ -39,6 +39,7 @@ pub(super) fn build_vector_index(
             diskann: None,
             cosine_norms: std::sync::OnceLock::new(),
             exact_cosine_norms: std::sync::OnceLock::new(),
+            exact_cosine_inv_norms: std::sync::OnceLock::new(),
             dense_f32: std::sync::OnceLock::new(),
             dense_f64: std::sync::OnceLock::new(),
         }),

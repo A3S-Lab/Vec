@@ -13,11 +13,70 @@ use super::{
 use crate::config::IoBackend;
 use crate::index::quantization::{dense_query_norm_fast, QuantizedVector};
 use crate::types::MetricType;
+use rayon::prelude::*;
 use roaring::RoaringTreemap;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 const FLAT_PREFETCH_AHEAD: usize = 8;
+
+#[inline]
+fn live_is_dense(live: &RoaringTreemap, slots: usize) -> bool {
+    let Ok(slots) = u64::try_from(slots) else {
+        return false;
+    };
+    if slots == 0 {
+        return live.is_empty();
+    }
+    live.len() == slots && live.min() == Some(0) && live.max() == Some(slots - 1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flat_cosine_scan_serial(
+    live: &RoaringTreemap,
+    dense: bool,
+    dimension: usize,
+    values: &[f64],
+    inv_norms: &[f64],
+    query_f64: &[f64],
+    limit: usize,
+    slots: usize,
+) -> RoaringTreemap {
+    let mut ranked = BinaryHeap::with_capacity(limit);
+    for slot in 0..slots {
+        let ordinal = u64::try_from(slot).unwrap_or(u64::MAX);
+        if !dense && !live.contains(ordinal) {
+            continue;
+        }
+        let start = slot.saturating_mul(dimension);
+        let end = start.saturating_add(dimension);
+        let Some(coordinates) = values.get(start..end) else {
+            continue;
+        };
+        if let Some(ahead) = slot
+            .checked_add(FLAT_PREFETCH_AHEAD)
+            .filter(|value| *value < slots)
+        {
+            prefetch_f64_at(values, ahead.saturating_mul(dimension));
+        }
+        let Some(inv_norm) = inv_norms.get(slot).copied() else {
+            continue;
+        };
+        let rank_key = crate::score_f64::dot_f64(query_f64, coordinates) * inv_norm;
+        retain_flat_rank(
+            &mut ranked,
+            FlatRank {
+                exact_score: rank_key,
+                ordinal,
+            },
+            limit,
+        );
+    }
+    ranked
+        .into_iter()
+        .map(|candidate| candidate.ordinal)
+        .collect()
+}
 
 #[inline]
 fn flat_score_f64(
@@ -321,18 +380,22 @@ impl VectorIndex {
             0.0
         };
         let cosine_norms = (search.metric == MetricType::Cosine).then(|| self.exact_cosine_norms());
+        let cosine_inv_norms =
+            (search.metric == MetricType::Cosine).then(|| self.exact_cosine_inv_norms());
         let overlay_empty = self.tombstones.is_empty()
             && self.delta_ordinals.is_empty()
             && search.allowed.is_none();
-        if overlay_empty {
-            if let Some(ranked) = self.flat_scan_packed_f64(
-                &live,
-                &query_f64,
-                search.metric,
-                query_norm,
-                cosine_norms,
-                limit,
-            ) {
+        if overlay_empty && search.metric == MetricType::Cosine {
+            if let Some(ranked) =
+                self.flat_scan_packed_cosine(&live, &query_f64, query_norm, cosine_inv_norms, limit)
+            {
+                return Some(ranked);
+            }
+        }
+        if overlay_empty && search.metric != MetricType::Cosine {
+            if let Some(ranked) =
+                self.flat_scan_packed_f64(&live, &query_f64, search.metric, query_norm, limit)
+            {
                 return Some(ranked);
             }
         }
@@ -346,19 +409,99 @@ impl VectorIndex {
         ))
     }
 
+    /// Cosine Flat scan over packed promoted `f64` with `dot * inv_norm`
+    /// ranking. Chunks in parallel when Rayon has more than one worker; the
+    /// 1-worker harness stays serial. Winners are re-scored with the public
+    /// `f64` formula in the query engine.
+    fn flat_scan_packed_cosine(
+        &self,
+        live: &RoaringTreemap,
+        query_f64: &[f64],
+        query_norm: f64,
+        cosine_inv_norms: Option<&[f64]>,
+        limit: usize,
+    ) -> Option<RoaringTreemap> {
+        if query_norm == 0.0 {
+            return Some(RoaringTreemap::new());
+        }
+        let (dimension, values) = self.packed_f64()?;
+        let inv_norms = cosine_inv_norms?;
+        let slots = values.len() / dimension.max(1);
+        let dense = live_is_dense(live, slots);
+        let threads = rayon::current_num_threads().max(1);
+        if threads == 1 || slots < 4_096 {
+            return Some(flat_cosine_scan_serial(
+                live, dense, dimension, values, inv_norms, query_f64, limit, slots,
+            ));
+        }
+        let chunk = slots.div_ceil(threads);
+        let partial: Vec<Vec<FlatRank>> = (0..threads)
+            .into_par_iter()
+            .map(|worker| {
+                let start_slot = worker.saturating_mul(chunk);
+                let end_slot = start_slot.saturating_add(chunk).min(slots);
+                let mut ranked = BinaryHeap::with_capacity(limit);
+                for slot in start_slot..end_slot {
+                    let ordinal = u64::try_from(slot).unwrap_or(u64::MAX);
+                    if !dense && !live.contains(ordinal) {
+                        continue;
+                    }
+                    let start = slot.saturating_mul(dimension);
+                    let end = start.saturating_add(dimension);
+                    let Some(coordinates) = values.get(start..end) else {
+                        continue;
+                    };
+                    if let Some(ahead) = slot
+                        .checked_add(FLAT_PREFETCH_AHEAD)
+                        .filter(|value| *value < end_slot)
+                    {
+                        prefetch_f64_at(values, ahead.saturating_mul(dimension));
+                    }
+                    let Some(inv_norm) = inv_norms.get(slot).copied() else {
+                        continue;
+                    };
+                    let rank_key = crate::score_f64::dot_f64(query_f64, coordinates) * inv_norm;
+                    retain_flat_rank(
+                        &mut ranked,
+                        FlatRank {
+                            exact_score: rank_key,
+                            ordinal,
+                        },
+                        limit,
+                    );
+                }
+                ranked.into_vec()
+            })
+            .collect();
+        let mut ranked = BinaryHeap::with_capacity(limit);
+        for candidate in partial.into_iter().flatten() {
+            retain_flat_rank(&mut ranked, candidate, limit);
+        }
+        Some(
+            ranked
+                .into_iter()
+                .map(|candidate| candidate.ordinal)
+                .collect(),
+        )
+    }
+
     fn flat_scan_packed_f64(
         &self,
         live: &RoaringTreemap,
         query_f64: &[f64],
         metric: MetricType,
         query_norm: f64,
-        cosine_norms: Option<&[f64]>,
         limit: usize,
     ) -> Option<RoaringTreemap> {
         let (dimension, values) = self.packed_f64()?;
         let slots = values.len() / dimension.max(1);
+        let dense = live_is_dense(live, slots);
         let mut ranked = BinaryHeap::with_capacity(limit);
         for slot in 0..slots {
+            let ordinal = u64::try_from(slot).unwrap_or(u64::MAX);
+            if !dense && !live.contains(ordinal) {
+                continue;
+            }
             let start = slot.saturating_mul(dimension);
             let end = start.saturating_add(dimension);
             let Some(coordinates) = values.get(start..end) else {
@@ -370,25 +513,7 @@ impl VectorIndex {
             {
                 prefetch_f64_at(values, ahead.saturating_mul(dimension));
             }
-            let ordinal = u64::try_from(slot).unwrap_or(u64::MAX);
-            if !live.contains(ordinal) {
-                continue;
-            }
-            let candidate_norm = cosine_norms.map(|norms| {
-                usize::try_from(ordinal)
-                    .ok()
-                    .and_then(|index| norms.get(index).copied())
-                    .filter(|value| value.is_finite())
-                    .unwrap_or_else(|| {
-                        coordinates
-                            .iter()
-                            .map(|value| value * value)
-                            .sum::<f64>()
-                            .sqrt()
-                    })
-            });
-            let exact_score =
-                flat_score_f64(query_f64, coordinates, metric, query_norm, candidate_norm);
+            let exact_score = flat_score_f64(query_f64, coordinates, metric, query_norm, None);
             retain_flat_rank(
                 &mut ranked,
                 FlatRank {
@@ -467,6 +592,21 @@ impl VectorIndex {
                 }
             }
             norms
+        })
+    }
+
+    fn exact_cosine_inv_norms(&self) -> &[f64] {
+        self.base.exact_cosine_inv_norms.get_or_init(|| {
+            self.exact_cosine_norms()
+                .iter()
+                .map(|norm| {
+                    if norm.is_finite() && *norm != 0.0 {
+                        1.0 / *norm
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
         })
     }
 

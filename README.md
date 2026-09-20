@@ -73,12 +73,15 @@ independent processes. Methodology and CSVs:
 
 These rows are directional evidence for one host and parameter point—not an
 SLO. Flat keeps the same exact `f64` public score contract (lazy rebuild into a
-contiguous promoted-`f64` base, bit-identical SIMD kernels). On the honest
-1-worker harness Flat **insert** beats zvec; Flat **query** is typically about
-**1.5–2×** slower—matching the `f64` vs native `f32` arithmetic floor, not a
-missing index. Do not lower `ef`, drop exact re-ranking, or switch public
-scores to `f32` to manufacture a Flat query win. HNSW remains the path that
-beats zvec on build and query under identical controls.
+contiguous promoted-`f64` base, bit-identical SIMD kernels, Cosine top-k ranked
+by `dot * inv_norm` then re-scored). Exact Flat scan is embarrassingly parallel:
+with the host's default Rayon pool it **beats** zvec Flat query on this machine
+(~2.7× lower p50 in a 3-round median). Pinning `RAYON_NUM_THREADS=1` (the HNSW
+fairness harness) leaves Flat query about **1.5–2×** slower—matching the `f64`
+vs native `f32` arithmetic floor, not a missing index. Flat **insert** beats
+zvec either way. Do not lower `ef`, drop exact re-ranking, or switch public
+scores to `f32` to manufacture a win. HNSW remains ahead on build and query
+under identical 1-worker controls.
 
 ## Install
 

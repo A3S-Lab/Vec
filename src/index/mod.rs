@@ -90,6 +90,11 @@ struct VectorIndexBase {
     /// and left-to-right accumulation as public `f64` scores.
     #[serde(skip)]
     exact_cosine_norms: OnceLock<Vec<f64>>,
+    /// `1 / exact_cosine_norms[i]` for Flat Cosine top-k ranking. Order is
+    /// identical to dividing by `query_norm * norm` when `query_norm` is fixed;
+    /// the query engine still re-scores winners with the full public formula.
+    #[serde(skip)]
+    exact_cosine_inv_norms: OnceLock<Vec<f64>>,
     /// Contiguous unquantized coordinates for HNSW navigation. `None` when the
     /// base is empty or not a single `f32` dimension. An `Fp32` document score
     /// is the `f64` promotion of these same coordinates.
