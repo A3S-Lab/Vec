@@ -127,16 +127,17 @@ The earlier `0.1.1` and `0.1.0` packages remain historical.
 
 ## Release gates
 
-Enterprise GA for `0.1.2` closes when all of the following bind to one
-revision:
+Enterprise GA for `0.1.2` is closed: all of the following bind to revision
+`0c7894fedb62d3ea76057486cd4e4b5fad3978b2`:
 
-1. Hosted CI on `main` is green for that revision (quality, MSRV, recovery
-   fuzz smoke, performance matrix, platform matrix including macOS 15 Intel
-   and arm64, and the versioned release-candidate package job).
-2. The published crate SHA-256 matches the release-candidate artifact for
-   that revision.
-3. The formal git tag `0.1.2` points at that revision, and `cargo publish`
-   uploads the matching crate.
+1. Hosted CI on `main` is green (quality, MSRV, recovery fuzz smoke,
+   performance matrix, platform matrix including macOS 15 Intel and arm64, and
+   the versioned release-candidate package job) —
+   [run 35503763590](https://github.com/A3S-Lab/Vec/actions/runs/35503763590).
+2. The published crate SHA-256 matches the release-candidate artifact
+   (`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`).
+3. Formal git tag `0.1.2` points at that revision, and `cargo publish`
+   uploaded the matching crate.
 
 ## Deliberate non-support
 
