@@ -23,7 +23,7 @@ pub(super) use reader::FieldReader;
 use std::sync::Arc;
 
 pub(super) const SECTOR_BYTES: usize = 4_096;
-pub(super) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) use crate::storage_ceilings::DEFAULT_DISKANN_FILE_BYTES as MAX_FILE_BYTES;
 
 const MAGIC: &[u8; 8] = b"A3SDAN01";
 const FORMAT_VERSION: u32 = 2;
@@ -71,13 +71,30 @@ struct ReaderSpec {
     codebook: Option<ProductCodebook>,
 }
 
+#[allow(dead_code)]
 pub(super) fn encode(
     registry: &IndexRegistry,
     schema: &CollectionSchema,
     source_revision: u64,
     source_identity: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let prepared = prepare(registry, schema, source_identity)?;
+    encode_with_limit(
+        registry,
+        schema,
+        source_revision,
+        source_identity,
+        MAX_FILE_BYTES,
+    )
+}
+
+pub(super) fn encode_with_limit(
+    registry: &IndexRegistry,
+    schema: &CollectionSchema,
+    source_revision: u64,
+    source_identity: &str,
+    max_file_bytes: u64,
+) -> Result<Option<Vec<u8>>> {
+    let prepared = prepare(registry, schema, source_identity, max_file_bytes)?;
     if prepared.fields.is_empty() {
         return Ok(None);
     }
@@ -195,8 +212,9 @@ pub(super) fn validates(
     schema: &CollectionSchema,
     source_revision: u64,
     source_identity: &str,
+    max_file_bytes: u64,
 ) -> bool {
-    let Ok(prepared) = prepare(registry, schema, source_identity) else {
+    let Ok(prepared) = prepare(registry, schema, source_identity, max_file_bytes) else {
         return false;
     };
     if prepared.fields.is_empty() {
@@ -272,8 +290,9 @@ pub(super) fn attach(
     schema: &CollectionSchema,
     source_revision: u64,
     source_identity: &str,
+    max_file_bytes: u64,
 ) -> bool {
-    let Ok(prepared) = prepare(registry, schema, source_identity) else {
+    let Ok(prepared) = prepare(registry, schema, source_identity, max_file_bytes) else {
         return false;
     };
     if prepared.fields.is_empty() {
@@ -291,6 +310,7 @@ pub(super) fn attach(
         schema,
         source_revision,
         source_identity,
+        max_file_bytes,
     ) {
         return false;
     }
@@ -341,6 +361,7 @@ fn prepare<'a>(
     registry: &'a IndexRegistry,
     schema: &CollectionSchema,
     source_identity: &str,
+    max_file_bytes: u64,
 ) -> Result<PreparedLayout<'a>> {
     let mut fields = Vec::new();
     for (name, index) in &registry.indexes {
@@ -425,9 +446,9 @@ fn prepare<'a>(
             .checked_add(field.data_bytes)
             .ok_or_else(|| Error::resource_exhausted("DiskANN file length overflow"))?;
     }
-    if u64::try_from(total_bytes).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
+    if u64::try_from(total_bytes).unwrap_or(u64::MAX) > max_file_bytes {
         return Err(Error::resource_exhausted(format!(
-            "DiskANN sidecar exceeds the {MAX_FILE_BYTES}-byte storage limit"
+            "DiskANN sidecar exceeds the {max_file_bytes}-byte storage limit"
         )));
     }
     Ok(PreparedLayout {

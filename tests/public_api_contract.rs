@@ -9,7 +9,8 @@ use a3s_vec::{
     IndexParams, IndexParamsBuilder, IndexStat, IndexType, InvertIndexParam, IoBackend,
     IvfIndexParam, IvfQueryParams, IvfRabitqIndexParam, IvfRabitqQueryParams, MetricType,
     MultiQuery, QuantizeType, RerankMethod, SearchQuery, SearchQueryBuilder, StatsSnapshot,
-    SubQuery, VamanaIndexParam, VectorQuery, VectorSchema, VectorValue, WriteResult,
+    StorageCeilings, SubQuery, VamanaIndexParam, VectorQuery, VectorSchema, VectorValue,
+    WriteResult,
 };
 use tempfile::tempdir;
 
@@ -79,6 +80,7 @@ fn public_owned_contracts_are_send_and_sync() {
     assert_send_sync::<SearchQuery>();
     assert_send_sync::<SearchQueryBuilder>();
     assert_send_sync::<StatsSnapshot>();
+    assert_send_sync::<StorageCeilings>();
     assert_send_sync::<SubQuery>();
     assert_send_sync::<VamanaIndexParam>();
     assert_send_sync::<VectorQuery>();
@@ -130,12 +132,29 @@ fn process_configuration_lifecycle_controls_new_collections_only() {
     let defaults_json = serde_json::to_value(&defaults).expect("defaults must serialize");
     assert_eq!(defaults_json["durability"], "Always");
     assert_eq!(defaults_json["io_backend"], "positioned");
+    assert_eq!(
+        defaults_json["storage_ceilings"]["max_snapshot_bytes"],
+        a3s_vec::DEFAULT_SNAPSHOT_BYTES
+    );
+    assert_eq!(
+        defaults_json["storage_ceilings"]["max_index_cache_bytes"],
+        a3s_vec::DEFAULT_INDEX_CACHE_BYTES
+    );
+    assert_eq!(
+        defaults_json["storage_ceilings"]["max_wal_replay_bytes"],
+        a3s_vec::DEFAULT_WAL_REPLAY_BYTES
+    );
+    assert_eq!(
+        defaults_json["storage_ceilings"]["max_diskann_file_bytes"],
+        a3s_vec::DEFAULT_DISKANN_FILE_BYTES
+    );
 
     let mut options = CollectionOptions::new().expect("options must be constructible");
     assert!(!options.read_only());
     assert_eq!(options.durability(), None);
     assert_eq!(options.io_backend(), None);
     assert_eq!(options.resource_limits(), CollectionResourceLimits::new());
+    assert_eq!(options.storage_ceilings(), None);
     options
         .set_read_only(true)
         .expect("read-only option must be settable");
@@ -151,16 +170,24 @@ fn process_configuration_lifecycle_controls_new_collections_only() {
     options
         .set_resource_limits(limits)
         .expect("resource policy must be settable");
+    let ceilings = StorageCeilings::new()
+        .try_with_max_snapshot_bytes(4_096)
+        .expect("storage ceiling must be valid");
+    options
+        .set_storage_ceilings(ceilings)
+        .expect("storage ceilings must be settable");
     assert!(options.read_only());
     assert_eq!(options.durability(), Some(Durability::Interval));
     assert_eq!(options.io_backend(), Some(IoBackend::Mmap));
     assert_eq!(options.resource_limits(), limits);
+    assert_eq!(options.storage_ceilings(), Some(ceilings));
 
     let configured = ConfigBuilder::new()
         .durability(Durability::Manual)
         .wal_max_ops(3)
         .wal_max_bytes(512)
         .io_backend(IoBackend::Mmap)
+        .storage_ceilings(ceilings)
         .build();
     a3s_vec::initialize(Some(&configured))
         .expect("initializing process configuration must succeed");

@@ -3,6 +3,7 @@
 use super::CollectionResourceLimits;
 use crate::config::{current_config, ConfigBuilder, Durability, IoBackend};
 use crate::error::Result;
+use crate::storage_ceilings::StorageCeilings;
 
 /// Supported options for creating or opening a collection.
 ///
@@ -22,6 +23,7 @@ pub struct CollectionOptions {
     pub(super) durability: Option<Durability>,
     pub(super) io_backend: Option<IoBackend>,
     pub(super) resource_limits: CollectionResourceLimits,
+    pub(super) storage_ceilings: Option<StorageCeilings>,
 }
 
 impl CollectionOptions {
@@ -71,10 +73,32 @@ impl CollectionOptions {
     pub fn resource_limits(&self) -> CollectionResourceLimits {
         self.resource_limits
     }
+
+    /// Overrides process-wide persistence `DoS` ceilings for this handle.
+    ///
+    /// When absent, the ceilings configured through [`crate::ConfigBuilder`]
+    /// (or product defaults) are captured at create/open. Values are never
+    /// inferred from host RAM or free disk.
+    pub fn set_storage_ceilings(&mut self, value: StorageCeilings) -> Result<()> {
+        self.storage_ceilings = Some(value);
+        Ok(())
+    }
+
+    /// Returns this handle's explicit storage-ceiling override, if any.
+    pub fn storage_ceilings(&self) -> Option<StorageCeilings> {
+        self.storage_ceilings
+    }
 }
 
 pub(super) fn options_config(options: &CollectionOptions) -> ConfigBuilder {
     resolve_options_config(options, current_config())
+}
+
+/// Resolves the persistence ceilings captured by a new collection handle.
+pub(super) fn resolved_storage_ceilings(options: &CollectionOptions) -> StorageCeilings {
+    options
+        .storage_ceilings
+        .unwrap_or_else(|| current_config().storage_ceilings)
 }
 
 fn resolve_options_config(
@@ -86,6 +110,9 @@ fn resolve_options_config(
     }
     if let Some(io_backend) = options.io_backend {
         process_config.io_backend = io_backend;
+    }
+    if let Some(storage_ceilings) = options.storage_ceilings {
+        process_config.storage_ceilings = storage_ceilings;
     }
     process_config
 }
@@ -121,20 +148,28 @@ mod tests {
     }
 
     #[test]
-    fn collection_io_backend_overrides_the_process_default() {
-        let process = ConfigBuilder::default().io_backend(crate::IoBackend::Mmap);
-        assert_eq!(
-            resolve_options_config(&CollectionOptions::default(), process.clone()).io_backend,
-            crate::IoBackend::Mmap
+    fn collection_storage_ceilings_override_the_process_default() {
+        let process = ConfigBuilder::default().storage_ceilings(
+            StorageCeilings::new()
+                .try_with_max_snapshot_bytes(1_024)
+                .expect("process ceiling must be valid"),
         );
-
         let mut options = CollectionOptions::default();
         options
-            .set_io_backend(crate::IoBackend::Positioned)
-            .expect("backend override must be valid");
-        assert_eq!(
-            resolve_options_config(&options, process).io_backend,
-            crate::IoBackend::Positioned
-        );
+            .set_storage_ceilings(
+                StorageCeilings::new()
+                    .try_with_max_snapshot_bytes(4_096)
+                    .expect("collection ceiling must be valid"),
+            )
+            .expect("storage ceilings must be accepted");
+        let resolved = resolve_options_config(&options, process);
+        assert_eq!(resolved.storage_ceilings.max_snapshot_bytes(), 4_096);
+    }
+
+    #[test]
+    fn process_io_backend_is_used_without_a_collection_override() {
+        let process = ConfigBuilder::default().io_backend(IoBackend::Mmap);
+        let resolved = resolve_options_config(&CollectionOptions::default(), process.clone());
+        assert_eq!(resolved.io_backend, process.io_backend);
     }
 }

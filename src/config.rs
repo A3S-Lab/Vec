@@ -1,6 +1,7 @@
 //! Process-wide configuration and lifecycle.
 
 use crate::error::{Error, Result};
+use crate::storage_ceilings::StorageCeilings;
 use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 
@@ -60,6 +61,10 @@ pub struct ConfigBuilder {
     pub(crate) wal_max_bytes: Option<u64>,
     #[serde(default)]
     pub(crate) io_backend: IoBackend,
+    /// Persistence `DoS` ceilings for snapshot / index-cache / WAL replay /
+    /// `DiskANN`. Defaults are product constants; never inferred from the host.
+    #[serde(default)]
+    pub(crate) storage_ceilings: StorageCeilings,
 }
 
 impl ConfigBuilder {
@@ -69,6 +74,7 @@ impl ConfigBuilder {
             wal_max_ops: None,
             wal_max_bytes: None,
             io_backend: IoBackend::Positioned,
+            storage_ceilings: StorageCeilings::default(),
         }
     }
 
@@ -90,6 +96,13 @@ impl ConfigBuilder {
     /// Selects the process default for validated derived-sidecar query reads.
     pub fn io_backend(mut self, backend: IoBackend) -> Self {
         self.io_backend = backend;
+        self
+    }
+
+    /// Sets process-wide persistence `DoS` ceilings for collections that do not
+    /// override them through [`crate::CollectionOptions`].
+    pub fn storage_ceilings(mut self, ceilings: StorageCeilings) -> Self {
+        self.storage_ceilings = ceilings;
         self
     }
 
@@ -198,6 +211,7 @@ mod tests {
         let cfg = ConfigBuilder::default();
         assert_eq!(cfg.durability, Durability::Always);
         assert_eq!(cfg.io_backend, IoBackend::Positioned);
+        assert_eq!(cfg.storage_ceilings, StorageCeilings::default());
     }
 
     #[test]

@@ -47,6 +47,7 @@ mod schema;
 mod score_f64;
 mod stats;
 mod storage;
+mod storage_ceilings;
 mod text;
 mod types;
 
@@ -76,6 +77,10 @@ pub use schema::{
     IvfIndexParam, IvfRabitqIndexParam, VamanaIndexParam, VectorSchema,
 };
 pub use stats::StatsSnapshot;
+pub use storage_ceilings::{
+    StorageCeilings, DEFAULT_DISKANN_FILE_BYTES, DEFAULT_INDEX_CACHE_BYTES, DEFAULT_SNAPSHOT_BYTES,
+    DEFAULT_WAL_REPLAY_BYTES, INDEX_CACHE_FILE_OVERHEAD_BYTES,
+};
 pub use types::{DataType, DocOperator, IndexType, MetricType, QuantizeType};
 
 /// Convenient import for the common collection workflow.
@@ -84,7 +89,7 @@ pub mod prelude {
         initialize, is_initialized, version, Collection, CollectionMaintenanceOptions,
         CollectionOptions, CollectionResourceLimits, CollectionSchema, ConfigBuilder, DataType,
         Doc, DocIterator, Error, ErrorCode, FieldSchema, IndexParams, IoBackend, MetricType,
-        MultiQuery, QuantizeType, Result, SearchQuery, VectorSchema, WriteResult,
+        MultiQuery, QuantizeType, Result, SearchQuery, StorageCeilings, VectorSchema, WriteResult,
     };
 }
 

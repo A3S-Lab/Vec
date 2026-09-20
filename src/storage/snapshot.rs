@@ -17,12 +17,9 @@ use std::path::{Path, PathBuf};
 
 const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 const SNAPSHOT_FORMAT_VERSION: u32 = 4;
-/// Hard ceiling for one atomic document snapshot write/recovery.
-///
-/// Million-scale FP32 corpora exceed the historical 512 MiB guard (1M×128×4
-/// alone is 512 MiB of floats before encoding). Keep a finite `DoS` bound, but
-/// size it for enterprise million-document collections on workstation hosts.
-pub(super) const MAX_SNAPSHOT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+#[cfg(test)]
+pub(crate) use crate::storage_ceilings::DEFAULT_SNAPSHOT_BYTES as MAX_SNAPSHOT_BYTES;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LegacySnapshot {
@@ -50,9 +47,11 @@ pub fn write(
         revision,
         sync,
         &FaultInjector::default(),
+        MAX_SNAPSHOT_BYTES,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_with_faults(
     root: &Path,
     schema: &CollectionSchema,
@@ -61,6 +60,7 @@ pub(super) fn write_with_faults(
     revision: u64,
     sync: bool,
     faults: &FaultInjector,
+    max_snapshot_bytes: u64,
 ) -> Result<u32> {
     if generation == 0 {
         return Err(Error::invalid_argument(
@@ -76,6 +76,7 @@ pub(super) fn write_with_faults(
         &bytes,
         sync,
         faults,
+        max_snapshot_bytes,
     )
 }
 
@@ -102,6 +103,7 @@ pub(super) fn write_legacy(
         &bytes,
         true,
         &FaultInjector::default(),
+        MAX_SNAPSHOT_BYTES,
     )
 }
 
@@ -111,12 +113,13 @@ fn write_bytes(
     bytes: &[u8],
     sync: bool,
     faults: &FaultInjector,
+    max_snapshot_bytes: u64,
 ) -> Result<u32> {
     let byte_len = u64::try_from(bytes.len())
         .map_err(|_| Error::resource_exhausted("document snapshot exceeds u64 bytes"))?;
-    if byte_len > MAX_SNAPSHOT_BYTES {
+    if byte_len > max_snapshot_bytes {
         return Err(Error::resource_exhausted(format!(
-            "document snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte storage limit"
+            "document snapshot exceeds the {max_snapshot_bytes}-byte storage limit"
         )));
     }
     let digest = checksum(bytes);
@@ -131,18 +134,31 @@ fn write_bytes(
     Ok(digest)
 }
 
-pub fn read(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Vec<Doc>)> {
+pub fn read(
+    root: &Path,
+    manifest: &Manifest,
+    max_snapshot_bytes: u64,
+) -> Result<(CollectionSchema, Vec<Doc>)> {
     match manifest.format_version {
-        LEGACY_SNAPSHOT_FORMAT_VERSION => read_legacy(root, manifest),
-        SNAPSHOT_FORMAT_VERSION => read_binary(root, manifest),
+        LEGACY_SNAPSHOT_FORMAT_VERSION => read_legacy(root, manifest, max_snapshot_bytes),
+        SNAPSHOT_FORMAT_VERSION => read_binary(root, manifest, max_snapshot_bytes),
         version => Err(Error::not_supported(format!(
             "unsupported document snapshot format version {version}"
         ))),
     }
 }
 
-fn read_binary(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Vec<Doc>)> {
-    let bytes = read_bytes(root, &binary_relative_path(manifest.generation), manifest)?;
+fn read_binary(
+    root: &Path,
+    manifest: &Manifest,
+    max_snapshot_bytes: u64,
+) -> Result<(CollectionSchema, Vec<Doc>)> {
+    let bytes = read_bytes(
+        root,
+        &binary_relative_path(manifest.generation),
+        manifest,
+        max_snapshot_bytes,
+    )?;
     let mut decoder = rmp_serde::Deserializer::new(Cursor::new(bytes.as_slice()));
     let snapshot = BinarySnapshot::deserialize(&mut decoder)
         .map_err(|error| Error::internal(format!("parse binary document snapshot: {error}")))?;
@@ -163,8 +179,17 @@ fn read_binary(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Ve
     Ok((schema, docs))
 }
 
-fn read_legacy(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Vec<Doc>)> {
-    let bytes = read_bytes(root, &legacy_relative_path(manifest.generation), manifest)?;
+fn read_legacy(
+    root: &Path,
+    manifest: &Manifest,
+    max_snapshot_bytes: u64,
+) -> Result<(CollectionSchema, Vec<Doc>)> {
+    let bytes = read_bytes(
+        root,
+        &legacy_relative_path(manifest.generation),
+        manifest,
+        max_snapshot_bytes,
+    )?;
     let snapshot: LegacySnapshot = serde_json::from_slice(&bytes)
         .map_err(|error| Error::internal(format!("parse legacy document snapshot: {error}")))?;
     if snapshot.format_version != LEGACY_SNAPSHOT_FORMAT_VERSION {
@@ -182,13 +207,18 @@ fn read_legacy(root: &Path, manifest: &Manifest) -> Result<(CollectionSchema, Ve
     Ok((snapshot.schema, snapshot.docs))
 }
 
-fn read_bytes(root: &Path, relative_path: &Path, manifest: &Manifest) -> Result<Vec<u8>> {
+fn read_bytes(
+    root: &Path,
+    relative_path: &Path,
+    manifest: &Manifest,
+    max_snapshot_bytes: u64,
+) -> Result<Vec<u8>> {
     let path = root.join(relative_path);
     let metadata = fs::metadata(&path)
         .map_err(|error| Error::internal(format!("read document snapshot metadata: {error}")))?;
-    if metadata.len() > MAX_SNAPSHOT_BYTES {
+    if metadata.len() > max_snapshot_bytes {
         return Err(Error::resource_exhausted(format!(
-            "document snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte recovery limit"
+            "document snapshot exceeds the {max_snapshot_bytes}-byte recovery limit"
         )));
     }
     let capacity = usize::try_from(metadata.len()).map_err(|_| {
@@ -197,14 +227,14 @@ fn read_bytes(root: &Path, relative_path: &Path, manifest: &Manifest) -> Result<
     let mut bytes = Vec::with_capacity(capacity);
     File::open(&path)
         .map_err(|error| Error::internal(format!("open document snapshot: {error}")))?
-        .take(MAX_SNAPSHOT_BYTES.saturating_add(1))
+        .take(max_snapshot_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| Error::internal(format!("read document snapshot: {error}")))?;
     let actual_len = u64::try_from(bytes.len())
         .map_err(|_| Error::resource_exhausted("document snapshot exceeds u64 bytes"))?;
-    if actual_len > MAX_SNAPSHOT_BYTES {
+    if actual_len > max_snapshot_bytes {
         return Err(Error::resource_exhausted(format!(
-            "document snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte recovery limit"
+            "document snapshot exceeds the {max_snapshot_bytes}-byte recovery limit"
         )));
     }
     let actual = checksum(&bytes);
@@ -303,7 +333,7 @@ pub(super) fn legacy_relative_path(generation: u64) -> PathBuf {
 mod tests {
     use super::{
         binary_relative_path, prune_with_faults, read, snapshot_generation, validate_metadata,
-        write_with_faults, SNAPSHOT_FORMAT_VERSION,
+        write_with_faults, MAX_SNAPSHOT_BYTES, SNAPSHOT_FORMAT_VERSION,
     };
     use crate::error::ErrorCode;
     use crate::schema::{CollectionSchema, FieldSchema};
@@ -326,7 +356,7 @@ mod tests {
         let mut manifest = Manifest::new("fixture", "digest");
         manifest.generation = 1;
         manifest.format_version = SNAPSHOT_FORMAT_VERSION + 9;
-        assert!(read(temporary.path(), &manifest)
+        assert!(read(temporary.path(), &manifest, MAX_SNAPSHOT_BYTES)
             .expect_err("unsupported")
             .message
             .contains("unsupported"));
@@ -349,25 +379,43 @@ mod tests {
         let root = temporary.path();
         let schema = fixture_schema();
         assert_eq!(
-            write_with_faults(root, &schema, &[], 0, 1, true, &FaultInjector::default())
-                .expect_err("generation 0")
-                .code,
+            write_with_faults(
+                root,
+                &schema,
+                &[],
+                0,
+                1,
+                true,
+                &FaultInjector::default(),
+                MAX_SNAPSHOT_BYTES
+            )
+            .expect_err("generation 0")
+            .code,
             ErrorCode::InvalidArgument
         );
 
-        let digest = write_with_faults(root, &schema, &[], 1, 1, true, &FaultInjector::default())
-            .expect("write");
+        let digest = write_with_faults(
+            root,
+            &schema,
+            &[],
+            1,
+            1,
+            true,
+            &FaultInjector::default(),
+            MAX_SNAPSHOT_BYTES,
+        )
+        .expect("write");
         let mut manifest = Manifest::new("fixture", &schema.digest());
         manifest.generation = 1;
         manifest.checkpoint_revision = 1;
         manifest.format_version = SNAPSHOT_FORMAT_VERSION;
         manifest.docs_checksum = digest;
-        let (loaded_schema, docs) = read(root, &manifest).expect("read");
+        let (loaded_schema, docs) = read(root, &manifest, MAX_SNAPSHOT_BYTES).expect("read");
         assert_eq!(loaded_schema.name, "fixture");
         assert!(docs.is_empty());
 
         manifest.docs_checksum ^= 1;
-        assert!(read(root, &manifest)
+        assert!(read(root, &manifest, MAX_SNAPSHOT_BYTES)
             .expect_err("checksum")
             .message
             .contains("checksum"));
@@ -399,8 +447,17 @@ mod tests {
             .contains("schema digest"));
 
         // Second generation so prune removes the first artifact.
-        write_with_faults(root, &schema, &[], 2, 2, true, &FaultInjector::default())
-            .expect("second");
+        write_with_faults(
+            root,
+            &schema,
+            &[],
+            2,
+            2,
+            true,
+            &FaultInjector::default(),
+            MAX_SNAPSHOT_BYTES,
+        )
+        .expect("second");
         prune_with_faults(root, 2, &FaultInjector::default()).expect("prune");
         assert!(!root.join(binary_relative_path(1)).exists());
         assert!(root.join(binary_relative_path(2)).exists());

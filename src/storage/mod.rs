@@ -13,6 +13,7 @@ use crate::config::{ConfigBuilder, Durability};
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
+use crate::storage_ceilings::StorageCeilings;
 use fault::FaultInjector;
 use lock::CollectionLock;
 use manifest::Manifest;
@@ -28,11 +29,17 @@ pub(crate) struct StorageHandle {
     pub root: PathBuf,
     pub manifest: Manifest,
     pub lock: CollectionLock,
+    pub ceilings: StorageCeilings,
     faults: FaultInjector,
 }
 
 impl StorageHandle {
-    pub fn create(path: &Path, schema: &CollectionSchema, read_only: bool) -> Result<Self> {
+    pub fn create(
+        path: &Path,
+        schema: &CollectionSchema,
+        read_only: bool,
+        ceilings: StorageCeilings,
+    ) -> Result<Self> {
         if read_only {
             return Err(Error::permission_denied(
                 "cannot create a collection through a read-only handle",
@@ -52,8 +59,16 @@ impl StorageHandle {
         let faults = FaultInjector::default();
         let mut manifest = Manifest::new(schema.name.clone(), schema.digest());
         manifest.generation = 1;
-        manifest.docs_checksum =
-            snapshot::write_with_faults(path, schema, &[], manifest.generation, 0, true, &faults)?;
+        manifest.docs_checksum = snapshot::write_with_faults(
+            path,
+            schema,
+            &[],
+            manifest.generation,
+            0,
+            true,
+            &faults,
+            ceilings.max_snapshot_bytes(),
+        )?;
         manifest.wal_active_seq = 1;
         manifest.wal_checkpoint_seq = 0;
         manifest.revision = 0;
@@ -65,11 +80,16 @@ impl StorageHandle {
             root: path.to_path_buf(),
             manifest,
             lock,
+            ceilings,
             faults,
         })
     }
 
-    pub fn open(path: &Path, read_only: bool) -> Result<(Self, CollectionSchema, Vec<Doc>)> {
+    pub fn open(
+        path: &Path,
+        read_only: bool,
+        ceilings: StorageCeilings,
+    ) -> Result<(Self, CollectionSchema, Vec<Doc>)> {
         if !path.exists() {
             return Err(Error::not_found(format!(
                 "collection path does not exist: {}",
@@ -78,12 +98,14 @@ impl StorageHandle {
         }
         let lock = CollectionLock::acquire(path, read_only)?;
         let manifest = manifest::read(path)?;
-        let (mut schema, mut docs) = snapshot::read(path, &manifest)?;
+        let (mut schema, mut docs) =
+            snapshot::read(path, &manifest, ceilings.max_snapshot_bytes())?;
         let records = wal::replay(
             path,
             manifest.wal_checkpoint_seq.saturating_add(1),
             manifest.wal_active_seq,
             manifest.wal_bytes_since_checkpoint,
+            ceilings.max_wal_replay_bytes(),
         )?;
         let mut recovered_revision = manifest.checkpoint_revision;
         for record in records {
@@ -111,6 +133,7 @@ impl StorageHandle {
                 root: path.to_path_buf(),
                 manifest,
                 lock,
+                ceilings,
                 faults: FaultInjector::default(),
             },
             schema,
@@ -192,6 +215,7 @@ impl StorageHandle {
             revision,
             sync,
             &self.faults,
+            self.ceilings.max_snapshot_bytes(),
         )?;
         let mut next_manifest = self.manifest.clone();
         next_manifest.format_version = manifest::FORMAT_VERSION;
@@ -238,7 +262,7 @@ impl StorageHandle {
     }
 
     pub(crate) fn read_index_cache(&self) -> Result<Option<Vec<u8>>> {
-        index_cache::read(&self.root)
+        index_cache::read(&self.root, self.ceilings.max_index_cache_file_bytes())
     }
 
     pub(crate) fn write_index_cache(&self, bytes: &[u8], sync: bool) -> Result<()> {
@@ -247,11 +271,16 @@ impl StorageHandle {
                 "cannot write an index cache through a read-only handle",
             ));
         }
-        index_cache::write(&self.root, bytes, sync)
+        index_cache::write(
+            &self.root,
+            bytes,
+            sync,
+            self.ceilings.max_index_cache_file_bytes(),
+        )
     }
 
     pub(crate) fn open_diskann_file(&self) -> Result<Option<PositionedFile>> {
-        diskann_file::open(&self.root)
+        diskann_file::open(&self.root, self.ceilings.max_diskann_file_bytes())
     }
 
     pub(crate) fn write_diskann_file(&self, bytes: &[u8], sync: bool) -> Result<()> {
@@ -260,7 +289,12 @@ impl StorageHandle {
                 "cannot write a DiskANN sidecar through a read-only handle",
             ));
         }
-        diskann_file::write(&self.root, bytes, sync)
+        diskann_file::write(
+            &self.root,
+            bytes,
+            sync,
+            self.ceilings.max_diskann_file_bytes(),
+        )
     }
 
     pub(crate) fn index_cache_identity(&self) -> String {

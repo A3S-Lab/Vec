@@ -15,8 +15,13 @@ fn persisted_recovery_mutation_corpus_never_returns_a_torn_state() {
     let root = temporary.path().join("collection");
     let expected_schema = schema();
     let expected_doc = doc("doc-1");
-    let mut storage =
-        StorageHandle::create(&root, &expected_schema, false).expect("storage must be created");
+    let mut storage = StorageHandle::create(
+        &root,
+        &expected_schema,
+        false,
+        crate::storage_ceilings::StorageCeilings::default(),
+    )
+    .expect("storage must be created");
     storage
         .append(
             1,
@@ -113,7 +118,11 @@ fn assert_recovery_is_atomic(
     expected_doc: &crate::Doc,
 ) {
     fs::write(path, mutated).expect("mutated persistence file must be writable");
-    if let Ok((storage, recovered_schema, docs)) = StorageHandle::open(root, false) {
+    if let Ok((storage, recovered_schema, docs)) = StorageHandle::open(
+        root,
+        false,
+        crate::storage_ceilings::StorageCeilings::default(),
+    ) {
         assert_eq!(recovered_schema, *expected_schema);
         assert_eq!(storage.manifest.revision, 1);
         assert_eq!(docs.as_slice(), std::slice::from_ref(expected_doc));

@@ -66,8 +66,13 @@ fn append_recovers_at_every_write_sync_and_manifest_publication_boundary() {
         let root = temporary.path().join("collection");
         let schema = schema();
         let stored_doc = doc("doc-1");
-        let mut storage =
-            StorageHandle::create(&root, &schema, false).expect("storage must be created");
+        let mut storage = StorageHandle::create(
+            &root,
+            &schema,
+            false,
+            crate::storage_ceilings::StorageCeilings::default(),
+        )
+        .expect("storage must be created");
         storage.arm_fault(point);
 
         let error = storage
@@ -83,8 +88,12 @@ fn append_recovers_at_every_write_sync_and_manifest_publication_boundary() {
         assert!(storage.fault_fired(point), "point={point:?}");
         drop(storage);
 
-        let (mut recovered, _, docs) =
-            StorageHandle::open(&root, false).expect("interrupted append must recover");
+        let (mut recovered, _, docs) = StorageHandle::open(
+            &root,
+            false,
+            crate::storage_ceilings::StorageCeilings::default(),
+        )
+        .expect("interrupted append must recover");
         if manifest_was_published(point) {
             assert_eq!(recovered.manifest.revision, 1, "point={point:?}");
             assert_eq!(docs, [stored_doc], "point={point:?}");
@@ -102,8 +111,12 @@ fn append_recovers_at_every_write_sync_and_manifest_publication_boundary() {
                 )
                 .expect("the next append must replace an uncommitted WAL tail");
             drop(recovered);
-            let (recovered, _, docs) = StorageHandle::open(&root, false)
-                .expect("replacement append must remain recoverable");
+            let (recovered, _, docs) = StorageHandle::open(
+                &root,
+                false,
+                crate::storage_ceilings::StorageCeilings::default(),
+            )
+            .expect("replacement append must remain recoverable");
             assert_eq!(recovered.manifest.revision, 1, "point={point:?}");
             assert_eq!(docs, [stored_doc], "point={point:?}");
         }
@@ -117,8 +130,13 @@ fn checkpoint_recovers_at_every_snapshot_manifest_and_prune_boundary() {
         let root = temporary.path().join("collection");
         let schema = schema();
         let stored_doc = doc("doc-1");
-        let mut storage =
-            StorageHandle::create(&root, &schema, false).expect("storage must be created");
+        let mut storage = StorageHandle::create(
+            &root,
+            &schema,
+            false,
+            crate::storage_ceilings::StorageCeilings::default(),
+        )
+        .expect("storage must be created");
         storage
             .append(
                 1,
@@ -140,8 +158,12 @@ fn checkpoint_recovers_at_every_snapshot_manifest_and_prune_boundary() {
         assert!(storage.fault_fired(point), "point={point:?}");
         drop(storage);
 
-        let (recovered, recovered_schema, docs) =
-            StorageHandle::open(&root, false).expect("interrupted checkpoint must recover");
+        let (recovered, recovered_schema, docs) = StorageHandle::open(
+            &root,
+            false,
+            crate::storage_ceilings::StorageCeilings::default(),
+        )
+        .expect("interrupted checkpoint must recover");
         assert_eq!(recovered_schema, schema, "point={point:?}");
         assert_eq!(recovered.manifest.revision, 1, "point={point:?}");
         assert_eq!(docs, [stored_doc], "point={point:?}");

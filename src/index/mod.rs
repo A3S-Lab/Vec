@@ -266,6 +266,7 @@ impl IndexRegistry {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore_cache(
         bytes: &[u8],
         diskann_file: Option<crate::storage::PositionedFile>,
@@ -274,6 +275,7 @@ impl IndexRegistry {
         docs: &DocumentMap,
         source_revision: u64,
         source_identity: &str,
+        ceilings: crate::storage_ceilings::StorageCeilings,
     ) -> Option<Self> {
         cache::restore(
             bytes,
@@ -283,6 +285,8 @@ impl IndexRegistry {
             docs,
             source_revision,
             source_identity,
+            ceilings.max_index_cache_bytes(),
+            ceilings.max_diskann_file_bytes(),
         )
     }
 
@@ -291,8 +295,15 @@ impl IndexRegistry {
         schema: &CollectionSchema,
         source_revision: u64,
         source_identity: &str,
+        ceilings: crate::storage_ceilings::StorageCeilings,
     ) -> Result<Vec<u8>> {
-        cache::encode(self, schema, source_revision, source_identity)
+        cache::encode_with_limit(
+            self,
+            schema,
+            source_revision,
+            source_identity,
+            ceilings.max_index_cache_bytes(),
+        )
     }
 
     pub(crate) fn diskann_bytes(
@@ -300,8 +311,15 @@ impl IndexRegistry {
         schema: &CollectionSchema,
         source_revision: u64,
         source_identity: &str,
+        ceilings: crate::storage_ceilings::StorageCeilings,
     ) -> Result<Option<Vec<u8>>> {
-        diskann::encode(self, schema, source_revision, source_identity)
+        diskann::encode_with_limit(
+            self,
+            schema,
+            source_revision,
+            source_identity,
+            ceilings.max_diskann_file_bytes(),
+        )
     }
 
     pub(crate) fn has_cacheable_indexes(&self) -> bool {

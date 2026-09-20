@@ -565,11 +565,13 @@ documents or their revision. A scalar/FTS-only rebuild preserves exact logical
 content and therefore does not rewrite the equivalent cache generation;
 HNSW/IVF/RaBitQ/Vamana/DiskANN rebuilds and `optimize()` refresh it after publication.
 
-Manifest reads are capped at 1 MiB, individual WAL payloads at 64 MiB, total
-committed WAL replay at 8 GiB, document snapshots at 8 GiB, and the derived
-index cache payload at 8 GiB before allocation and deserialization. These
-ceilings remain finite DoS bounds sized for million-document workstation
-corpora; DiskANN sidecar files keep a separate 512 MiB guard. WAL frame version 4 adds the schema-only operation while
+Manifest reads are capped at 1 MiB and individual WAL frames at 64 MiB
+(protocol/format guards). Corpus-scale persistence ceilings—document
+snapshots, derived index-cache payloads, committed WAL replay, and DiskANN
+sidecars—are explicit `StorageCeilings` policy with product defaults of
+8 GiB / 8 GiB / 8 GiB / 512 MiB. Callers raise or tighten them through
+`CollectionOptions` or process `ConfigBuilder`; the engine never invents
+values from host RAM or free disk. WAL frame version 4 adds the schema-only operation while
 retaining readability for version-3 frames. The format is versioned and
 checksummed. Compatibility with
 the Alibaba C++ binary files is provided through an explicit importer/exporter

@@ -18,7 +18,7 @@ derived indexes that can always be rebuilt. The six invariants in
 make one of those invariants more true is not scheduled.
 
 Phases 0 through 7 are complete on `main`. The current release line is
-`0.1.3` (see [RELEASE.md](RELEASE.md)). Do not
+`0.1.4` (typed `StorageCeilings`; see [RELEASE.md](RELEASE.md)). Do not
 reopen a completed index family to add a variant. There are no open engine
 issues that pass the six-invariant filter.
 
@@ -986,10 +986,9 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.3`: tag `0.1.3` and crates.io publish bind to
-   revision `8859912` (SHA-256 `c5c692f4…`); hosted CI run `35507891003`
-   closes the gate when green — see [RELEASE.md](RELEASE.md).
-   macOS 12 Intel is unsupported and is not a gate.
+2. Enterprise GA for `0.1.4`: typed `StorageCeilings`; tag/publish/CI binding
+   recorded in [RELEASE.md](RELEASE.md). Historical `0.1.3` remains on
+   crates.io. macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index
    variants, and restoring Monterey support stay refused.

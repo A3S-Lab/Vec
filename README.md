@@ -22,8 +22,8 @@
 Dense and sparse vectors, BM25 full-text, and typed scalar filters live in one
 durable Rust collection—no server process and no C/C++ runtime.
 
-**[`0.1.3` on crates.io](https://crates.io/crates/a3s-vec)** · published
-(tag `0.1.3` · SHA-256 `c5c692f4…` · [RELEASE.md](RELEASE.md))
+**[`0.1.4` on crates.io](https://crates.io/crates/a3s-vec)** · publishing
+(tag `0.1.4` · [RELEASE.md](RELEASE.md))
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
@@ -40,7 +40,7 @@ durable Rust collection—no server process and no C/C++ runtime.
 | **ANN depth** | HNSW, IVF (+ optional SOAR), HNSW/IVF RaBitQ, Vamana, PQ/ADC DiskANN (positioned I/O or mmap sidecar). |
 | **Workspace text** | BM25 with `standard` / `whitespace` / `ngram` / optional `jieba`; boolean, phrase, wildcard, fuzzy, range; character-trigram prune before matcher expansion. |
 | **Typed filters** | Equality, range, `IN`, null, wildcard/prefix/suffix, boolean composition—same planner as ANN/FTS. |
-| **Durability** | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits; snapshot / index-cache / WAL-replay ceilings at **8 GiB** (finite DoS bounds sized for million-document workstation corpora). |
+| **Durability** | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits; typed `StorageCeilings` (defaults 8 GiB / 8 GiB / 8 GiB / 512 MiB DiskANN)—explicit policy, never host autodetection. |
 | **Fail-closed API** | Unsupported routes and bad dimensions fail with typed errors before mutation. |
 | **Embed anywhere** | Embedding models stay with the caller; a3s-vec owns storage, indexes, and planning. |
 
@@ -58,7 +58,8 @@ L2, IP, cosine, MIPS-L2.
 3. **Hybrid without glue code** — semantic + lexical + structured predicates
    in one planner and one durable generation.
 4. **Published Enterprise GA** — hosted multi-platform CI, versioned release
-   candidate, and crates.io checksum bind to one revision (`0.1.3`).
+   candidate, and crates.io checksum bind to one revision (`0.1.4` typed
+   `StorageCeilings`).
 5. **Competitive HNSW under an honest harness** — same knobs, one worker,
    exact re-rank kept; see proof below (directional, not an SLO). Million-document
    flush is unblocked on workstation hosts (8 GiB storage ceilings).
@@ -72,13 +73,13 @@ universal engine ranking.
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.3"
+a3s-vec = "0.1.4"
 ```
 
 Tokio-facing queries (same planner on `spawn_blocking`):
 
 ```toml
-a3s-vec = { version = "0.1.3", features = ["async"] }
+a3s-vec = { version = "0.1.4", features = ["async"] }
 ```
 
 Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
@@ -146,7 +147,8 @@ final top-k.
 
 Read-only opens, flush, targeted rebuild, optimize, health, and an owned
 maintenance scheduler. Deep contracts for DiskANN I/O, RaBitQ, FTS analyzers,
-resource limits, and recovery: [ARCHITECTURE.md](ARCHITECTURE.md).
+`CollectionResourceLimits`, `StorageCeilings`, and recovery:
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 

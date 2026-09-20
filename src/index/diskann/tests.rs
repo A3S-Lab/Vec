@@ -1,6 +1,6 @@
 use super::{
     attach, encode, prepare, put_u32, record_position, validates, CHECKSUM_OFFSET,
-    FIXED_HEADER_BYTES, SECTOR_BYTES,
+    FIXED_HEADER_BYTES, MAX_FILE_BYTES, SECTOR_BYTES,
 };
 use crate::doc::{Doc, DocumentMap};
 use crate::index::{IndexRegistry, VectorIndexKind};
@@ -22,6 +22,7 @@ fn attach_positioned(
         schema,
         7,
         "source",
+        MAX_FILE_BYTES,
     )
 }
 
@@ -97,7 +98,8 @@ fn pq_fixture(
 #[test]
 fn small_records_pack_without_crossing_sectors_and_validate_strictly() {
     let (schema, _docs, registry) = fixture(2, 64);
-    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let prepared =
+        prepare(&registry, &schema, "source", MAX_FILE_BYTES).expect("layout must prepare");
     let field = &prepared.fields[0];
     assert!(field.nodes_per_sector > 1);
     assert_eq!(field.sectors_per_node, 0);
@@ -110,9 +112,30 @@ fn small_records_pack_without_crossing_sectors_and_validate_strictly() {
         .expect("sidecar must encode")
         .expect("Vamana requires a sidecar");
     assert_eq!(bytes.len() % SECTOR_BYTES, 0);
-    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
-    assert!(!validates(Some(&bytes), &registry, &schema, 8, "source"));
-    assert!(!validates(Some(&bytes), &registry, &schema, 7, "tamper"));
+    assert!(validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        7,
+        "source",
+        MAX_FILE_BYTES
+    ));
+    assert!(!validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        8,
+        "source",
+        MAX_FILE_BYTES
+    ));
+    assert!(!validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        7,
+        "tamper",
+        MAX_FILE_BYTES
+    ));
 
     let mut corrupted = bytes.clone();
     *corrupted.last_mut().expect("sidecar must not be empty") ^= 0x5a;
@@ -121,18 +144,27 @@ fn small_records_pack_without_crossing_sectors_and_validate_strictly() {
         &registry,
         &schema,
         7,
-        "source"
+        "source",
+        MAX_FILE_BYTES
     ));
     assert!(!validates(
         Some(&bytes[..bytes.len() - 1]),
         &registry,
         &schema,
         7,
-        "source"
+        "source",
+        MAX_FILE_BYTES,
     ));
     let mut trailing = bytes.clone();
     trailing.extend_from_slice(&[0_u8; SECTOR_BYTES]);
-    assert!(!validates(Some(&trailing), &registry, &schema, 7, "source"));
+    assert!(!validates(
+        Some(&trailing),
+        &registry,
+        &schema,
+        7,
+        "source",
+        MAX_FILE_BYTES
+    ));
 
     let mut noncanonical = bytes;
     let sector_padding = field.data_offset + field.nodes_per_sector * field.record_bytes;
@@ -144,14 +176,16 @@ fn small_records_pack_without_crossing_sectors_and_validate_strictly() {
         &registry,
         &schema,
         7,
-        "source"
+        "source",
+        MAX_FILE_BYTES
     ));
 }
 
 #[test]
 fn oversized_records_start_on_sector_boundaries() {
     let (schema, _docs, registry) = fixture(1_024, 3);
-    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let prepared =
+        prepare(&registry, &schema, "source", MAX_FILE_BYTES).expect("layout must prepare");
     let field = &prepared.fields[0];
     assert!(field.record_bytes > SECTOR_BYTES);
     assert_eq!(field.nodes_per_sector, 0);
@@ -165,7 +199,14 @@ fn oversized_records_start_on_sector_boundaries() {
     let bytes = encode(&registry, &schema, 7, "source")
         .expect("sidecar must encode")
         .expect("Vamana requires a sidecar");
-    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
+    assert!(validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        7,
+        "source",
+        MAX_FILE_BYTES
+    ));
 }
 
 #[test]
@@ -176,8 +217,13 @@ fn positioned_reader_matches_the_memory_graph_for_packed_and_oversized_records()
             .expect("sidecar must encode")
             .expect("Vamana requires a sidecar");
         let temporary = tempdir().expect("temporary directory must be available");
-        let storage = StorageHandle::create(temporary.path(), &schema, false)
-            .expect("storage must be created");
+        let storage = StorageHandle::create(
+            temporary.path(),
+            &schema,
+            false,
+            crate::storage_ceilings::StorageCeilings::default(),
+        )
+        .expect("storage must be created");
         storage
             .write_diskann_file(&bytes, false)
             .expect("sidecar must be written");
@@ -255,9 +301,11 @@ fn positioned_reader_matches_the_memory_graph_for_packed_and_oversized_records()
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn pq_records_are_compact_validated_and_match_in_memory_adc() {
     let (schema, _docs, registry) = pq_fixture(128, 64, 8);
-    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let prepared =
+        prepare(&registry, &schema, "source", MAX_FILE_BYTES).expect("layout must prepare");
     let field = &prepared.fields[0];
     let dense_record_bytes = super::align_up(
         16 + 128 * std::mem::size_of::<f32>() + 16 * std::mem::size_of::<u64>(),
@@ -270,10 +318,22 @@ fn pq_records_are_compact_validated_and_match_in_memory_adc() {
     let bytes = encode(&registry, &schema, 7, "source")
         .expect("sidecar must encode")
         .expect("DiskANN requires a sidecar");
-    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
+    assert!(validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        7,
+        "source",
+        MAX_FILE_BYTES
+    ));
     let temporary = tempdir().expect("temporary directory must be available");
-    let storage =
-        StorageHandle::create(temporary.path(), &schema, false).expect("storage must be created");
+    let storage = StorageHandle::create(
+        temporary.path(),
+        &schema,
+        false,
+        crate::storage_ceilings::StorageCeilings::default(),
+    )
+    .expect("storage must be created");
     storage
         .write_diskann_file(&bytes, false)
         .expect("sidecar must be written");
@@ -357,14 +417,16 @@ fn pq_records_are_compact_validated_and_match_in_memory_adc() {
         &registry,
         &schema,
         7,
-        "source"
+        "source",
+        MAX_FILE_BYTES
     ));
 }
 
 #[test]
 fn zero_pq_chunks_keep_diskann_on_the_full_vector_record_path() {
     let (schema, _docs, registry) = pq_fixture(4, 16, 0);
-    let prepared = prepare(&registry, &schema, "source").expect("layout must prepare");
+    let prepared =
+        prepare(&registry, &schema, "source", MAX_FILE_BYTES).expect("layout must prepare");
     let field = &prepared.fields[0];
     assert!(field.pq.is_none());
     assert_eq!(field.index_type, crate::IndexType::Diskann);
@@ -372,5 +434,12 @@ fn zero_pq_chunks_keep_diskann_on_the_full_vector_record_path() {
     let bytes = encode(&registry, &schema, 7, "source")
         .expect("sidecar must encode")
         .expect("DiskANN requires a sidecar");
-    assert!(validates(Some(&bytes), &registry, &schema, 7, "source"));
+    assert!(validates(
+        Some(&bytes),
+        &registry,
+        &schema,
+        7,
+        "source",
+        MAX_FILE_BYTES
+    ));
 }

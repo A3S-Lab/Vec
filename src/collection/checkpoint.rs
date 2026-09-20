@@ -90,7 +90,8 @@ pub(super) fn persist_index_cache(
         return;
     }
     let identity = storage.index_cache_identity();
-    let Ok(diskann_bytes) = indexes.diskann_bytes(schema, revision, &identity) else {
+    let Ok(diskann_bytes) = indexes.diskann_bytes(schema, revision, &identity, storage.ceilings)
+    else {
         return;
     };
     if let Some(diskann_bytes) = diskann_bytes {
@@ -98,7 +99,7 @@ pub(super) fn persist_index_cache(
             return;
         }
     }
-    let Ok(bytes) = indexes.cache_bytes(schema, revision, &identity) else {
+    let Ok(bytes) = indexes.cache_bytes(schema, revision, &identity, storage.ceilings) else {
         return;
     };
     let _cache_result = storage.write_index_cache(&bytes, sync);

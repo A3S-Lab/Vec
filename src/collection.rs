@@ -22,9 +22,10 @@ use crate::schema::{AddColumnOption, AlterColumnOption, CollectionSchema, FieldS
 use crate::stats::{assess_collection_health, CollectionHealthInput, StatsRegistry, StatsSnapshot};
 pub use crate::stats::{CollectionHealth, CollectionHealthStatus, IndexStat};
 use crate::storage::StorageHandle;
+use crate::storage_ceilings::StorageCeilings;
 use checkpoint::{commit_prepared_schema_change, persist_index_cache};
-use configuration::options_config;
 pub use configuration::CollectionOptions;
+use configuration::{options_config, resolved_storage_ceilings};
 pub use maintenance::{
     CollectionMaintenanceHealth, CollectionMaintenanceOptions, CollectionMaintenancePhase,
     CollectionMaintenanceRuntime,
@@ -74,6 +75,9 @@ pub struct CollectionStats {
     /// Collection-local limits captured when this handle was opened.
     #[serde(default)]
     pub resource_limits: CollectionResourceLimits,
+    /// Persistence `DoS` ceilings captured when this handle was opened.
+    #[serde(default)]
+    pub storage_ceilings: StorageCeilings,
     /// Operations rejected by this handle's resource policy.
     #[serde(default)]
     pub resource_limit_rejections: u64,
@@ -126,6 +130,7 @@ impl Collection {
     ) -> Result<Self> {
         let options = options.cloned().unwrap_or_default();
         let config = options_config(&options);
+        let ceilings = resolved_storage_ceilings(&options);
         let root = Path::new(path);
         schema.validate()?;
         let docs = DocumentMap::new();
@@ -133,7 +138,7 @@ impl Collection {
         let resource_usage = options
             .resource_limits
             .enforce_state(schema, &docs, &indexes)?;
-        let storage = StorageHandle::create(root, schema, options.read_only)?;
+        let storage = StorageHandle::create(root, schema, options.read_only, ceilings)?;
         let state = CollectionState {
             path: root.to_path_buf(),
             schema: schema.clone(),
@@ -168,7 +173,9 @@ impl Collection {
     pub fn open(path: &str, options: Option<&CollectionOptions>) -> Result<Self> {
         let options = options.cloned().unwrap_or_default();
         let config = options_config(&options);
-        let (storage, schema, docs) = StorageHandle::open(Path::new(path), options.read_only)?;
+        let ceilings = resolved_storage_ceilings(&options);
+        let (storage, schema, docs) =
+            StorageHandle::open(Path::new(path), options.read_only, ceilings)?;
         if schema.name.trim().is_empty() {
             return Err(Error::internal("persisted collection has an empty name"));
         }
@@ -205,6 +212,7 @@ impl Collection {
                 &docs,
                 revision,
                 &storage.index_cache_identity(),
+                storage.ceilings,
             )
         });
         let index_cache_hit = cached_indexes.is_some();
@@ -387,6 +395,7 @@ impl Collection {
                 estimated_index_bytes: usage.indexes,
                 accounted_bytes: usage.total,
                 resource_limits: state.options.resource_limits,
+                storage_ceilings: storage.ceilings,
                 resource_limit_rejections: state
                     .stats
                     .resource_limit_rejections

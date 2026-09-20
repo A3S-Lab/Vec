@@ -22,8 +22,8 @@
 稠密/稀疏向量、BM25 全文与类型化标量过滤落在同一持久化 Rust 集合——无需
 服务端进程，也无需 C/C++ 运行时。
 
-**[`0.1.3` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
-（tag `0.1.3` · SHA-256 `c5c692f4…` · [RELEASE.md](RELEASE.md)）
+**[`0.1.4` 已发布](https://crates.io/crates/a3s-vec)** · 发布中
+（tag `0.1.4` · [RELEASE.md](RELEASE.md)）
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [测试](TESTING.md) · [基准](BENCHMARKS.md) ·
@@ -40,7 +40,7 @@
 | **ANN 深度** | HNSW、IVF（可选 SOAR）、HNSW/IVF RaBitQ、Vamana、PQ/ADC DiskANN（定位读或 mmap sidecar）。 |
 | **工作区文本** | BM25，`standard` / `whitespace` / `ngram` / 可选 `jieba`；布尔、短语、通配、模糊、范围；matcher 展开前的字符 trigram 剪枝。 |
 | **类型化过滤** | 相等、范围、`IN`、null、通配/前缀/后缀、布尔组合——与 ANN/FTS 同一规划器。 |
-| **持久化** | WAL、校验和快照、文件锁、派生索引缓存、类型化资源限额；快照 / 索引缓存 / WAL 回放上限为 **8 GiB**（有限 DoS 边界，按工作站百万文档语料定尺）。 |
+| **持久化** | WAL、校验和快照、文件锁、派生索引缓存、类型化资源限额；类型化 `StorageCeilings`（默认 8 GiB / 8 GiB / 8 GiB / DiskANN 512 MiB）——显式策略，从不按主机自动探测。 |
 | **失败封闭 API** | 不支持的路由与错误维度在变更前以类型化错误失败。 |
 | **嵌入外置** | 嵌入模型留给调用方；a3s-vec 负责存储、索引与规划。 |
 
@@ -54,7 +54,7 @@ cosine、MIPS-L2。
 1. **跑在 Agent 进程内** — 无需运维旁路数据库；打开路径、写入、查询即可。
 2. **分数可辩护** — 公开排序对权威向量做精确 `f64` 重打分；Flat 召回按构造为 1.0。
 3. **混合检索无需胶水** — 语义 + 词法 + 结构化谓词在同一规划器与同一持久化世代。
-4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.3`）。
+4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.4` 类型化 `StorageCeilings`）。
 5. **诚实 harness 下 HNSW 有竞争力** — 相同旋钮、单 worker、保留 exact re-rank；证据见下（方向性，非 SLO）。百万文档 flush 在工作站主机上已放开（8 GiB 存储上限）。
 
 **不是什么：** 托管向量云、zvec C++ ABI 克隆，或「全面碾压」式引擎排名。
@@ -65,13 +65,13 @@ cosine、MIPS-L2。
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.3"
+a3s-vec = "0.1.4"
 ```
 
 面向 Tokio 的查询（同一规划器，跑在 `spawn_blocking`）：
 
 ```toml
-a3s-vec = { version = "0.1.3", features = ["async"] }
+a3s-vec = { version = "0.1.4", features = ["async"] }
 ```
 
 Monorepo path：`a3s-vec = { path = "crates/vec" }`。
@@ -137,8 +137,8 @@ CI 示例：`crud_operations`、`vector_search`、`retrieval_workflows` — 见
 ## 运维表面
 
 只读打开、flush、定向 rebuild、optimize、health，以及显式拥有的维护调度器。
-DiskANN I/O、RaBitQ、FTS 分析器、资源限额与恢复契约见
-[ARCHITECTURE.md](ARCHITECTURE.md)。
+DiskANN I/O、RaBitQ、FTS 分析器、`CollectionResourceLimits`、`StorageCeilings`
+与恢复契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ---
 

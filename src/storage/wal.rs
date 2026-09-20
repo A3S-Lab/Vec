@@ -14,7 +14,9 @@ const VERSION: u16 = 4;
 const MIN_READABLE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 4 + 4;
 const MAX_WAL_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const MAX_WAL_REPLAY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+#[cfg(test)]
+pub(crate) use crate::storage_ceilings::DEFAULT_WAL_REPLAY_BYTES as MAX_WAL_REPLAY_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WalRecord {
@@ -157,6 +159,7 @@ pub fn replay(
     first: u64,
     last: u64,
     active_committed_bytes: u64,
+    max_wal_replay_bytes: u64,
 ) -> Result<Vec<WalRecord>> {
     let mut records = Vec::new();
     let mut total_bytes = 0_u64;
@@ -185,9 +188,9 @@ pub fn replay(
             )));
         }
         total_bytes = total_bytes.saturating_add(committed_bytes);
-        if total_bytes > MAX_WAL_REPLAY_BYTES {
+        if total_bytes > max_wal_replay_bytes {
             return Err(Error::resource_exhausted(format!(
-                "WAL replay exceeds the {MAX_WAL_REPLAY_BYTES}-byte recovery limit"
+                "WAL replay exceeds the {max_wal_replay_bytes}-byte recovery limit"
             )));
         }
         let capacity = usize::try_from(committed_bytes)
@@ -307,7 +310,7 @@ pub(super) fn prune_with_faults(root: &Path, through: u64, faults: &FaultInjecto
 mod tests {
     use super::{
         append, prune_with_faults, replay, segment_path, validate_record, WalOperation, WalRecord,
-        HEADER_LEN, MAGIC, VERSION,
+        HEADER_LEN, MAGIC, MAX_WAL_REPLAY_BYTES, VERSION,
     };
     use crate::doc::Doc;
     use crate::error::ErrorCode;
@@ -334,9 +337,11 @@ mod tests {
         let record = insert_record(1);
         let written = append(root, 1, 0, &record, true).expect("append");
         assert!(written > HEADER_LEN as u64);
-        let replayed = replay(root, 1, 1, written).expect("replay");
+        let replayed = replay(root, 1, 1, written, MAX_WAL_REPLAY_BYTES).expect("replay");
         assert_eq!(replayed, vec![record.clone()]);
-        assert!(replay(root, 2, 1, 0).expect("empty range").is_empty());
+        assert!(replay(root, 2, 1, 0, MAX_WAL_REPLAY_BYTES)
+            .expect("empty range")
+            .is_empty());
 
         let mut bad = record.clone();
         bad.operation_id = 99;
@@ -348,7 +353,7 @@ mod tests {
         let path = segment_path(root, 2);
         fs::create_dir_all(path.parent().expect("wal dir")).expect("mkdir");
         fs::write(&path, b"XXXX").expect("short");
-        assert!(replay(root, 2, 2, 4)
+        assert!(replay(root, 2, 2, 4, MAX_WAL_REPLAY_BYTES)
             .expect_err("truncated")
             .message
             .contains("truncated"));
@@ -360,7 +365,7 @@ mod tests {
         frame.extend_from_slice(&0u32.to_le_bytes());
         frame.extend_from_slice(b"dead");
         fs::write(&path, &frame).expect("magic");
-        assert!(replay(root, 2, 2, frame.len() as u64)
+        assert!(replay(root, 2, 2, frame.len() as u64, MAX_WAL_REPLAY_BYTES)
             .expect_err("magic")
             .message
             .contains("magic"));
@@ -373,7 +378,7 @@ mod tests {
         good.extend_from_slice(&0u32.to_le_bytes()); // wrong crc
         good.extend_from_slice(&payload);
         fs::write(&path, &good).expect("crc");
-        assert!(replay(root, 2, 2, good.len() as u64)
+        assert!(replay(root, 2, 2, good.len() as u64, MAX_WAL_REPLAY_BYTES)
             .expect_err("checksum")
             .message
             .contains("checksum"));

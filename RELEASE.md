@@ -1,17 +1,40 @@
 # Release Qualification
 
-`a3s-vec` `0.1.3` is published. Tag `0.1.3`, and crates.io SHA-256
-`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2` bind to
-revision `88599126a4c179d8a0df24bd52963d372ea8eb67`. Hosted CI run binding is
-recorded below when the push workflow on that revision completes green. The
-prior `0.1.2` package remains on the registry as a historical artifact (tag
-`0.1.2` @ `0c7894fedb62d3ea76057486cd4e4b5fad3978b2`, SHA-256
-`2b2c5194e05cc8d17ac4f1ba5f3b609e2b5aba403bc25ab18ebf5f0af1ec6cc0`, CI run
-`35503763590`). macOS 12 Monterey Intel is deliberately unsupported.
+`a3s-vec` `0.1.4` is the active release line on `main`. It keeps the `0.1.3`
+corpus-scale ceiling magnitudes and makes them typed, explicit
+`StorageCeilings` policy (never inferred from host RAM or free disk). Tag,
+crates.io SHA-256, and hosted CI run binding are recorded in the post-publish
+checklist below. The prior `0.1.3` package remains on the registry as a
+historical artifact (tag `0.1.3` @ `88599126a4c179d8a0df24bd52963d372ea8eb67`,
+SHA-256 `c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`).
+macOS 12 Monterey Intel is deliberately unsupported.
 
-## 0.1.3 release notes
+## 0.1.4 release notes
 
-This patch release keeps the public storage and query contracts and raises the
+This patch release keeps the public storage and query contracts and turns
+persistence DoS ceilings into first-class configuration:
+
+- New public type `StorageCeilings` with product defaults **8 GiB** snapshot /
+  index-cache / WAL-replay and **512 MiB** DiskANN sidecar (same magnitudes as
+  `0.1.3`).
+- Process default via `ConfigBuilder::storage_ceilings`; per-collection
+  override via `CollectionOptions::set_storage_ceilings`. Zero is rejected;
+  omitted fields keep the product default.
+- Encode, open, restore, and DiskANN attach/validate paths honor the captured
+  ceilings end-to-end (raised limits no longer break sidecar restore).
+- Protocol/format guards stay hardcoded elsewhere (1 MiB manifest, 64 MiB
+  single WAL frame, 4 KiB lock owner).
+- The engine still never autodetermines ceilings from host RAM or free disk.
+
+Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
+manufacture a benchmark win.
+
+Supported platforms: Linux x86_64/aarch64, Windows x86_64, and macOS
+arm64/x86_64 on current hosted images (macOS deployment target 15.0).
+
+## 0.1.3 release notes (historical)
+
+This patch release kept the public storage and query contracts and raised the
 finite storage DoS ceilings so million-document dense corpora can flush and
 persist derived indexes on workstation hosts:
 
@@ -26,12 +49,6 @@ persist derived indexes on workstation hosts:
   [README.md](README.md) and [BENCHMARKS.md](BENCHMARKS.md). Protocol defaults
   are not tuned for high million-scale recall; do not market recall@10 from
   that table as an accuracy SLO.
-
-Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
-manufacture a benchmark win.
-
-Supported platforms: Linux x86_64/aarch64, Windows x86_64, and macOS
-arm64/x86_64 on current hosted images (macOS deployment target 15.0).
 
 ## 0.1.2 release notes (historical)
 
@@ -49,18 +66,21 @@ The release-facing contract has the following boundaries:
 - Collection and process configuration use typed Rust values. Unsupported
   controls and index/query combinations fail with typed errors before
   mutation.
+- Persistence DoS ceilings use `StorageCeilings`; document/query resource
+  budgets remain separate as `CollectionResourceLimits`.
 - Schema backfills and candidate-schema validation accept a bounded typed
   worker count through `AddColumnOption`/`AlterColumnOption`; the effective pool
   is capped by work size, host parallelism, and 256 workers, while publication
   stays atomic and deterministic across worker counts.
 - Public embedding and query-executor ports require `Send + Sync`. The
   `public_api_contract` integration test also enforces `Send + Sync` for the
-  owned public handles, schemas, queries, values, statistics, and errors.
+  owned public handles, schemas, queries, values, statistics, errors, and
+  `StorageCeilings`.
 - `unsafe_code = "deny"` remains active. The mmap option is an immutable
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.3` identity.
+  against the package's `0.1.4` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -86,9 +106,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.3.crate`;
-- `a3s-vec-0.1.3.crate.sha256`;
-- `a3s-vec-0.1.3.release.json`, which records the package version, source
+- `a3s-vec-0.1.4.crate`;
+- `a3s-vec-0.1.4.crate.sha256`;
+- `a3s-vec-0.1.4.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the
@@ -118,34 +138,16 @@ A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench scale_compare
 cargo bench --locked --bench lifecycle_matrix
 A3S_VEC_BENCH_SCALE=smoke cargo bench --locked --bench lifecycle_matrix
 cargo doc --locked --no-deps --all-features
-cargo package --locked --offline
-cargo publish --dry-run --locked
+cargo package --locked --allow-dirty
 ```
 
-The candidate artifact is not itself a crates.io publication until the formal
-tag and `cargo publish` step below.
+## Post-publish checklist
 
-## Registry status
+Record here when `0.1.4` is tagged and published:
 
-The crates.io index contains `a3s-vec` `0.1.3`, published from tag `0.1.3`
-at revision `88599126a4c179d8a0df24bd52963d372ea8eb67`. The published crate
-SHA-256 is
-`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`. The
-earlier `0.1.2`, `0.1.1`, and `0.1.0` packages remain historical.
-
-## Release gates
-
-Enterprise GA for `0.1.3` closes when all of the following bind to revision
-`88599126a4c179d8a0df24bd52963d372ea8eb67`:
-
-1. Hosted CI on `main` is green (quality, MSRV, recovery fuzz smoke,
-   performance matrix, platform matrix including macOS 15 Intel and arm64, and
-   the versioned release-candidate package job) — push run
-   [35507891003](https://github.com/A3S-Lab/Vec/actions/runs/35507891003)
-   (binding confirmed when green).
-2. The published crate SHA-256 matches
-   `c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`.
-3. Formal git tag `0.1.3` points at that revision, and `cargo publish`
+1. Hosted CI run ID on the release revision (binding confirmed when green).
+2. The published crate SHA-256.
+3. Formal git tag `0.1.4` points at that revision, and `cargo publish`
    uploaded the matching crate.
 
 ## Deliberate non-support

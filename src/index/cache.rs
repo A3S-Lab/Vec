@@ -18,10 +18,7 @@ use std::collections::BTreeMap;
 const CACHE_MAGIC: &[u8; 8] = b"A3SIDX01";
 const CACHE_FORMAT_VERSION: u32 = 10;
 const HEADER_BYTES: usize = CACHE_MAGIC.len() + 8 + 4;
-/// Derived index cache payload ceiling (HNSW/scalar/FTS blobs).
-/// Aligned with the document snapshot ceiling so million-scale HNSW graphs can
-/// persist alongside the authoritative corpus.
-const MAX_PAYLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(crate) use crate::storage_ceilings::DEFAULT_INDEX_CACHE_BYTES as MAX_PAYLOAD_BYTES;
 
 pub(super) mod index_params_serde {
     use crate::schema::IndexParams;
@@ -56,11 +53,28 @@ struct CachePayload {
     fts_indexes: FtsIndexRegistry,
 }
 
+#[allow(dead_code)]
 pub(super) fn encode(
     registry: &IndexRegistry,
     schema: &CollectionSchema,
     source_revision: u64,
     source_identity: &str,
+) -> Result<Vec<u8>> {
+    encode_with_limit(
+        registry,
+        schema,
+        source_revision,
+        source_identity,
+        MAX_PAYLOAD_BYTES,
+    )
+}
+
+pub(super) fn encode_with_limit(
+    registry: &IndexRegistry,
+    schema: &CollectionSchema,
+    source_revision: u64,
+    source_identity: &str,
+    max_payload_bytes: u64,
 ) -> Result<Vec<u8>> {
     let payload = CachePayload {
         format_version: CACHE_FORMAT_VERSION,
@@ -72,18 +86,18 @@ pub(super) fn encode(
         scalar_indexes: registry.scalar_indexes.clone(),
         fts_indexes: registry.fts_indexes.clone(),
     };
-    encode_payload(&payload)
+    encode_payload(&payload, max_payload_bytes)
 }
 
-fn encode_payload(payload: &CachePayload) -> Result<Vec<u8>> {
+fn encode_payload(payload: &CachePayload, max_payload_bytes: u64) -> Result<Vec<u8>> {
     let encoded = codec()
         .serialize(payload)
         .map_err(|error| Error::internal(format!("serialize derived index cache: {error}")))?;
     let payload_len = u64::try_from(encoded.len())
         .map_err(|_| Error::resource_exhausted("derived index cache exceeds u64 bytes"))?;
-    if payload_len > MAX_PAYLOAD_BYTES {
+    if payload_len > max_payload_bytes {
         return Err(Error::resource_exhausted(format!(
-            "derived index cache exceeds the {MAX_PAYLOAD_BYTES}-byte storage limit"
+            "derived index cache exceeds the {max_payload_bytes}-byte storage limit"
         )));
     }
     let mut output = Vec::with_capacity(HEADER_BYTES.saturating_add(encoded.len()));
@@ -94,6 +108,7 @@ fn encode_payload(payload: &CachePayload) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn restore(
     bytes: &[u8],
     diskann_file: Option<PositionedFile>,
@@ -102,8 +117,10 @@ pub(super) fn restore(
     docs: &DocumentMap,
     source_revision: u64,
     source_identity: &str,
+    max_payload_bytes: u64,
+    max_diskann_file_bytes: u64,
 ) -> Option<IndexRegistry> {
-    let payload = decode_payload(bytes)?;
+    let payload = decode_payload(bytes, max_payload_bytes)?;
     if payload.format_version != CACHE_FORMAT_VERSION
         || payload.source_revision != source_revision
         || payload.source_identity != source_identity
@@ -139,11 +156,12 @@ pub(super) fn restore(
         schema,
         source_revision,
         source_identity,
+        max_diskann_file_bytes,
     )
     .then_some(registry)
 }
 
-fn decode_payload(bytes: &[u8]) -> Option<CachePayload> {
+fn decode_payload(bytes: &[u8], max_payload_bytes: u64) -> Option<CachePayload> {
     if bytes.len() < HEADER_BYTES || &bytes[..CACHE_MAGIC.len()] != CACHE_MAGIC {
         return None;
     }
@@ -152,7 +170,7 @@ fn decode_payload(bytes: &[u8]) -> Option<CachePayload> {
             .try_into()
             .ok()?,
     );
-    if payload_len > MAX_PAYLOAD_BYTES {
+    if payload_len > max_payload_bytes {
         return None;
     }
     let payload_len = usize::try_from(payload_len).ok()?;
@@ -466,7 +484,7 @@ fn codec() -> impl Options {
 mod tests {
     use super::{
         codec, decode_payload, encode, encode_payload, restore, validate_indexes, CachePayload,
-        CACHE_FORMAT_VERSION, CACHE_MAGIC, HEADER_BYTES,
+        CACHE_FORMAT_VERSION, CACHE_MAGIC, HEADER_BYTES, MAX_PAYLOAD_BYTES,
     };
     use crate::doc::{Doc, DocumentMap};
     use crate::index::{quantization::QuantizedVector, IndexRegistry, VectorIndex};
@@ -613,17 +631,19 @@ mod tests {
             docs,
             1,
             source_identity,
+            MAX_PAYLOAD_BYTES,
+            crate::storage_ceilings::DEFAULT_DISKANN_FILE_BYTES,
         )
     }
 
     #[test]
     fn malformed_headers_and_checksums_are_cache_misses() {
-        assert!(decode_payload(&[]).is_none());
+        assert!(decode_payload(&[], MAX_PAYLOAD_BYTES).is_none());
         let mut bytes = vec![0_u8; HEADER_BYTES];
         bytes[..CACHE_MAGIC.len()].copy_from_slice(CACHE_MAGIC);
         bytes[CACHE_MAGIC.len()..CACHE_MAGIC.len() + 8].copy_from_slice(&1_u64.to_le_bytes());
         bytes.push(1);
-        assert!(decode_payload(&bytes).is_none());
+        assert!(decode_payload(&bytes, MAX_PAYLOAD_BYTES).is_none());
     }
 
     #[test]
@@ -638,7 +658,7 @@ mod tests {
         let _: CachePayload = codec()
             .deserialize(&bytes[HEADER_BYTES..])
             .expect("bincode payload must decode");
-        let payload = decode_payload(&bytes).expect("cache payload must decode");
+        let payload = decode_payload(&bytes, MAX_PAYLOAD_BYTES).expect("cache payload must decode");
         assert!(payload.ordinals.validates(&docs));
         assert!(validate_indexes(
             &schema,
@@ -650,9 +670,11 @@ mod tests {
         assert!(restore_fixture(&bytes, &schema, &docs, "fixture-source").is_some());
         assert!(restore_fixture(&bytes, &schema, &docs, "different-source").is_none());
 
-        let mut obsolete = decode_payload(&bytes).expect("cache payload must decode");
+        let mut obsolete =
+            decode_payload(&bytes, MAX_PAYLOAD_BYTES).expect("cache payload must decode");
         obsolete.format_version = CACHE_FORMAT_VERSION - 1;
-        let obsolete = encode_payload(&obsolete).expect("obsolete fixture must encode");
+        let obsolete =
+            encode_payload(&obsolete, MAX_PAYLOAD_BYTES).expect("obsolete fixture must encode");
         assert!(restore_fixture(&obsolete, &schema, &docs, "fixture-source").is_none());
         let legacy = legacy_v2_bytes(&registry, &schema, &docs);
         assert!(bytes.len() < legacy.len());
@@ -667,7 +689,8 @@ mod tests {
             .next()
             .expect("fixture index must exist");
         std::sync::Arc::make_mut(&mut index.base).vectors.remove(0);
-        let invalid = encode_payload(&invalid).expect("invalid fixture must encode");
+        let invalid =
+            encode_payload(&invalid, MAX_PAYLOAD_BYTES).expect("invalid fixture must encode");
         assert!(restore_fixture(&invalid, &schema, &docs, "fixture-source").is_none());
     }
 
@@ -687,7 +710,8 @@ mod tests {
         let params = IndexParams::hnsw(MetricType::L2, 8, 32).expect("params must be valid");
         let (schema, docs, registry) = fixture(&params);
         let bytes = encode(&registry, &schema, 1, "fixture-source").expect("cache must encode");
-        let mut payload = decode_payload(&bytes).expect("cache payload must decode");
+        let mut payload =
+            decode_payload(&bytes, MAX_PAYLOAD_BYTES).expect("cache payload must decode");
         let vector = std::sync::Arc::make_mut(
             &mut payload
                 .indexes
@@ -703,7 +727,8 @@ mod tests {
             panic!("fixture must use unquantized vectors");
         };
         values[0] = 1.0;
-        let drifted = encode_payload(&payload).expect("drifted cache must encode");
+        let drifted =
+            encode_payload(&payload, MAX_PAYLOAD_BYTES).expect("drifted cache must encode");
         assert!(restore_fixture(&drifted, &schema, &docs, "fixture-source").is_none());
     }
 
@@ -736,7 +761,8 @@ mod tests {
             fixture(params)
         };
         let bytes = encode(&registry, &schema, 1, source).expect("cache must encode");
-        let mut payload = decode_payload(&bytes).expect("cache payload must decode");
+        let mut payload =
+            decode_payload(&bytes, MAX_PAYLOAD_BYTES).expect("cache payload must decode");
         mutate(&mut payload);
         // Keep schema params aligned with the corrupted index so restore reaches
         // validate_vector_kind instead of failing the shallow params equality check.
@@ -749,7 +775,8 @@ mod tests {
                 field.index_params = Some(index.params.clone());
             }
         }
-        let corrupted = encode_payload(&payload).expect("corrupted fixture must encode");
+        let corrupted =
+            encode_payload(&payload, MAX_PAYLOAD_BYTES).expect("corrupted fixture must encode");
         assert!(
             restore_fixture(&corrupted, &schema, &docs, source).is_none(),
             "corrupted {source} cache must miss"
@@ -1323,7 +1350,7 @@ mod tests {
                 fixture(&params)
             };
             let bytes = encode(&registry, &schema, 1, label).expect("encode");
-            let mut payload = decode_payload(&bytes).expect("decode");
+            let mut payload = decode_payload(&bytes, MAX_PAYLOAD_BYTES).expect("decode");
             mutate(
                 payload
                     .indexes
@@ -1353,11 +1380,11 @@ mod tests {
         bytes[..CACHE_MAGIC.len()].copy_from_slice(CACHE_MAGIC);
         let huge = (super::MAX_PAYLOAD_BYTES + 1).to_le_bytes();
         bytes[CACHE_MAGIC.len()..CACHE_MAGIC.len() + 8].copy_from_slice(&huge);
-        assert!(decode_payload(&bytes).is_none());
+        assert!(decode_payload(&bytes, MAX_PAYLOAD_BYTES).is_none());
 
         let mut short = vec![0_u8; HEADER_BYTES];
         short[..CACHE_MAGIC.len()].copy_from_slice(CACHE_MAGIC);
         short[CACHE_MAGIC.len()..CACHE_MAGIC.len() + 8].copy_from_slice(&8_u64.to_le_bytes());
-        assert!(decode_payload(&short).is_none());
+        assert!(decode_payload(&short, MAX_PAYLOAD_BYTES).is_none());
     }
 }
