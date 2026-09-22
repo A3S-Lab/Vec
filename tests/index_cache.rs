@@ -622,7 +622,7 @@ fn vamana_generation_rebuilds_and_round_trips_with_incremental_overlays() {
 }
 
 #[test]
-fn missing_or_corrupt_vamana_sidecar_falls_back_then_refreshes_writable() {
+fn missing_sidecar_keeps_the_cache_and_corrupt_sidecar_falls_back() {
     let temporary = tempdir().expect("temporary directory must be available");
     let path = temporary.path().join("vamana-corruption");
     let collection = Collection::create(
@@ -645,7 +645,10 @@ fn missing_or_corrupt_vamana_sidecar_falls_back_then_refreshes_writable() {
     let valid = fs::read(&path_to_sidecar).expect("DiskANN sidecar must exist");
     fs::remove_file(&path_to_sidecar).expect("sidecar must be removable");
     let missing = open_read_only(&path);
-    assert!(!missing.stats().expect("stats must succeed").index_cache_hit);
+    assert!(
+        missing.stats().expect("stats must succeed").index_cache_hit,
+        "a missing DiskANN sidecar must restore the other cached indexes"
+    );
     assert_eq!(ranking(&missing, &query), expected);
     missing.close().expect("collection must close");
     assert!(

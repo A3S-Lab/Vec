@@ -299,7 +299,9 @@ pub(super) fn attach(
         return true;
     }
     let Some(file) = file else {
-        return false;
+        // The cache was written and the sidecar was not. Leave the restored
+        // in-memory graph in place instead of discarding the registry.
+        return true;
     };
     let Ok(bytes) = file.read_all() else {
         return false;

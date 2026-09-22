@@ -185,28 +185,15 @@ impl Collection {
             }
             Err(error) => return Err(error),
         };
-        let mut state = self
-            .inner
-            .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_same_generation(&state, current)?;
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        storage.append(
+        self.commit_visible_revision(
+            current,
             revision,
             WalOperation::Delete { ids: ids.to_vec() },
             &config,
-        )?;
-        state.docs = Arc::new(next_docs);
-        state.indexes = Arc::new(next_indexes);
-        state.revision = revision;
-        state.resource_usage = next_resource_usage;
-        maybe_checkpoint(&mut storage, &state, &config)?;
-        Ok(())
+            next_docs,
+            next_indexes,
+            next_resource_usage,
+        )
     }
 
     fn mutate_documents(&self, docs: &[&Doc], mutation: Mutation) -> Result<WriteResult> {
@@ -288,24 +275,55 @@ impl Collection {
                 return Err(error);
             }
         };
+        self.commit_visible_revision(
+            &current,
+            revision,
+            operation,
+            &config,
+            next_docs,
+            next_indexes,
+            next_resource_usage,
+        )?;
+        Ok(write_result(outcomes))
+    }
+
+    /// Syncs the WAL before taking the published-state lock, then publishes.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_visible_revision(
+        &self,
+        current: &super::CollectionState,
+        revision: u64,
+        operation: WalOperation,
+        config: &crate::config::ConfigBuilder,
+        next_docs: crate::doc::DocumentMap,
+        next_indexes: IndexRegistry,
+        next_resource_usage: super::resource::ResourceUsage,
+    ) -> Result<()> {
+        {
+            let mut storage = self
+                .inner
+                .storage
+                .lock()
+                .map_err(|_| Error::internal("storage lock poisoned"))?;
+            storage.append(revision, operation, config)?;
+        }
         let mut state = self
             .inner
             .state
             .write()
             .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_same_generation(&state, &current)?;
+        ensure_same_generation(&state, current)?;
+        state.docs = Arc::new(next_docs);
+        state.indexes = Arc::new(next_indexes);
+        state.revision = revision;
+        state.resource_usage = next_resource_usage;
         let mut storage = self
             .inner
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        storage.append(revision, operation, &config)?;
-        state.docs = Arc::new(next_docs);
-        state.indexes = Arc::new(next_indexes);
-        state.revision = revision;
-        state.resource_usage = next_resource_usage;
-        maybe_checkpoint(&mut storage, &state, &config)?;
-        Ok(write_result(outcomes))
+        maybe_checkpoint(&mut storage, &state, config)?;
+        Ok(())
     }
 }
 

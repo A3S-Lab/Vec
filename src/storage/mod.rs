@@ -21,6 +21,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) use derived_file::{PositionedFile, RandomAccessReader};
+#[cfg(test)]
+pub(crate) use fault::StallGate;
 pub use wal::WalOperation;
 
 /// Open storage state. The lock is held for the lifetime of the collection.
@@ -207,16 +209,11 @@ impl StorageHandle {
             .generation
             .checked_add(1)
             .ok_or_else(|| Error::resource_exhausted("snapshot generation overflow"))?;
-        let checksum = snapshot::write_with_faults(
-            &self.root,
-            schema,
-            docs,
-            generation,
-            revision,
-            sync,
-            &self.faults,
-            self.ceilings.max_snapshot_bytes(),
-        )?;
+        let Some(checksum) =
+            self.next_snapshot_checksum(schema, docs, generation, revision, sync)?
+        else {
+            return Ok(());
+        };
         let mut next_manifest = self.manifest.clone();
         next_manifest.format_version = manifest::FORMAT_VERSION;
         next_manifest.collection_name.clone_from(&schema.name);
@@ -246,10 +243,75 @@ impl StorageHandle {
         if wal::prune_with_faults(&self.root, self.manifest.wal_checkpoint_seq, &self.faults)
             .is_ok()
         {
-            let _snapshot_prune =
-                snapshot::prune_with_faults(&self.root, self.manifest.generation, &self.faults);
+            let _snapshot_prune = snapshot::prune_with_faults(
+                &self.root,
+                self.manifest.generation,
+                self.manifest.docs_checksum,
+                self.ceilings.max_snapshot_bytes(),
+                &self.faults,
+            );
         }
         Ok(())
+    }
+
+    /// `Ok(None)` means the committed snapshot already matches this revision.
+    fn next_snapshot_checksum(
+        &self,
+        schema: &CollectionSchema,
+        docs: &[Doc],
+        generation: u64,
+        revision: u64,
+        sync: bool,
+    ) -> Result<Option<u32>> {
+        let previous = if self.manifest.format_version >= manifest::FORMAT_VERSION
+            && self.manifest.generation > 0
+        {
+            snapshot::read(
+                &self.root,
+                &self.manifest,
+                self.ceilings.max_snapshot_bytes(),
+            )
+            .ok()
+        } else {
+            None
+        };
+        if let Some((previous_schema, previous_docs)) = previous.as_ref() {
+            // A second flush of an already checkpointed revision has no new
+            // bytes to publish. Leaving the existing snapshot in place keeps
+            // one authoritative generation instead of an empty delta.
+            if previous_schema.digest() == schema.digest()
+                && self.manifest.revision == revision
+                && self.manifest.wal_ops_since_checkpoint == 0
+                && snapshot::documents_unchanged(previous_docs, docs)
+            {
+                return Ok(None);
+            }
+            if !previous_docs.is_empty() && previous_schema.digest() == schema.digest() {
+                return Ok(Some(snapshot::write_delta_with_faults(
+                    &self.root,
+                    schema,
+                    docs,
+                    previous_docs,
+                    generation,
+                    revision,
+                    self.manifest.generation,
+                    self.manifest.docs_checksum,
+                    sync,
+                    &self.faults,
+                    self.ceilings.max_snapshot_bytes(),
+                )?));
+            }
+        }
+        Ok(Some(snapshot::write_with_faults(
+            &self.root,
+            schema,
+            docs,
+            generation,
+            revision,
+            sync,
+            &self.faults,
+            self.ceilings.max_snapshot_bytes(),
+        )?))
     }
 
     pub fn should_checkpoint(&self, config: &ConfigBuilder) -> bool {
@@ -289,6 +351,7 @@ impl StorageHandle {
                 "cannot write a DiskANN sidecar through a read-only handle",
             ));
         }
+        self.faults.hit(fault::FaultPoint::DiskannWritten)?;
         diskann_file::write(
             &self.root,
             bytes,
@@ -322,8 +385,23 @@ impl StorageHandle {
     }
 
     #[cfg(test)]
+    pub(crate) fn arm_wal_sync_stall(&self) -> StallGate {
+        self.faults.arm_stall(fault::FaultPoint::WalSynced)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_diskann_write_fault(&self) {
+        self.faults.arm(fault::FaultPoint::DiskannWritten);
+    }
+
+    #[cfg(test)]
     fn fault_fired(&self, point: fault::FaultPoint) -> bool {
         self.faults.fired(point)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diskann_write_fault_fired(&self) -> bool {
+        self.fault_fired(fault::FaultPoint::DiskannWritten)
     }
 }
 

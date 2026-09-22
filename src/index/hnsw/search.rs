@@ -2,6 +2,7 @@
 
 use crate::index::ordinal_map::OrdinalMap;
 use crate::index::ordinals::OrdinalTable;
+use rayon::prelude::*;
 use std::cell::RefCell;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
@@ -180,22 +181,30 @@ pub(super) fn greedy_search_by(
     layer: &OrdinalMap<Vec<u64>>,
     ordinals: &OrdinalTable,
     entry: u64,
-    score_for: &impl Fn(u64) -> Option<f64>,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
+    parallel: bool,
 ) -> u64 {
     let mut current = entry;
     let mut current_score = score_for(entry).unwrap_or(f64::NEG_INFINITY);
     loop {
         let mut best = scored_node(current, current_score, ordinals);
-        each_neighbor(layer, current, prefetch_for, |neighbor| {
-            let Some(score) = score_for(neighbor) else {
-                return;
-            };
-            let candidate = scored_node(neighbor, score, ordinals);
-            if candidate > best {
-                best = candidate;
-            }
-        });
+        for_each_scored_neighbor(
+            layer,
+            current,
+            parallel,
+            score_for,
+            prefetch_for,
+            |neighbor, score| {
+                let Some(score) = score else {
+                    return;
+                };
+                let candidate = scored_node(neighbor, score, ordinals);
+                if candidate > best {
+                    best = candidate;
+                }
+            },
+        );
         if best.ordinal == current {
             return current;
         }
@@ -209,10 +218,19 @@ pub(super) fn search_layer_by(
     entries: &[u64],
     ef: usize,
     ordinals: &OrdinalTable,
-    score_for: &impl Fn(u64) -> Option<f64>,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
+    parallel: bool,
 ) -> Vec<u64> {
-    bounded_graph_search(layer, entries, ef, ordinals, score_for, prefetch_for)
+    bounded_graph_search(
+        layer,
+        entries,
+        ef,
+        ordinals,
+        score_for,
+        prefetch_for,
+        parallel,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -222,9 +240,10 @@ pub(super) fn search_layer_filtered_by(
     result_limit: usize,
     traversal_limit: usize,
     ordinals: &OrdinalTable,
-    score_for: &impl Fn(u64) -> Option<f64>,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
     is_allowed: &impl Fn(u64) -> bool,
+    parallel: bool,
 ) -> Vec<u64> {
     bounded_filtered_graph_search(
         layer,
@@ -235,6 +254,7 @@ pub(super) fn search_layer_filtered_by(
         score_for,
         prefetch_for,
         is_allowed,
+        parallel,
     )
 }
 
@@ -243,8 +263,9 @@ fn bounded_graph_search(
     entries: &[u64],
     ef: usize,
     ordinals: &OrdinalTable,
-    score_for: impl Fn(u64) -> Option<f64>,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
+    parallel: bool,
 ) -> Vec<u64> {
     let ef = ef.max(1);
     let expansion_limit = ef.saturating_mul(8).max(entries.len());
@@ -272,21 +293,28 @@ fn bounded_graph_search(
             break;
         }
         expanded += 1;
-        each_neighbor(layer, current.ordinal, prefetch_for, |neighbor| {
-            if !visited.insert(neighbor) {
-                return;
-            }
-            let Some(candidate_score) = score_for(neighbor) else {
-                return;
-            };
-            consider_candidate(
-                &mut frontier,
-                &mut best,
-                scored_node(neighbor, candidate_score, ordinals),
-                ef,
-                true,
-            );
-        });
+        for_each_scored_neighbor(
+            layer,
+            current.ordinal,
+            parallel,
+            score_for,
+            prefetch_for,
+            |neighbor, candidate_score| {
+                if !visited.insert(neighbor) {
+                    return;
+                }
+                let Some(candidate_score) = candidate_score else {
+                    return;
+                };
+                consider_candidate(
+                    &mut frontier,
+                    &mut best,
+                    scored_node(neighbor, candidate_score, ordinals),
+                    ef,
+                    true,
+                );
+            },
+        );
     }
     ordered_ordinals(best)
 }
@@ -298,9 +326,10 @@ fn bounded_filtered_graph_search(
     result_limit: usize,
     traversal_limit: usize,
     ordinals: &OrdinalTable,
-    score_for: impl Fn(u64) -> Option<f64>,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
     is_allowed: impl Fn(u64) -> bool,
+    parallel: bool,
 ) -> Vec<u64> {
     let result_limit = result_limit.max(1);
     let traversal_limit = traversal_limit.max(result_limit);
@@ -333,43 +362,83 @@ fn bounded_filtered_graph_search(
             break;
         }
         expanded += 1;
-        each_neighbor(layer, current.ordinal, prefetch_for, |neighbor| {
-            if !visited.insert(neighbor) {
-                return;
-            }
-            let Some(candidate_score) = score_for(neighbor) else {
-                return;
-            };
-            consider_candidate(
-                &mut frontier,
-                &mut best,
-                scored_node(neighbor, candidate_score, ordinals),
-                result_limit,
-                is_allowed(neighbor),
-            );
-        });
+        for_each_scored_neighbor(
+            layer,
+            current.ordinal,
+            parallel,
+            score_for,
+            prefetch_for,
+            |neighbor, candidate_score| {
+                if !visited.insert(neighbor) {
+                    return;
+                }
+                let Some(candidate_score) = candidate_score else {
+                    return;
+                };
+                consider_candidate(
+                    &mut frontier,
+                    &mut best,
+                    scored_node(neighbor, candidate_score, ordinals),
+                    result_limit,
+                    is_allowed(neighbor),
+                );
+            },
+        );
     }
     ordered_ordinals(best)
 }
 
-fn each_neighbor(
-    layer: &OrdinalMap<Vec<u64>>,
-    ordinal: u64,
+/// Scores one neighbor list without changing visit order.
+///
+/// Parallel scoring is order-preserving and falls back to the serial `f64`
+/// walk when the list is a single neighbor or this thread already belongs to
+/// the Rayon pool. Prefetch lead time on the serial path stays in front of
+/// each score.
+fn neighbor_scores(
+    neighbors: &[u64],
+    parallel: bool,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
-    mut visit: impl FnMut(u64),
-) {
-    let Some(neighbors) = layer.get(ordinal) else {
-        return;
-    };
+) -> Vec<Option<f64>> {
     let primed = PREFETCH_AHEAD.min(neighbors.len());
     for neighbor in neighbors.iter().copied().take(primed) {
         prefetch_for(neighbor);
     }
-    for (index, neighbor) in neighbors.iter().copied().enumerate() {
-        if let Some(ahead) = neighbors.get(index.saturating_add(PREFETCH_AHEAD)).copied() {
-            prefetch_for(ahead);
+    let parallel = parallel && neighbors.len() >= 2 && rayon::current_thread_index().is_none();
+    if parallel {
+        for neighbor in neighbors.iter().copied().skip(primed) {
+            prefetch_for(neighbor);
         }
-        visit(neighbor);
+        neighbors
+            .par_iter()
+            .map(|neighbor| score_for(*neighbor))
+            .collect()
+    } else {
+        let mut scores = Vec::with_capacity(neighbors.len());
+        for (index, neighbor) in neighbors.iter().copied().enumerate() {
+            if let Some(ahead) = neighbors.get(index.saturating_add(PREFETCH_AHEAD)).copied() {
+                prefetch_for(ahead);
+            }
+            scores.push(score_for(neighbor));
+        }
+        scores
+    }
+}
+
+fn for_each_scored_neighbor(
+    layer: &OrdinalMap<Vec<u64>>,
+    ordinal: u64,
+    parallel: bool,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
+    prefetch_for: &impl Fn(u64),
+    mut visit: impl FnMut(u64, Option<f64>),
+) {
+    let Some(neighbors) = layer.get(ordinal) else {
+        return;
+    };
+    let scores = neighbor_scores(neighbors, parallel, score_for, prefetch_for);
+    for (neighbor, score) in neighbors.iter().copied().zip(scores) {
+        visit(neighbor, score);
     }
 }
 

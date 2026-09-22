@@ -58,6 +58,7 @@ impl HnswRabitqIndex {
             topk,
             &|ordinal| self.quantizer.score(&prepared, ordinal),
             &|_| {},
+            true,
         )
     }
 
@@ -80,6 +81,7 @@ impl HnswRabitqIndex {
             filter,
             &|ordinal| self.quantizer.score(&prepared, ordinal),
             &|_| {},
+            true,
         )
     }
 

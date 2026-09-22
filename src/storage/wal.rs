@@ -143,6 +143,9 @@ pub(super) fn append_with_faults(
         .map_err(|e| Error::internal(format!("append WAL record: {e}")))?;
     faults.hit(FaultPoint::WalPayloadWritten)?;
     if sync {
+        // Park before the durability sync, while the caller still has not
+        // published the new revision. The fail-once point stays after sync_all.
+        faults.stall(FaultPoint::WalSynced);
         file.sync_all()
             .map_err(|e| Error::internal(format!("sync WAL segment: {e}")))?;
         faults.hit(FaultPoint::WalSynced)?;

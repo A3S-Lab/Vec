@@ -698,9 +698,9 @@ unsafe fn cosine_parts_f64_f32_sse2(query: &[f64], candidate: &[f32]) -> (f64, f
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::{
-        cosine_parts_f32, cosine_parts_f64_f32, dot_f32, dot_f64, dot_f64_f32, f32_scalar,
-        f64_f32_scalar, f64_scalar, l2sq_f32, l2sq_f64, l2sq_f64_f32, norm_sq_f32, score_f32,
-        score_f64_f32, Kernel,
+        cosine_parts_f32, cosine_parts_f64_f32, dispatch_f32, dot_f32, dot_f64, dot_f64_f32,
+        f32_scalar, f64_f32_scalar, f64_scalar, l2sq_f32, l2sq_f64, l2sq_f64_f32, norm_sq_f32,
+        score_f32, score_f64_f32, Kernel,
     };
     use crate::types::MetricType;
 
@@ -884,5 +884,19 @@ mod tests {
             f64::NEG_INFINITY
         );
         assert_eq!(score_f32(&query, &[0.0, 0.0], MetricType::Cosine, 0.0), 0.0);
+    }
+
+    #[test]
+    fn enterprise_ga_portable_and_simd_kernels_match() {
+        let left = [
+            0.25_f32, -1.5, 2.0, 0.5, 3.25, -0.125, 8.0, 1.0, 0.0625, -4.0,
+        ];
+        let right = [1.0_f32, 0.0, -2.0, 4.0, 0.5, 0.25, -8.0, 2.0, 0.5, 0.125];
+        for kernel in [Kernel::L2, Kernel::Dot, Kernel::NormSq] {
+            assert_eq!(
+                f32_scalar(&left, &right, kernel).to_bits(),
+                dispatch_f32(&left, &right, kernel).to_bits()
+            );
+        }
     }
 }

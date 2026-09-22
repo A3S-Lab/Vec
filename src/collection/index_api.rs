@@ -1,8 +1,8 @@
 //! Runtime in-memory index lifecycle and generation publication.
 
 use super::{
-    commit_prepared_schema_change, ensure_same_generation, ensure_writable, persist_index_cache,
-    prepare_schema_change, Collection, CollectionResourceLimits,
+    ensure_writable, finish_schema_commit, persist_index_cache, Collection,
+    CollectionResourceLimits,
 };
 use crate::error::{Error, Result};
 use crate::index::IndexRegistry;
@@ -46,20 +46,15 @@ impl Collection {
         }
         let mut next = current.clone();
         next.schema.add_index(field_name, params)?;
-        let next = prepare_schema_change(next)?;
         let config = current.config.clone();
-        let mut state = self
-            .inner
-            .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_same_generation(&state, &current)?;
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_prepared_schema_change(&mut storage, &mut state, next, &config)
+        finish_schema_commit(
+            self,
+            &current.docs,
+            current.revision,
+            &current.schema,
+            next,
+            &config,
+        )
     }
 
     pub fn drop_index(&self, field_name: &str) -> Result<()> {
@@ -78,20 +73,15 @@ impl Collection {
         ensure_writable(&current.options)?;
         let mut next = current.clone();
         next.schema.drop_index(field_name)?;
-        let next = prepare_schema_change(next)?;
         let config = current.config.clone();
-        let mut state = self
-            .inner
-            .state
-            .write()
-            .map_err(|_| Error::internal("collection state lock poisoned"))?;
-        ensure_same_generation(&state, &current)?;
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_prepared_schema_change(&mut storage, &mut state, next, &config)
+        finish_schema_commit(
+            self,
+            &current.docs,
+            current.revision,
+            &current.schema,
+            next,
+            &config,
+        )
     }
 
     pub fn optimize(&self) -> Result<()> {

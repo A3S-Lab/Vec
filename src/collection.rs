@@ -23,7 +23,9 @@ use crate::stats::{assess_collection_health, CollectionHealthInput, StatsRegistr
 pub use crate::stats::{CollectionHealth, CollectionHealthStatus, IndexStat};
 use crate::storage::StorageHandle;
 use crate::storage_ceilings::StorageCeilings;
-use checkpoint::{commit_prepared_schema_change, persist_index_cache};
+use checkpoint::{
+    append_prepared_schema_change, persist_index_cache, publish_prepared_schema_change,
+};
 pub use configuration::CollectionOptions;
 use configuration::{options_config, resolved_storage_ceilings};
 pub use maintenance::{
@@ -481,7 +483,7 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let state = self
             .inner
             .state
             .write()
@@ -501,12 +503,18 @@ impl Collection {
         }
         validate_documents_with_concurrency(&next.schema, &next.docs, option.concurrency)?;
         let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
+        let previous_docs = Arc::clone(&state.docs);
+        let previous_revision = state.revision;
+        let previous_schema = state.schema.clone();
+        drop(state);
+        finish_schema_commit(
+            self,
+            &previous_docs,
+            previous_revision,
+            &previous_schema,
+            next,
+            &config,
+        )
     }
 
     pub fn drop_column(&self, name: &str) -> Result<()> {
@@ -516,7 +524,7 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let state = self
             .inner
             .state
             .write()
@@ -528,12 +536,18 @@ impl Collection {
             doc.remove_field(name)
         })?);
         let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
+        let previous_docs = Arc::clone(&state.docs);
+        let previous_revision = state.revision;
+        let previous_schema = state.schema.clone();
+        drop(state);
+        finish_schema_commit(
+            self,
+            &previous_docs,
+            previous_revision,
+            &previous_schema,
+            next,
+            &config,
+        )
     }
 
     pub fn rename_column(&self, old_name: &str, new_name: &str) -> Result<()> {
@@ -552,7 +566,7 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let state = self
             .inner
             .state
             .write()
@@ -592,12 +606,18 @@ impl Collection {
             Ok(())
         })?);
         let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
+        let previous_docs = Arc::clone(&state.docs);
+        let previous_revision = state.revision;
+        let previous_schema = state.schema.clone();
+        drop(state);
+        finish_schema_commit(
+            self,
+            &previous_docs,
+            previous_revision,
+            &previous_schema,
+            next,
+            &config,
+        )
     }
 
     pub fn alter_column(
@@ -611,7 +631,7 @@ impl Collection {
             .writer
             .lock()
             .map_err(|_| Error::internal("writer lock poisoned"))?;
-        let mut state = self
+        let state = self
             .inner
             .state
             .write()
@@ -634,12 +654,18 @@ impl Collection {
         next.schema.validate()?;
         validate_documents_with_concurrency(&next.schema, &next.docs, option.concurrency)?;
         let config = state.config.clone();
-        let mut storage = self
-            .inner
-            .storage
-            .lock()
-            .map_err(|_| Error::internal("storage lock poisoned"))?;
-        commit_schema_change(&mut storage, &mut state, next, &config)
+        let previous_docs = Arc::clone(&state.docs);
+        let previous_revision = state.revision;
+        let previous_schema = state.schema.clone();
+        drop(state);
+        finish_schema_commit(
+            self,
+            &previous_docs,
+            previous_revision,
+            &previous_schema,
+            next,
+            &config,
+        )
     }
 
     fn snapshot_state(&self) -> Result<CollectionSnapshot> {
@@ -664,6 +690,24 @@ impl Collection {
         } else {
             Ok(())
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_arm_wal_sync_stall(&self) -> crate::storage::StallGate {
+        let storage = self.inner.storage.lock().expect("storage lock poisoned");
+        storage.arm_wal_sync_stall()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_arm_diskann_write_fault(&self) {
+        let storage = self.inner.storage.lock().expect("storage lock poisoned");
+        storage.arm_diskann_write_fault();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_diskann_write_fault_fired(&self) -> bool {
+        let storage = self.inner.storage.lock().expect("storage lock poisoned");
+        storage.diskann_write_fault_fired()
     }
 }
 
@@ -777,14 +821,45 @@ fn schema_worker_count(concurrency: u32, work_items: usize) -> Result<Option<usi
     Ok((threads > 1).then_some(threads))
 }
 
-fn commit_schema_change(
-    storage: &mut StorageHandle,
-    state: &mut CollectionState,
+fn finish_schema_commit(
+    collection: &Collection,
+    previous_docs: &Arc<DocumentMap>,
+    previous_revision: u64,
+    previous_schema: &CollectionSchema,
     next: CollectionState,
     config: &ConfigBuilder,
 ) -> Result<()> {
     let next = prepare_schema_change(next)?;
-    commit_prepared_schema_change(storage, state, next, config)
+    {
+        let mut storage = collection
+            .inner
+            .storage
+            .lock()
+            .map_err(|_| Error::internal("storage lock poisoned"))?;
+        append_prepared_schema_change(
+            &mut storage,
+            previous_docs,
+            previous_revision,
+            &next,
+            config,
+        )?;
+    }
+    let mut state = collection
+        .inner
+        .state
+        .write()
+        .map_err(|_| Error::internal("collection state lock poisoned"))?;
+    if state.revision != previous_revision || state.schema != *previous_schema {
+        return Err(Error::failed_precondition(
+            "collection generation changed during index construction",
+        ));
+    }
+    let mut storage = collection
+        .inner
+        .storage
+        .lock()
+        .map_err(|_| Error::internal("storage lock poisoned"))?;
+    publish_prepared_schema_change(&mut storage, &mut state, next, config)
 }
 
 fn prepare_schema_change(mut next: CollectionState) -> Result<CollectionState> {
@@ -812,5 +887,7 @@ fn next_revision(current: u64) -> Result<u64> {
         .ok_or_else(|| Error::resource_exhausted("collection revision overflow"))
 }
 
+#[cfg(test)]
+mod ga_contract;
 #[cfg(test)]
 mod tests;

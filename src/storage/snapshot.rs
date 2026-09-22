@@ -9,14 +9,16 @@ use super::manifest::{
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
-use codec::BinarySnapshot;
+use codec::{BinarySnapshot, DeltaSnapshot};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+const DELTA_SNAPSHOT_FORMAT_VERSION: u32 = 5;
 
 #[cfg(test)]
 pub(crate) use crate::storage_ceilings::DEFAULT_SNAPSHOT_BYTES as MAX_SNAPSHOT_BYTES;
@@ -78,6 +80,90 @@ pub(super) fn write_with_faults(
         faults,
         max_snapshot_bytes,
     )
+}
+
+/// Writes a format-5 delta against a non-empty format-4-or-newer base.
+///
+/// `previous` is the logical document set of `base_generation`. Only removed
+/// primary keys and upserted documents are stored; unchanged bodies stay in
+/// the base file.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_delta_with_faults(
+    root: &Path,
+    schema: &CollectionSchema,
+    docs: &[Doc],
+    previous: &[Doc],
+    generation: u64,
+    revision: u64,
+    base_generation: u64,
+    base_checksum: u32,
+    sync: bool,
+    faults: &FaultInjector,
+    max_snapshot_bytes: u64,
+) -> Result<u32> {
+    if generation == 0 || base_generation == 0 || base_generation == generation {
+        return Err(Error::invalid_argument(
+            "snapshot delta requires a distinct positive base generation",
+        ));
+    }
+    let (removed, upserted) = document_delta(previous, docs);
+    let snapshot = DeltaSnapshot::new(
+        DELTA_SNAPSHOT_FORMAT_VERSION,
+        generation,
+        revision,
+        schema,
+        base_generation,
+        base_checksum,
+        removed,
+        &upserted,
+    );
+    let bytes = rmp_serde::to_vec(&snapshot)
+        .map_err(|error| Error::internal(format!("serialize document snapshot delta: {error}")))?;
+    write_bytes(
+        root,
+        &binary_relative_path(generation),
+        &bytes,
+        sync,
+        faults,
+        max_snapshot_bytes,
+    )
+}
+
+pub(super) fn documents_unchanged(previous: &[Doc], next: &[Doc]) -> bool {
+    if previous.len() != next.len() {
+        return false;
+    }
+    let (removed, upserted) = document_delta(previous, next);
+    removed.is_empty() && upserted.is_empty()
+}
+
+fn document_delta(previous: &[Doc], next: &[Doc]) -> (Vec<String>, Vec<Doc>) {
+    let mut previous_by_pk = BTreeMap::<&str, &Doc>::new();
+    for doc in previous {
+        if let Some(pk) = doc.get_pk() {
+            previous_by_pk.insert(pk, doc);
+        }
+    }
+    let mut next_by_pk = BTreeMap::<&str, &Doc>::new();
+    for doc in next {
+        if let Some(pk) = doc.get_pk() {
+            next_by_pk.insert(pk, doc);
+        }
+    }
+    let mut removed = Vec::new();
+    for pk in previous_by_pk.keys() {
+        if !next_by_pk.contains_key(pk) {
+            removed.push((*pk).to_string());
+        }
+    }
+    let mut upserted = Vec::new();
+    for (pk, doc) in &next_by_pk {
+        match previous_by_pk.get(pk) {
+            Some(existing) if *existing == *doc => {}
+            _ => upserted.push((*doc).clone()),
+        }
+    }
+    (removed, upserted)
 }
 
 #[cfg(test)]
@@ -159,24 +245,158 @@ fn read_binary(
         manifest,
         max_snapshot_bytes,
     )?;
-    let mut decoder = rmp_serde::Deserializer::new(Cursor::new(bytes.as_slice()));
+    let mut seen = HashSet::new();
+    resolve_snapshot(
+        root,
+        &bytes,
+        manifest.generation,
+        Some(manifest),
+        max_snapshot_bytes,
+        &mut seen,
+    )
+}
+
+fn resolve_snapshot(
+    root: &Path,
+    bytes: &[u8],
+    expected_generation: u64,
+    manifest: Option<&Manifest>,
+    max_snapshot_bytes: u64,
+    seen: &mut HashSet<u64>,
+) -> Result<(CollectionSchema, Vec<Doc>)> {
+    let format_version = peek_format_version(bytes)?;
+    match format_version {
+        SNAPSHOT_FORMAT_VERSION => {
+            let snapshot = decode_full(bytes)?;
+            let (version, generation, revision, schema, docs) = snapshot.into_parts();
+            if version != SNAPSHOT_FORMAT_VERSION {
+                return Err(Error::not_supported(format!(
+                    "unsupported document snapshot format version {version}"
+                )));
+            }
+            if generation != expected_generation {
+                return Err(Error::internal(
+                    "document snapshot generation does not match its file",
+                ));
+            }
+            if !seen.insert(generation) {
+                return Err(Error::internal("document snapshot delta cycle"));
+            }
+            if let Some(manifest) = manifest {
+                validate_metadata(manifest, generation, revision, &schema)?;
+            }
+            Ok((schema, docs))
+        }
+        DELTA_SNAPSHOT_FORMAT_VERSION => {
+            let snapshot = decode_delta(bytes)?;
+            let (
+                version,
+                generation,
+                revision,
+                schema,
+                base_generation,
+                base_checksum,
+                removed,
+                upserted,
+            ) = snapshot.into_parts();
+            if version != DELTA_SNAPSHOT_FORMAT_VERSION {
+                return Err(Error::not_supported(format!(
+                    "unsupported document snapshot format version {version}"
+                )));
+            }
+            if generation != expected_generation {
+                return Err(Error::internal(
+                    "document snapshot generation does not match its file",
+                ));
+            }
+            if !seen.insert(generation) {
+                return Err(Error::internal("document snapshot delta cycle"));
+            }
+            if let Some(manifest) = manifest {
+                validate_metadata(manifest, generation, revision, &schema)?;
+            }
+            if base_generation == 0 || base_generation == generation {
+                return Err(Error::internal(
+                    "document snapshot delta base generation is invalid",
+                ));
+            }
+            let base_bytes =
+                read_generation_bytes(root, base_generation, base_checksum, max_snapshot_bytes)?;
+            let (base_schema, base_docs) = resolve_snapshot(
+                root,
+                &base_bytes,
+                base_generation,
+                None,
+                max_snapshot_bytes,
+                seen,
+            )?;
+            if base_schema.digest() != schema.digest() {
+                return Err(Error::internal(
+                    "snapshot delta base schema does not match the tip",
+                ));
+            }
+            let docs = apply_delta(base_docs, &removed, upserted)?;
+            Ok((schema, docs))
+        }
+        version => Err(Error::not_supported(format!(
+            "unsupported document snapshot format version {version}"
+        ))),
+    }
+}
+
+fn decode_full(bytes: &[u8]) -> Result<BinarySnapshot> {
+    let mut decoder = rmp_serde::Deserializer::new(Cursor::new(bytes));
     let snapshot = BinarySnapshot::deserialize(&mut decoder)
         .map_err(|error| Error::internal(format!("parse binary document snapshot: {error}")))?;
+    reject_trailing(bytes, decoder.position())?;
+    Ok(snapshot)
+}
+
+fn decode_delta(bytes: &[u8]) -> Result<DeltaSnapshot> {
+    let mut decoder = rmp_serde::Deserializer::new(Cursor::new(bytes));
+    let snapshot = DeltaSnapshot::deserialize(&mut decoder)
+        .map_err(|error| Error::internal(format!("parse document snapshot delta: {error}")))?;
+    reject_trailing(bytes, decoder.position())?;
+    Ok(snapshot)
+}
+
+fn reject_trailing(bytes: &[u8], position: u64) -> Result<()> {
     let encoded_len = u64::try_from(bytes.len())
         .map_err(|_| Error::resource_exhausted("document snapshot exceeds u64 bytes"))?;
-    if decoder.position() != encoded_len {
+    if position != encoded_len {
         return Err(Error::internal(
             "parse binary document snapshot: trailing payload",
         ));
     }
-    let (format_version, generation, revision, schema, docs) = snapshot.into_parts();
-    if format_version != SNAPSHOT_FORMAT_VERSION {
-        return Err(Error::not_supported(format!(
-            "unsupported document snapshot format version {format_version}"
-        )));
+    Ok(())
+}
+
+fn peek_format_version(bytes: &[u8]) -> Result<u32> {
+    let mut cursor = Cursor::new(bytes);
+    rmp::decode::read_array_len(&mut cursor)
+        .map_err(|error| Error::internal(format!("parse document snapshot header: {error}")))?;
+    rmp::decode::read_int(&mut cursor)
+        .map_err(|error| Error::internal(format!("parse document snapshot version: {error}")))
+}
+
+fn apply_delta(base_docs: Vec<Doc>, removed: &[String], upserted: Vec<Doc>) -> Result<Vec<Doc>> {
+    let mut merged = BTreeMap::<String, Doc>::new();
+    for doc in base_docs {
+        let pk = doc
+            .get_pk()
+            .ok_or_else(|| Error::internal("snapshot document has no primary key"))?;
+        merged.insert(pk.to_string(), doc);
     }
-    validate_metadata(manifest, generation, revision, &schema)?;
-    Ok((schema, docs))
+    for pk in removed {
+        merged.remove(pk);
+    }
+    for doc in upserted {
+        let pk = doc
+            .get_pk()
+            .ok_or_else(|| Error::internal("snapshot document has no primary key"))?;
+        merged.insert(pk.to_string(), doc);
+    }
+    Ok(merged.into_values().collect())
 }
 
 fn read_legacy(
@@ -247,6 +467,42 @@ fn read_bytes(
     Ok(bytes)
 }
 
+fn read_generation_bytes(
+    root: &Path,
+    generation: u64,
+    expected_checksum: u32,
+    max_snapshot_bytes: u64,
+) -> Result<Vec<u8>> {
+    let path = root.join(binary_relative_path(generation));
+    let metadata = fs::metadata(&path)
+        .map_err(|error| Error::internal(format!("read document snapshot metadata: {error}")))?;
+    if metadata.len() > max_snapshot_bytes {
+        return Err(Error::resource_exhausted(format!(
+            "document snapshot exceeds the {max_snapshot_bytes}-byte recovery limit"
+        )));
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .map_err(|error| Error::internal(format!("open document snapshot: {error}")))?
+        .take(max_snapshot_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::internal(format!("read document snapshot: {error}")))?;
+    let actual_len = u64::try_from(bytes.len())
+        .map_err(|_| Error::resource_exhausted("document snapshot exceeds u64 bytes"))?;
+    if actual_len > max_snapshot_bytes {
+        return Err(Error::resource_exhausted(format!(
+            "document snapshot exceeds the {max_snapshot_bytes}-byte recovery limit"
+        )));
+    }
+    let actual = checksum(&bytes);
+    if actual != expected_checksum {
+        return Err(Error::internal(format!(
+            "document snapshot checksum mismatch: expected {expected_checksum}, got {actual}"
+        )));
+    }
+    Ok(bytes)
+}
+
 fn validate_metadata(
     manifest: &Manifest,
     generation: u64,
@@ -277,12 +533,15 @@ fn validate_metadata(
 pub(super) fn prune_with_faults(
     root: &Path,
     keep_generation: u64,
+    keep_checksum: u32,
+    max_snapshot_bytes: u64,
     faults: &FaultInjector,
 ) -> Result<()> {
     let directory = root.join("segments");
     if !directory.exists() {
         return Ok(());
     }
+    let keep = retained_generations(root, keep_generation, keep_checksum, max_snapshot_bytes)?;
     let mut removed = false;
     for entry in fs::read_dir(&directory)
         .map_err(|error| Error::internal(format!("read snapshot directory: {error}")))?
@@ -296,7 +555,7 @@ pub(super) fn prune_with_faults(
         let Some(generation) = snapshot_generation(name) else {
             continue;
         };
-        if generation != keep_generation {
+        if !keep.contains(&generation) {
             faults.hit(FaultPoint::SnapshotPruneBeforeRemove)?;
             fs::remove_file(entry.path())
                 .map_err(|error| Error::internal(format!("prune document snapshot: {error}")))?;
@@ -309,6 +568,36 @@ pub(super) fn prune_with_faults(
         faults.hit(FaultPoint::SnapshotPruneDirectorySynced)?;
     }
     Ok(())
+}
+
+fn retained_generations(
+    root: &Path,
+    keep_generation: u64,
+    keep_checksum: u32,
+    max_snapshot_bytes: u64,
+) -> Result<BTreeSet<u64>> {
+    let mut keep = BTreeSet::new();
+    let mut generation = keep_generation;
+    let mut expected_checksum = keep_checksum;
+    loop {
+        if !keep.insert(generation) {
+            return Err(Error::internal("document snapshot delta cycle"));
+        }
+        let bytes = read_generation_bytes(root, generation, expected_checksum, max_snapshot_bytes)?;
+        match peek_format_version(&bytes)? {
+            SNAPSHOT_FORMAT_VERSION => return Ok(keep),
+            DELTA_SNAPSHOT_FORMAT_VERSION => {
+                let delta = decode_delta(&bytes)?;
+                generation = delta.base_generation();
+                expected_checksum = delta.base_checksum();
+            }
+            version => {
+                return Err(Error::not_supported(format!(
+                    "unsupported document snapshot format version {version}"
+                )))
+            }
+        }
+    }
 }
 
 fn snapshot_generation(name: &str) -> Option<u64> {
@@ -447,7 +736,7 @@ mod tests {
             .contains("schema digest"));
 
         // Second generation so prune removes the first artifact.
-        write_with_faults(
+        let second = write_with_faults(
             root,
             &schema,
             &[],
@@ -458,12 +747,26 @@ mod tests {
             MAX_SNAPSHOT_BYTES,
         )
         .expect("second");
-        prune_with_faults(root, 2, &FaultInjector::default()).expect("prune");
+        prune_with_faults(
+            root,
+            2,
+            second,
+            MAX_SNAPSHOT_BYTES,
+            &FaultInjector::default(),
+        )
+        .expect("prune");
         assert!(!root.join(binary_relative_path(1)).exists());
         assert!(root.join(binary_relative_path(2)).exists());
         // Non-snapshot junk in segments is ignored.
         fs::write(root.join("segments").join("notes.txt"), b"keep").expect("junk");
-        prune_with_faults(root, 2, &FaultInjector::default()).expect("ignore junk");
+        prune_with_faults(
+            root,
+            2,
+            second,
+            MAX_SNAPSHOT_BYTES,
+            &FaultInjector::default(),
+        )
+        .expect("ignore junk");
         assert!(root.join("segments").join("notes.txt").exists());
     }
 }

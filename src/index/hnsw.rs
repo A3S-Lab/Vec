@@ -119,12 +119,16 @@ impl HnswIndex {
         ef_construction: usize,
         metric: MetricType,
     ) -> Self {
-        Self::build_with(vectors, ordinals, m, ef_construction, metric, true)
+        Self::build_with(vectors, ordinals, m, ef_construction, metric, true, true)
     }
 
     /// `cache_scores` reuses the f64 link score already computed for an edge.
     /// The false path is the original rescore, kept so tests can prove the
     /// published neighbor lists do not change.
+    ///
+    /// `parallel_scores` scores one neighbor list concurrently. Candidates are
+    /// still admitted in neighbor-list order with the same `f64` scores, so
+    /// the published graph matches the serial insertion.
     #[allow(clippy::too_many_lines)]
     fn build_with(
         vectors: &OrdinalMap<QuantizedVector>,
@@ -133,6 +137,7 @@ impl HnswIndex {
         ef_construction: usize,
         metric: MetricType,
         cache_scores: bool,
+        parallel_scores: bool,
     ) -> Self {
         if vectors.is_empty() {
             return Self {
@@ -215,6 +220,7 @@ impl HnswIndex {
                         entry,
                         &score_for,
                         &prefetch_for,
+                        parallel_scores,
                     );
                 }
             }
@@ -228,6 +234,7 @@ impl HnswIndex {
                     ordinals,
                     &score_for,
                     &prefetch_for,
+                    parallel_scores,
                 );
                 let degree = if layer == 0 { m.saturating_mul(2) } else { m }.max(1);
                 let neighbors: Vec<u64> = candidates
@@ -335,6 +342,7 @@ impl HnswIndex {
                 )
             },
             &|ordinal| prefetch_navigation(packed, ordinal),
+            true,
         )
     }
 
@@ -343,8 +351,9 @@ impl HnswIndex {
         ordinals: &OrdinalTable,
         requested_ef: Option<usize>,
         topk: usize,
-        score_for: &impl Fn(u64) -> Option<f64>,
+        score_for: &(impl Fn(u64) -> Option<f64> + Sync),
         prefetch_for: &impl Fn(u64),
+        parallel: bool,
     ) -> RoaringTreemap {
         let vector_count = self.layers.first().map_or(0, OrdinalMap::len);
         if vector_count == 0 {
@@ -364,6 +373,7 @@ impl HnswIndex {
                 entry,
                 score_for,
                 prefetch_for,
+                parallel,
             );
         }
         search_layer_by(
@@ -373,6 +383,7 @@ impl HnswIndex {
             ordinals,
             score_for,
             prefetch_for,
+            parallel,
         )
         .into_iter()
         .take(ef)
@@ -426,17 +437,20 @@ impl HnswIndex {
                 )
             },
             &|ordinal| prefetch_navigation(packed, ordinal),
+            true,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn filtered_candidates_by(
         &self,
         ordinals: &OrdinalTable,
         result_limit: usize,
         traversal_limit: usize,
         filter: HnswFilter<'_>,
-        score_for: &impl Fn(u64) -> Option<f64>,
+        score_for: &(impl Fn(u64) -> Option<f64> + Sync),
         prefetch_for: &impl Fn(u64),
+        parallel: bool,
     ) -> RoaringTreemap {
         if self.layers.first().map_or(true, OrdinalMap::is_empty)
             || filter.eligible_count == 0
@@ -462,6 +476,7 @@ impl HnswIndex {
                 entry,
                 score_for,
                 prefetch_for,
+                parallel,
             );
         }
         search_layer_filtered_by(
@@ -473,6 +488,7 @@ impl HnswIndex {
             score_for,
             prefetch_for,
             &|ordinal| filter.allowed.contains(ordinal) && !filter.excluded.contains(ordinal),
+            parallel,
         )
         .into_iter()
         .collect()
@@ -849,11 +865,25 @@ mod tests {
     fn cached_edge_scores_match_the_rescored_graph() {
         let (ordinals, vectors) = varied_fixture(180, 8);
         for metric in [MetricType::Cosine, MetricType::L2] {
-            let cached = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, true);
-            let fresh = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, false);
+            let cached = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, true, false);
+            let fresh = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, false, false);
             assert_eq!(cached.entry_ordinal, fresh.entry_ordinal);
             assert_eq!(cached.layers, fresh.layers);
         }
+    }
+
+    #[test]
+    fn enterprise_ga_parallel_neighbor_sets_match_serial_f64() {
+        let (ordinals, vectors) = varied_fixture(180, 8);
+        for metric in [MetricType::Cosine, MetricType::L2] {
+            let serial = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, true, false);
+            let parallel = HnswIndex::build_with(&vectors, &ordinals, 8, 24, metric, true, true);
+            assert_eq!(serial.entry_ordinal, parallel.entry_ordinal);
+            assert_eq!(serial.layers, parallel.layers);
+        }
+        let (ordinals, vectors) = varied_fixture(96, 4);
+        let index = HnswIndex::build(&vectors, &ordinals, 8, 64, MetricType::Cosine);
+        assert_eq!(index.default_ef, 64);
     }
 
     #[test]

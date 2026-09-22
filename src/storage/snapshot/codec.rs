@@ -43,6 +43,77 @@ impl BinarySnapshot {
     }
 }
 
+/// Format 5 stores only the documents that changed since `base_generation`.
+/// Unchanged bodies remain in the base snapshot file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct DeltaSnapshot {
+    format_version: u32,
+    generation: u64,
+    revision: u64,
+    schema: CollectionSchema,
+    base_generation: u64,
+    base_checksum: u32,
+    removed: Vec<String>,
+    upserted: Vec<BinaryDoc>,
+}
+
+impl DeltaSnapshot {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        format_version: u32,
+        generation: u64,
+        revision: u64,
+        schema: &CollectionSchema,
+        base_generation: u64,
+        base_checksum: u32,
+        removed: Vec<String>,
+        upserted: &[Doc],
+    ) -> Self {
+        Self {
+            format_version,
+            generation,
+            revision,
+            schema: schema.clone(),
+            base_generation,
+            base_checksum,
+            removed,
+            upserted: upserted.iter().map(BinaryDoc::from).collect(),
+        }
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        u32,
+        u64,
+        u64,
+        CollectionSchema,
+        u64,
+        u32,
+        Vec<String>,
+        Vec<Doc>,
+    ) {
+        (
+            self.format_version,
+            self.generation,
+            self.revision,
+            self.schema,
+            self.base_generation,
+            self.base_checksum,
+            self.removed,
+            self.upserted.into_iter().map(Doc::from).collect(),
+        )
+    }
+
+    pub(super) fn base_generation(&self) -> u64 {
+        self.base_generation
+    }
+
+    pub(super) fn base_checksum(&self) -> u32 {
+        self.base_checksum
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BinaryDoc {
     pk: Option<String>,

@@ -9,13 +9,14 @@ use crate::schema::CollectionSchema;
 use crate::storage::StorageHandle;
 use crate::storage::WalOperation;
 
-pub(super) fn commit_prepared_schema_change(
+pub(super) fn append_prepared_schema_change(
     storage: &mut StorageHandle,
-    state: &mut CollectionState,
-    next: CollectionState,
+    previous_docs: &std::sync::Arc<crate::doc::DocumentMap>,
+    previous_revision: u64,
+    next: &CollectionState,
     config: &ConfigBuilder,
 ) -> Result<()> {
-    if next.revision != next_revision(state.revision)? {
+    if next.revision != next_revision(previous_revision)? {
         return Err(crate::error::Error::failed_precondition(
             "prepared schema generation no longer follows collection state",
         ));
@@ -26,7 +27,7 @@ pub(super) fn commit_prepared_schema_change(
     // schema operation that changed documents receives a new document map.
     let revision = next.revision;
     let schema = next.schema.clone();
-    let docs = (!std::sync::Arc::ptr_eq(&next.docs, &state.docs)).then(|| {
+    let docs = (!std::sync::Arc::ptr_eq(&next.docs, previous_docs)).then(|| {
         next.docs
             .values()
             .map(|doc| doc.as_ref().clone())
@@ -34,26 +35,32 @@ pub(super) fn commit_prepared_schema_change(
     });
     let operation = match docs.as_ref() {
         Some(docs) => WalOperation::Schema {
-            schema: schema.clone(),
+            schema,
             docs: docs.clone(),
         },
-        None => WalOperation::SchemaOnly {
-            schema: schema.clone(),
-        },
+        None => WalOperation::SchemaOnly { schema },
     };
     storage.append(revision, operation, config)?;
+    Ok(())
+}
 
-    // The WAL + manifest pair is the commit point. Publish the same state in
-    // memory before checkpoint maintenance so a checkpoint error cannot leave
-    // this process behind the already committed revision.
+pub(super) fn publish_prepared_schema_change(
+    storage: &mut StorageHandle,
+    state: &mut CollectionState,
+    next: CollectionState,
+    config: &ConfigBuilder,
+) -> Result<()> {
+    // The WAL + manifest pair is already the commit point. Publish that state
+    // before checkpoint maintenance so a checkpoint error cannot leave this
+    // process behind the committed revision.
+    let revision = next.revision;
+    let schema = next.schema.clone();
     *state = next;
-    let checkpoint_docs = docs.unwrap_or_else(|| {
-        state
-            .docs
-            .values()
-            .map(|doc| doc.as_ref().clone())
-            .collect()
-    });
+    let checkpoint_docs = state
+        .docs
+        .values()
+        .map(|doc| doc.as_ref().clone())
+        .collect::<Vec<_>>();
     let sync = !matches!(config.durability, Durability::Manual);
     storage.checkpoint(&schema, &checkpoint_docs, revision, sync)?;
     persist_index_cache(storage, &schema, &state.indexes, revision, sync);
@@ -90,14 +97,12 @@ pub(super) fn persist_index_cache(
         return;
     }
     let identity = storage.index_cache_identity();
-    let Ok(diskann_bytes) = indexes.diskann_bytes(schema, revision, &identity, storage.ceilings)
-    else {
-        return;
-    };
-    if let Some(diskann_bytes) = diskann_bytes {
-        if storage.write_diskann_file(&diskann_bytes, sync).is_err() {
-            return;
-        }
+    // The sidecar is derived. A failed DiskANN write must still persist the
+    // cache of the other indexes; reopen keeps the in-memory graph for that field.
+    if let Ok(Some(diskann_bytes)) =
+        indexes.diskann_bytes(schema, revision, &identity, storage.ceilings)
+    {
+        let _sidecar = storage.write_diskann_file(&diskann_bytes, sync);
     }
     let Ok(bytes) = indexes.cache_bytes(schema, revision, &identity, storage.ceilings) else {
         return;
