@@ -283,6 +283,31 @@ pub(super) fn validates(
     reader.is_empty()
 }
 
+/// True when the sidecar header names this cache generation.
+///
+/// An unreadable or truncated file returns false. Callers treat that as
+/// corruption of the current generation, not as a leftover older file.
+fn sidecar_matches_generation(bytes: &[u8], source_revision: u64, source_identity: &str) -> bool {
+    if bytes.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
+        return false;
+    }
+    if read_u64(bytes, 40) != Some(source_revision) {
+        return false;
+    }
+    let Some(metadata_len) = read_u32(bytes, 20) else {
+        return false;
+    };
+    let metadata_len = metadata_len as usize;
+    let Some(metadata_end) = FIXED_HEADER_BYTES.checked_add(metadata_len) else {
+        return false;
+    };
+    let Some(metadata) = bytes.get(FIXED_HEADER_BYTES..metadata_end) else {
+        return false;
+    };
+    let mut reader = SliceReader::new(metadata);
+    reader.read_bytes() == Some(source_identity.as_bytes())
+}
+
 pub(super) fn attach(
     file: Option<PositionedFile>,
     io_backend: IoBackend,
@@ -314,6 +339,13 @@ pub(super) fn attach(
         source_identity,
         max_file_bytes,
     ) {
+        // A failed sidecar rewrite leaves the previous generation's file on
+        // disk. That file does not belong to this cache, so keep the restored
+        // in-memory indexes. A corrupt file for this same generation still
+        // rejects the cache and forces a rebuild.
+        if !sidecar_matches_generation(&bytes, source_revision, source_identity) {
+            return true;
+        }
         return false;
     }
     let Ok(reader_source) = file.into_random_access(io_backend, &bytes) else {

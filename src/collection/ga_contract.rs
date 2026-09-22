@@ -296,3 +296,78 @@ fn enterprise_ga_diskann_sidecar_failure_keeps_index_cache() {
         Some(&FieldValue::String("alpha".to_string()))
     );
 }
+
+#[test]
+fn enterprise_ga_stale_diskann_sidecar_keeps_index_cache() {
+    let temporary = tempdir().expect("temporary directory");
+    let mut tag = FieldSchema::new("tag", DataType::String, false, 0).expect("tag field");
+    tag.set_index_params(&IndexParams::invert(false, false).expect("invert"))
+        .expect("invert attaches");
+    let mut embedding =
+        FieldSchema::new("embedding", DataType::VectorFp32, false, 8).expect("vector field");
+    embedding
+        .set_index_params(&IndexParams::diskann(MetricType::L2, 8, 16, 1).expect("diskann"))
+        .expect("diskann attaches");
+    let schema = CollectionSchema::builder("stale-sidecar")
+        .add_field(tag)
+        .add_field(embedding)
+        .build()
+        .expect("schema");
+    let path = path_of(&temporary, "stale-sidecar");
+    let collection = Collection::create(&path, &schema, None).expect("collection");
+    let mut docs = Vec::new();
+    for index in 0..8 {
+        let id = format!("doc-{index}");
+        let mut doc = Doc::with_pk(&id).expect("primary key");
+        doc.add_string("tag", if index == 0 { "alpha" } else { "beta" })
+            .expect("tag");
+        let vector: Vec<f32> = (0..8)
+            .map(|coordinate| {
+                f32::from(u16::try_from(index + coordinate).expect("coordinate fits"))
+            })
+            .collect();
+        doc.add_vector_f32("embedding", &vector).expect("vector");
+        docs.push(doc);
+    }
+    let refs: Vec<&Doc> = docs.iter().collect();
+    collection.insert(&refs).expect("insert");
+    collection.flush().expect("first flush");
+
+    let sidecar = std::path::Path::new(&path)
+        .join("indexes")
+        .join("diskann-graph.bin");
+    let stale_bytes = std::fs::read(&sidecar).expect("first sidecar");
+    assert!(!stale_bytes.is_empty());
+
+    let mut extra = Doc::with_pk("doc-extra").expect("primary key");
+    extra.add_string("tag", "gamma").expect("tag");
+    extra
+        .add_vector_f32("embedding", &[8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+        .expect("vector");
+    collection.upsert(&[&extra]).expect("revision advances");
+    collection.test_arm_diskann_write_fault();
+    collection.flush().expect("second flush");
+    assert!(collection.test_diskann_write_fault_fired());
+    assert_eq!(
+        std::fs::read(&sidecar).expect("stale sidecar remains"),
+        stale_bytes
+    );
+    drop(collection);
+
+    let reopened = Collection::open(&path, None).expect("reopen");
+    assert!(
+        reopened.stats().expect("stats").index_cache_hit,
+        "a stale DiskANN sidecar must not discard the restored index cache"
+    );
+    let mut query =
+        SearchQuery::new("embedding", &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], 4).expect("query");
+    query.set_filter("tag == \"alpha\"").expect("filter");
+    let hits = reopened.query(&query).expect("filtered query");
+    assert_eq!(
+        hits.iter()
+            .filter_map(|doc| doc.get_pk())
+            .collect::<Vec<_>>(),
+        vec!["doc-0"]
+    );
+    assert_eq!(reopened.fetch(&["doc-extra"]).expect("fetch").len(), 1);
+}
