@@ -22,8 +22,9 @@
 稠密/稀疏向量、BM25 全文与类型化标量过滤落在同一持久化 Rust 集合——无需
 服务端进程，也无需 C/C++ 运行时。
 
-**[`0.1.4` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
-（tag `0.1.4` · SHA-256 `15c4220d…` · [RELEASE.md](RELEASE.md)）
+**[`0.1.5` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
+（tag `0.1.5` · SHA-256 `bc42798f…` · [RELEASE.md](RELEASE.md)）。
+`0.1.4` 仍是上一已发布绑定（tag `0.1.4` · SHA-256 `15c4220d…`）。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [测试](TESTING.md) · [基准](BENCHMARKS.md) ·
@@ -54,7 +55,7 @@ cosine、MIPS-L2。
 1. **跑在 Agent 进程内** — 无需运维旁路数据库；打开路径、写入、查询即可。
 2. **分数可辩护** — 公开排序对权威向量做精确 `f64` 重打分；Flat 召回按构造为 1.0。
 3. **混合检索无需胶水** — 语义 + 词法 + 结构化谓词在同一规划器与同一持久化世代。
-4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.4` 类型化 `StorageCeilings`）。
+4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.5` 的耐久同步、快照增量、缓存恢复与保序 HNSW 打分；`0.1.4` 仍是类型化 `StorageCeilings` 绑定）。
 5. **诚实 harness 下 HNSW 有竞争力** — 相同旋钮、单 worker、保留 exact re-rank；证据见下（方向性，非 SLO）。百万文档 flush 在工作站主机上已放开（8 GiB 存储上限）。
 
 **不是什么：** 托管向量云、zvec C++ ABI 克隆，或「全面碾压」式引擎排名。
@@ -65,13 +66,13 @@ cosine、MIPS-L2。
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.4"
+a3s-vec = "0.1.5"
 ```
 
 面向 Tokio 的查询（同一规划器，跑在 `spawn_blocking`）：
 
 ```toml
-a3s-vec = { version = "0.1.4", features = ["async"] }
+a3s-vec = { version = "0.1.5", features = ["async"] }
 ```
 
 Monorepo path：`a3s-vec = { path = "crates/vec" }`。

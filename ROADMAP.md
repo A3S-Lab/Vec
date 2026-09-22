@@ -18,9 +18,10 @@ derived indexes that can always be rebuilt. The six invariants in
 make one of those invariants more true is not scheduled.
 
 Phases 0 through 7 are complete on `main`. The current release line is
-`0.1.4` (typed `StorageCeilings`; see [RELEASE.md](RELEASE.md)). Do not
-reopen a completed index family to add a variant. There are no open engine
-issues that pass the six-invariant filter.
+`0.1.5` (durability sync, snapshot deltas, cache restore, and ordered HNSW
+scoring; see [RELEASE.md](RELEASE.md)). `0.1.4` remains the typed
+`StorageCeilings` binding. Do not reopen a completed index family to add a
+variant. There are no open engine issues that pass the six-invariant filter.
 
 ### VEC-R1 — Cancelled: macOS 12 Intel support dropped
 
@@ -986,9 +987,10 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.4`: tag `0.1.4` and crates.io publish bind to
-   revision `9a07e9a` (SHA-256 `15c4220d…`); hosted CI run `35510190796`
-   closes the gate when green — see [RELEASE.md](RELEASE.md).
+2. Enterprise GA for `0.1.5`: tag `0.1.5` and crates.io publish bind to
+   revision `84f8985` (SHA-256 `bc42798f…`); hosted CI run `35746396350`
+   is green — see [RELEASE.md](RELEASE.md). `0.1.4` remains bound to
+   revision `9a07e9a` (SHA-256 `15c4220d…`, run `35510190796`).
    macOS 12 Intel is unsupported and is not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index

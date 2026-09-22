@@ -1,13 +1,47 @@
 # Release Qualification
 
+`a3s-vec` `0.1.5` is published. Tag `0.1.5`, and crates.io SHA-256
+`bc42798f059416957a4e67cefea3b469cb2c08caa1fc2d73997f81e76a362fe1` bind to
+revision `84f8985a669d0e4d33eb0c4884c7ccb90e0de51d`. Hosted CI run
+`35746396350` is green for that revision. The prior `0.1.4` package remains
+on the registry as a historical artifact (tag `0.1.4` @
+`9a07e9a33726dd187080b00a44505f9bbd31bd97`, SHA-256
+`15c4220df078de9c350aea98e0f9187890cec066e4d3ee242170a2ab762ed80f`). macOS 12
+Monterey Intel is deliberately unsupported.
+
+## 0.1.5 release notes
+
+This patch release keeps the public query contract (`f64` scores, exact
+re-rank, HNSW `ef` 64, `Durability::Always`, no default IVF `scale_factor`)
+and removes physical work that tests can still fail:
+
+- An `Always` commit is acknowledged only after its durability sync, and that
+  sync does not hold the published-state lock.
+- A failed DiskANN sidecar write still leaves the other derived indexes
+  restorable from the cache. A corrupt sidecar still misses and rebuilds.
+- A checkpoint of changed documents writes a format-5 delta of the changed
+  bodies and keeps the base snapshot. Published format-4 snapshots still open.
+  A second flush of an already checkpointed revision writes nothing.
+- HNSW neighbor scoring may run in parallel and still publishes the ordered
+  single-thread `f64` neighbor sets.
+
+## 0.1.5 post-publish checklist
+
+1. Hosted CI run `35746396350` on revision `84f8985` is green.
+2. The published crate SHA-256 matches
+   `bc42798f059416957a4e67cefea3b469cb2c08caa1fc2d73997f81e76a362fe1`.
+3. Formal git tag `0.1.5` points at that revision, and `cargo publish`
+   uploaded the matching crate.
+
+## 0.1.4 historical binding
+
 `a3s-vec` `0.1.4` is published. Tag `0.1.4`, and crates.io SHA-256
 `15c4220df078de9c350aea98e0f9187890cec066e4d3ee242170a2ab762ed80f` bind to
 revision `9a07e9a33726dd187080b00a44505f9bbd31bd97`. Hosted CI run
-`35510190796` closes the gate when green. The prior `0.1.3` package remains
+`35510190796` closed that gate. The prior `0.1.3` package remains
 on the registry as a historical artifact (tag `0.1.3` @
 `88599126a4c179d8a0df24bd52963d372ea8eb67`, SHA-256
-`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`). macOS 12
-Monterey Intel is deliberately unsupported.
+`c5c692f409c4870048a5f081f66f9072893af2047042487835f97b1d6aa3d9f2`).
 
 ## 0.1.4 release notes
 
@@ -80,7 +114,7 @@ The release-facing contract has the following boundaries:
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.4` identity.
+  against the package's `0.1.5` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -106,9 +140,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.4.crate`;
-- `a3s-vec-0.1.4.crate.sha256`;
-- `a3s-vec-0.1.4.release.json`, which records the package version, source
+- `a3s-vec-0.1.5.crate`;
+- `a3s-vec-0.1.5.crate.sha256`;
+- `a3s-vec-0.1.5.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the
@@ -141,7 +175,7 @@ cargo doc --locked --no-deps --all-features
 cargo package --locked --allow-dirty
 ```
 
-## Post-publish checklist
+## 0.1.4 post-publish checklist
 
 1. Hosted CI run `35510190796` on revision `9a07e9a` (binding confirmed when
    green).
