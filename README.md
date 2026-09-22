@@ -22,9 +22,10 @@
 Dense and sparse vectors, BM25 full-text, and typed scalar filters live in one
 durable Rust collection—no server process and no C/C++ runtime.
 
-**[`0.1.5` on crates.io](https://crates.io/crates/a3s-vec)** · published
-(tag `0.1.5` · SHA-256 `bc42798f…` · [RELEASE.md](RELEASE.md)).
-`0.1.4` remains the prior published binding (tag `0.1.4` · SHA-256 `15c4220d…`).
+**[`0.1.6` on crates.io](https://crates.io/crates/a3s-vec)** · published
+(tag `0.1.6` · SHA-256 `67c238a0…` · [RELEASE.md](RELEASE.md)).
+`0.1.5` remains the prior published binding (tag `0.1.5` · SHA-256 `bc42798f…`).
+`0.1.4` remains bound at tag `0.1.4` · SHA-256 `15c4220d…`.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
@@ -59,9 +60,9 @@ L2, IP, cosine, MIPS-L2.
 3. **Hybrid without glue code** — semantic + lexical + structured predicates
    in one planner and one durable generation.
 4. **Published Enterprise GA** — hosted multi-platform CI, versioned release
-   candidate, and crates.io checksum bind to one revision (`0.1.5` durability
-   sync, snapshot deltas, cache restore, and ordered HNSW scoring; `0.1.4`
-   remains the typed `StorageCeilings` binding).
+   candidate, and crates.io checksum bind to one revision (`0.1.6` keeps a
+   stale DiskANN sidecar from dropping the index cache; `0.1.5` and `0.1.4`
+   remain their own published bindings).
 5. **Competitive HNSW under an honest harness** — same knobs, one worker,
    exact re-rank kept; see proof below (directional, not an SLO). Million-document
    flush is unblocked on workstation hosts (8 GiB storage ceilings).
@@ -75,13 +76,13 @@ universal engine ranking.
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.5"
+a3s-vec = "0.1.6"
 ```
 
 Tokio-facing queries (same planner on `spawn_blocking`):
 
 ```toml
-a3s-vec = { version = "0.1.5", features = ["async"] }
+a3s-vec = { version = "0.1.6", features = ["async"] }
 ```
 
 Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
