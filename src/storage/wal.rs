@@ -5,12 +5,14 @@ use super::manifest::sync_directory;
 use crate::doc::Doc;
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"A3VW";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
+const JSON_VERSION: u16 = 4;
 const MIN_READABLE_VERSION: u16 = 3;
 const HEADER_LEN: usize = 4 + 2 + 4 + 4;
 const MAX_WAL_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -100,8 +102,7 @@ pub(super) fn append_with_faults(
 ) -> Result<u64> {
     fs::create_dir_all(root.join("wal"))
         .map_err(|e| Error::internal(format!("create WAL directory: {e}")))?;
-    let payload = serde_json::to_vec(record)
-        .map_err(|e| Error::internal(format!("serialize WAL record: {e}")))?;
+    let payload = encode_record(record)?;
     if payload.len() > MAX_WAL_FRAME_BYTES {
         return Err(Error::resource_exhausted(format!(
             "WAL record exceeds the {MAX_WAL_FRAME_BYTES}-byte frame limit"
@@ -247,9 +248,9 @@ pub fn replay(
             if crc32fast::hash(payload) != expected_crc {
                 return Err(Error::internal("WAL checksum mismatch"));
             }
-            let record: WalRecord = serde_json::from_slice(payload)
-                .map_err(|e| Error::internal(format!("decode WAL record: {e}")))?;
-            if version < VERSION && matches!(record.operation, WalOperation::SchemaOnly { .. }) {
+            let record = decode_record(version, payload)?;
+            if version < JSON_VERSION && matches!(record.operation, WalOperation::SchemaOnly { .. })
+            {
                 return Err(Error::new(
                     crate::error::ErrorCode::NotSupported,
                     "schema-only WAL operations require frame version 4",
@@ -261,6 +262,313 @@ pub fn replay(
         }
     }
     Ok(records)
+}
+
+fn encode_record(record: &WalRecord) -> Result<Vec<u8>> {
+    rmp_serde::to_vec(&PackedRecord::from(record))
+        .map_err(|error| Error::internal(format!("serialize WAL record: {error}")))
+}
+
+fn decode_record(version: u16, payload: &[u8]) -> Result<WalRecord> {
+    if version >= VERSION {
+        let packed: PackedRecord = rmp_serde::from_slice(payload)
+            .map_err(|error| Error::internal(format!("decode WAL record: {error}")))?;
+        Ok(packed.into_record())
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|error| Error::internal(format!("decode WAL record: {error}")))
+    }
+}
+
+#[cfg(test)]
+pub fn legacy_json_from_frame(version: u16, payload: &[u8]) -> Result<Vec<u8>> {
+    let record = decode_record(version, payload)?;
+    serde_json::to_vec(&record)
+        .map_err(|error| Error::internal(format!("encode legacy WAL: {error}")))
+}
+
+/// `MessagePack` form of a WAL record.
+///
+/// `Doc` keeps its JSON-adjacent field tags for version-4 replay. Those tags
+/// do not round-trip through `MessagePack`, so version 5 stores externally
+/// tagged copies and rebuilds the document on read.
+#[derive(Serialize, Deserialize)]
+struct PackedRecord {
+    revision: u64,
+    operation_id: u64,
+    operation: PackedOperation,
+}
+
+#[derive(Serialize, Deserialize)]
+enum PackedOperation {
+    Insert {
+        docs: Vec<PackedDoc>,
+    },
+    Update {
+        docs: Vec<PackedDoc>,
+    },
+    Upsert {
+        docs: Vec<PackedDoc>,
+    },
+    Delete {
+        ids: Vec<String>,
+    },
+    Schema {
+        schema: crate::schema::CollectionSchema,
+        docs: Vec<PackedDoc>,
+    },
+    SchemaOnly {
+        schema: crate::schema::CollectionSchema,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+struct PackedDoc {
+    pk: Option<String>,
+    score: f32,
+    doc_id: Option<u64>,
+    fields: BTreeMap<String, PackedField>,
+    vectors: BTreeMap<String, PackedVector>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum PackedField {
+    Null,
+    Binary(Vec<u8>),
+    String(String),
+    Bool(bool),
+    Int32(i32),
+    Int64(i64),
+    Uint32(u32),
+    Uint64(u64),
+    Float(f32),
+    Double(f64),
+    ArrayBinary(Vec<Vec<u8>>),
+    ArrayString(Vec<String>),
+    ArrayBool(Vec<bool>),
+    ArrayInt32(Vec<i32>),
+    ArrayInt64(Vec<i64>),
+    ArrayUint32(Vec<u32>),
+    ArrayUint64(Vec<u64>),
+    ArrayFloat(Vec<f32>),
+    ArrayDouble(Vec<f64>),
+    Json(serde_json::Value),
+}
+
+#[derive(Serialize, Deserialize)]
+enum PackedVector {
+    Binary32(Vec<u8>),
+    Binary64(Vec<u8>),
+    Fp16(Vec<u16>),
+    Fp32(Vec<f32>),
+    Fp64(Vec<f64>),
+    Int4(Vec<i8>),
+    Int8(Vec<i8>),
+    Int16(Vec<i16>),
+    SparseFp16 { indices: Vec<u32>, values: Vec<u16> },
+    SparseFp32 { indices: Vec<u32>, values: Vec<f32> },
+}
+
+impl From<&WalRecord> for PackedRecord {
+    fn from(record: &WalRecord) -> Self {
+        Self {
+            revision: record.revision,
+            operation_id: record.operation_id,
+            operation: PackedOperation::from(&record.operation),
+        }
+    }
+}
+
+impl PackedRecord {
+    fn into_record(self) -> WalRecord {
+        WalRecord {
+            revision: self.revision,
+            operation_id: self.operation_id,
+            operation: self.operation.into_operation(),
+        }
+    }
+}
+
+impl From<&WalOperation> for PackedOperation {
+    fn from(operation: &WalOperation) -> Self {
+        match operation {
+            WalOperation::Insert { docs } => Self::Insert {
+                docs: docs.iter().map(PackedDoc::from).collect(),
+            },
+            WalOperation::Update { docs } => Self::Update {
+                docs: docs.iter().map(PackedDoc::from).collect(),
+            },
+            WalOperation::Upsert { docs } => Self::Upsert {
+                docs: docs.iter().map(PackedDoc::from).collect(),
+            },
+            WalOperation::Delete { ids } => Self::Delete { ids: ids.clone() },
+            WalOperation::Schema { schema, docs } => Self::Schema {
+                schema: schema.clone(),
+                docs: docs.iter().map(PackedDoc::from).collect(),
+            },
+            WalOperation::SchemaOnly { schema } => Self::SchemaOnly {
+                schema: schema.clone(),
+            },
+        }
+    }
+}
+
+impl PackedOperation {
+    fn into_operation(self) -> WalOperation {
+        match self {
+            Self::Insert { docs } => WalOperation::Insert {
+                docs: docs.into_iter().map(PackedDoc::into_doc).collect(),
+            },
+            Self::Update { docs } => WalOperation::Update {
+                docs: docs.into_iter().map(PackedDoc::into_doc).collect(),
+            },
+            Self::Upsert { docs } => WalOperation::Upsert {
+                docs: docs.into_iter().map(PackedDoc::into_doc).collect(),
+            },
+            Self::Delete { ids } => WalOperation::Delete { ids },
+            Self::Schema { schema, docs } => WalOperation::Schema {
+                schema,
+                docs: docs.into_iter().map(PackedDoc::into_doc).collect(),
+            },
+            Self::SchemaOnly { schema } => WalOperation::SchemaOnly { schema },
+        }
+    }
+}
+
+impl From<&crate::doc::Doc> for PackedDoc {
+    fn from(doc: &crate::doc::Doc) -> Self {
+        Self {
+            pk: doc.get_pk().map(str::to_string),
+            score: doc.get_score(),
+            doc_id: doc.doc_id(),
+            fields: doc
+                .fields()
+                .iter()
+                .map(|(name, value)| (name.clone(), PackedField::from(value)))
+                .collect(),
+            vectors: doc
+                .vectors()
+                .iter()
+                .map(|(name, value)| (name.clone(), PackedVector::from(value)))
+                .collect(),
+        }
+    }
+}
+
+impl PackedDoc {
+    fn into_doc(self) -> crate::doc::Doc {
+        crate::doc::Doc::from_persisted_parts(
+            self.pk,
+            self.score,
+            self.doc_id,
+            self.fields
+                .into_iter()
+                .map(|(name, value)| (name, value.into_field()))
+                .collect(),
+            self.vectors
+                .into_iter()
+                .map(|(name, value)| (name, value.into_vector()))
+                .collect(),
+        )
+    }
+}
+
+impl From<&crate::doc::FieldValue> for PackedField {
+    fn from(value: &crate::doc::FieldValue) -> Self {
+        use crate::doc::FieldValue;
+        match value {
+            FieldValue::Null => Self::Null,
+            FieldValue::Binary(value) => Self::Binary(value.clone()),
+            FieldValue::String(value) => Self::String(value.clone()),
+            FieldValue::Bool(value) => Self::Bool(*value),
+            FieldValue::Int32(value) => Self::Int32(*value),
+            FieldValue::Int64(value) => Self::Int64(*value),
+            FieldValue::Uint32(value) => Self::Uint32(*value),
+            FieldValue::Uint64(value) => Self::Uint64(*value),
+            FieldValue::Float(value) => Self::Float(*value),
+            FieldValue::Double(value) => Self::Double(*value),
+            FieldValue::ArrayBinary(value) => Self::ArrayBinary(value.clone()),
+            FieldValue::ArrayString(value) => Self::ArrayString(value.clone()),
+            FieldValue::ArrayBool(value) => Self::ArrayBool(value.clone()),
+            FieldValue::ArrayInt32(value) => Self::ArrayInt32(value.clone()),
+            FieldValue::ArrayInt64(value) => Self::ArrayInt64(value.clone()),
+            FieldValue::ArrayUint32(value) => Self::ArrayUint32(value.clone()),
+            FieldValue::ArrayUint64(value) => Self::ArrayUint64(value.clone()),
+            FieldValue::ArrayFloat(value) => Self::ArrayFloat(value.clone()),
+            FieldValue::ArrayDouble(value) => Self::ArrayDouble(value.clone()),
+            FieldValue::Json(value) => Self::Json(value.clone()),
+        }
+    }
+}
+
+impl PackedField {
+    fn into_field(self) -> crate::doc::FieldValue {
+        use crate::doc::FieldValue;
+        match self {
+            Self::Null => FieldValue::Null,
+            Self::Binary(value) => FieldValue::Binary(value),
+            Self::String(value) => FieldValue::String(value),
+            Self::Bool(value) => FieldValue::Bool(value),
+            Self::Int32(value) => FieldValue::Int32(value),
+            Self::Int64(value) => FieldValue::Int64(value),
+            Self::Uint32(value) => FieldValue::Uint32(value),
+            Self::Uint64(value) => FieldValue::Uint64(value),
+            Self::Float(value) => FieldValue::Float(value),
+            Self::Double(value) => FieldValue::Double(value),
+            Self::ArrayBinary(value) => FieldValue::ArrayBinary(value),
+            Self::ArrayString(value) => FieldValue::ArrayString(value),
+            Self::ArrayBool(value) => FieldValue::ArrayBool(value),
+            Self::ArrayInt32(value) => FieldValue::ArrayInt32(value),
+            Self::ArrayInt64(value) => FieldValue::ArrayInt64(value),
+            Self::ArrayUint32(value) => FieldValue::ArrayUint32(value),
+            Self::ArrayUint64(value) => FieldValue::ArrayUint64(value),
+            Self::ArrayFloat(value) => FieldValue::ArrayFloat(value),
+            Self::ArrayDouble(value) => FieldValue::ArrayDouble(value),
+            Self::Json(value) => FieldValue::Json(value),
+        }
+    }
+}
+
+impl From<&crate::doc::VectorValue> for PackedVector {
+    fn from(value: &crate::doc::VectorValue) -> Self {
+        use crate::doc::VectorValue;
+        match value {
+            VectorValue::Binary32(value) => Self::Binary32(value.clone()),
+            VectorValue::Binary64(value) => Self::Binary64(value.clone()),
+            VectorValue::Fp16(value) => Self::Fp16(value.clone()),
+            VectorValue::Fp64(value) => Self::Fp64(value.clone()),
+            VectorValue::Fp32(value) => Self::Fp32(value.clone()),
+            VectorValue::Int4(value) => Self::Int4(value.clone()),
+            VectorValue::Int8(value) => Self::Int8(value.clone()),
+            VectorValue::Int16(value) => Self::Int16(value.clone()),
+            VectorValue::SparseFp16 { indices, values } => Self::SparseFp16 {
+                indices: indices.clone(),
+                values: values.clone(),
+            },
+            VectorValue::SparseFp32 { indices, values } => Self::SparseFp32 {
+                indices: indices.clone(),
+                values: values.clone(),
+            },
+        }
+    }
+}
+
+impl PackedVector {
+    fn into_vector(self) -> crate::doc::VectorValue {
+        use crate::doc::VectorValue;
+        match self {
+            Self::Binary32(value) => VectorValue::Binary32(value),
+            Self::Binary64(value) => VectorValue::Binary64(value),
+            Self::Fp16(value) => VectorValue::Fp16(value),
+            Self::Fp32(value) => VectorValue::Fp32(value),
+            Self::Fp64(value) => VectorValue::Fp64(value),
+            Self::Int4(value) => VectorValue::Int4(value),
+            Self::Int8(value) => VectorValue::Int8(value),
+            Self::Int16(value) => VectorValue::Int16(value),
+            Self::SparseFp16 { indices, values } => VectorValue::SparseFp16 { indices, values },
+            Self::SparseFp32 { indices, values } => VectorValue::SparseFp32 { indices, values },
+        }
+    }
 }
 
 fn validate_record(record: &WalRecord) -> Result<()> {

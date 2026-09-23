@@ -1,6 +1,6 @@
 use a3s_vec::{
     Collection, CollectionOptions, CollectionResourceLimits, CollectionSchema, DataType, Doc,
-    ErrorCode, FieldSchema, IndexParams, MetricType, MultiQuery, SearchQuery, SubQuery,
+    Durability, ErrorCode, FieldSchema, IndexParams, MetricType, MultiQuery, SearchQuery, SubQuery,
 };
 use tempfile::tempdir;
 
@@ -32,6 +32,61 @@ fn options(limits: CollectionResourceLimits) -> CollectionOptions {
         .set_resource_limits(limits)
         .expect("resource limits must be accepted");
     options
+}
+
+#[test]
+fn batched_accounting_matches_a_reopened_full_measurement() {
+    let temporary = tempdir().expect("temporary directory must be available");
+    let path = temporary.path().join("accounted");
+    let mut options = CollectionOptions::new().expect("options");
+    options
+        .set_durability(Durability::Manual)
+        .expect("manual durability");
+    let collection = Collection::create(
+        path.to_str().expect("temporary path must be UTF-8"),
+        &schema(),
+        Some(&options),
+    )
+    .expect("collection must be created");
+    for batch in 0..3 {
+        let docs: Vec<Doc> = (0..40)
+            .map(|index| {
+                let coordinate = f32::from(u8::try_from(index).expect("index"));
+                doc(
+                    &format!("doc-{batch}-{index:02}"),
+                    "kept",
+                    [coordinate, 1.0],
+                )
+            })
+            .collect();
+        let references: Vec<&Doc> = docs.iter().collect();
+        collection
+            .insert(&references)
+            .expect("batch must be inserted");
+    }
+    collection
+        .delete(&["doc-1-03"])
+        .expect("delete must succeed");
+    let replaced = doc("doc-0-00", "replaced", [3.0, 4.0]);
+    collection
+        .upsert(&[&replaced])
+        .expect("upsert must succeed");
+    collection.flush().expect("flush must succeed");
+    let before = collection.stats().expect("stats before reopen");
+    collection.close().expect("close");
+    let reopened = Collection::open(
+        path.to_str().expect("temporary path must be UTF-8"),
+        Some(&options),
+    )
+    .expect("reopen");
+    let after = reopened.stats().expect("stats after reopen");
+    assert_eq!(after.doc_count, before.doc_count);
+    assert_eq!(
+        after.accounted_document_bytes,
+        before.accounted_document_bytes
+    );
+    assert_eq!(after.accounted_bytes, before.accounted_bytes);
+    assert!(after.accounted_document_bytes > 0);
 }
 
 #[test]

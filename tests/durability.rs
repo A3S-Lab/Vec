@@ -277,9 +277,9 @@ fn checkpoints_publish_one_generation_specific_snapshot() {
     )
     .expect("WAL frame must be readable");
     assert_eq!(&wal[..4], b"A3VW");
-    // Version 4 adds the compact schema-only operation; version 3 remains
-    // readable for existing collections.
-    assert_eq!(u16::from_le_bytes([wal[4], wal[5]]), 4);
+    // Version 5 stores an externally tagged MessagePack record. Versions
+    // below 5 stay JSON, and version 3 remains readable.
+    assert_eq!(u16::from_le_bytes([wal[4], wal[5]]), 5);
     collection.flush().expect("first checkpoint must succeed");
     collection.flush().expect("second checkpoint must succeed");
 

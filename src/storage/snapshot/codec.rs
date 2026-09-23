@@ -15,20 +15,168 @@ pub(super) struct BinarySnapshot {
     docs: Vec<BinaryDoc>,
 }
 
+pub(super) fn encode_binary_snapshot(
+    format_version: u32,
+    generation: u64,
+    revision: u64,
+    schema: &CollectionSchema,
+    docs: &(impl super::SnapshotDocs + ?Sized),
+) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let mut encoded = Vec::with_capacity(docs.len());
+    docs.for_each(&mut |doc| encoded.push(BorrowedDoc::from_doc(doc)));
+    let snapshot = BorrowedSnapshot {
+        format_version,
+        generation,
+        revision,
+        schema,
+        docs: &encoded,
+    };
+    rmp_serde::to_vec(&snapshot)
+}
+
+#[derive(Serialize)]
+struct BorrowedSnapshot<'a> {
+    format_version: u32,
+    generation: u64,
+    revision: u64,
+    schema: &'a CollectionSchema,
+    docs: &'a [BorrowedDoc<'a>],
+}
+
+#[derive(Serialize)]
+struct BorrowedDoc<'a> {
+    pk: Option<&'a str>,
+    score: f32,
+    internal_id: Option<u64>,
+    fields: BTreeMap<&'a str, BorrowedField<'a>>,
+    vectors: BTreeMap<&'a str, BorrowedVector<'a>>,
+}
+
+impl<'a> BorrowedDoc<'a> {
+    fn from_doc(doc: &'a crate::doc::Doc) -> Self {
+        Self {
+            pk: doc.get_pk(),
+            score: doc.get_score(),
+            internal_id: doc.doc_id(),
+            fields: doc
+                .fields()
+                .iter()
+                .map(|(name, value)| (name.as_str(), BorrowedField::from(value)))
+                .collect(),
+            vectors: doc
+                .vectors()
+                .iter()
+                .map(|(name, value)| (name.as_str(), BorrowedVector::from(value)))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+enum BorrowedField<'a> {
+    Null,
+    Binary(&'a [u8]),
+    String(&'a str),
+    Bool(bool),
+    Int32(i32),
+    Int64(i64),
+    Uint32(u32),
+    Uint64(u64),
+    Float(f32),
+    Double(f64),
+    ArrayBinary(&'a [Vec<u8>]),
+    ArrayString(&'a [String]),
+    ArrayBool(&'a [bool]),
+    ArrayInt32(&'a [i32]),
+    ArrayInt64(&'a [i64]),
+    ArrayUint32(&'a [u32]),
+    ArrayUint64(&'a [u64]),
+    ArrayFloat(&'a [f32]),
+    ArrayDouble(&'a [f64]),
+    Json(&'a Value),
+}
+
+impl<'a> From<&'a FieldValue> for BorrowedField<'a> {
+    fn from(value: &'a FieldValue) -> Self {
+        match value {
+            FieldValue::Null => Self::Null,
+            FieldValue::Binary(value) => Self::Binary(value),
+            FieldValue::String(value) => Self::String(value),
+            FieldValue::Bool(value) => Self::Bool(*value),
+            FieldValue::Int32(value) => Self::Int32(*value),
+            FieldValue::Int64(value) => Self::Int64(*value),
+            FieldValue::Uint32(value) => Self::Uint32(*value),
+            FieldValue::Uint64(value) => Self::Uint64(*value),
+            FieldValue::Float(value) => Self::Float(*value),
+            FieldValue::Double(value) => Self::Double(*value),
+            FieldValue::ArrayBinary(value) => Self::ArrayBinary(value),
+            FieldValue::ArrayString(value) => Self::ArrayString(value),
+            FieldValue::ArrayBool(value) => Self::ArrayBool(value),
+            FieldValue::ArrayInt32(value) => Self::ArrayInt32(value),
+            FieldValue::ArrayInt64(value) => Self::ArrayInt64(value),
+            FieldValue::ArrayUint32(value) => Self::ArrayUint32(value),
+            FieldValue::ArrayUint64(value) => Self::ArrayUint64(value),
+            FieldValue::ArrayFloat(value) => Self::ArrayFloat(value),
+            FieldValue::ArrayDouble(value) => Self::ArrayDouble(value),
+            FieldValue::Json(value) => Self::Json(value),
+        }
+    }
+}
+
+#[derive(Serialize)]
+enum BorrowedVector<'a> {
+    Binary32(&'a [u8]),
+    Binary64(&'a [u8]),
+    Fp16(&'a [u16]),
+    Fp32(&'a [f32]),
+    Fp64(&'a [f64]),
+    Int4(&'a [i8]),
+    Int8(&'a [i8]),
+    Int16(&'a [i16]),
+    SparseFp16 {
+        indices: &'a [u32],
+        values: &'a [u16],
+    },
+    SparseFp32 {
+        indices: &'a [u32],
+        values: &'a [f32],
+    },
+}
+
+impl<'a> From<&'a VectorValue> for BorrowedVector<'a> {
+    fn from(value: &'a VectorValue) -> Self {
+        match value {
+            VectorValue::Binary32(value) => Self::Binary32(value),
+            VectorValue::Binary64(value) => Self::Binary64(value),
+            VectorValue::Fp16(value) => Self::Fp16(value),
+            VectorValue::Fp32(value) => Self::Fp32(value),
+            VectorValue::Fp64(value) => Self::Fp64(value),
+            VectorValue::Int4(value) => Self::Int4(value),
+            VectorValue::Int8(value) => Self::Int8(value),
+            VectorValue::Int16(value) => Self::Int16(value),
+            VectorValue::SparseFp16 { indices, values } => Self::SparseFp16 { indices, values },
+            VectorValue::SparseFp32 { indices, values } => Self::SparseFp32 { indices, values },
+        }
+    }
+}
+
 impl BinarySnapshot {
+    #[cfg(test)]
     pub(super) fn new(
         format_version: u32,
         generation: u64,
         revision: u64,
         schema: &CollectionSchema,
-        docs: &[Doc],
+        docs: &(impl super::SnapshotDocs + ?Sized),
     ) -> Self {
+        let mut encoded = Vec::with_capacity(docs.len());
+        docs.for_each(&mut |doc| encoded.push(BinaryDoc::from(doc)));
         Self {
             format_version,
             generation,
             revision,
             schema: schema.clone(),
-            docs: docs.iter().map(BinaryDoc::from).collect(),
+            docs: encoded,
         }
     }
 
@@ -278,6 +426,42 @@ impl From<&VectorValue> for BinaryVectorValue {
                 values: values.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::{encode_binary_snapshot, BinarySnapshot};
+    use crate::doc::Doc;
+    use crate::schema::{CollectionSchema, FieldSchema};
+    use crate::types::DataType;
+
+    #[test]
+    fn borrowed_encoder_matches_owned_snapshot_bytes() {
+        let schema = CollectionSchema::builder("snapshot-bytes")
+            .add_field(FieldSchema::new("body", DataType::String, true, 0).expect("body field"))
+            .add_field(
+                FieldSchema::new("embedding", DataType::VectorFp32, false, 4)
+                    .expect("vector field"),
+            )
+            .build()
+            .expect("schema");
+        let mut with_field = Doc::with_pk("doc-a").expect("pk");
+        with_field.add_string("body", "red").expect("field");
+        with_field
+            .add_vector_f32("embedding", &[1.0, -2.0, 0.5, 4.0])
+            .expect("vector");
+        let mut vector_only = Doc::with_pk("doc-b").expect("pk");
+        vector_only
+            .add_vector_f32("embedding", &[0.0, 1.0, 0.0, 0.0])
+            .expect("vector");
+        let docs = [with_field, vector_only];
+        let owned = rmp_serde::to_vec(&BinarySnapshot::new(4, 7, 9, &schema, &docs))
+            .expect("owned snapshot");
+        let borrowed = encode_binary_snapshot(4, 7, 9, &schema, &docs).expect("borrowed snapshot");
+        assert_eq!(borrowed, owned);
+        assert_eq!(borrowed.first().copied(), Some(0x95));
+        assert_eq!(borrowed.get(1).copied(), Some(0x04));
     }
 }
 

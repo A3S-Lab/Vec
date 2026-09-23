@@ -130,14 +130,38 @@ impl Tokenizer {
             tokenize_ngram(text, config)
         } else if let Some(max_token_length) = self.standard_max_token_length {
             tokenize_standard(text, max_token_length)
+        } else if self.name == "whitespace" {
+            text.split_whitespace()
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+                .collect()
         } else {
-            zvec_core::engine::fts::tokenize_with(text, &self.name)
+            tokenize_jieba(text)
         };
         for filter in &self.filters {
             tokens = filter.apply(tokens);
         }
         tokens
     }
+}
+
+#[cfg(feature = "jieba")]
+fn tokenize_jieba(text: &str) -> Vec<String> {
+    use std::sync::OnceLock;
+    static JIEBA: OnceLock<jieba_rs::Jieba> = OnceLock::new();
+    JIEBA
+        .get_or_init(jieba_rs::Jieba::new)
+        .cut(text, false)
+        .into_iter()
+        .filter(|token| !token.trim().is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+#[cfg(not(feature = "jieba"))]
+fn tokenize_jieba(_text: &str) -> Vec<String> {
+    // Schema construction rejects a jieba tokenizer when the feature is off.
+    Vec::new()
 }
 
 fn tokenizer_name(index_params: Option<&IndexParams>) -> Result<&str> {

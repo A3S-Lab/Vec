@@ -156,25 +156,6 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-impl From<zvec_core::error::ZvecError> for Error {
-    fn from(value: zvec_core::error::ZvecError) -> Self {
-        use zvec_core::error::ZvecError;
-        let (code, message) = match value {
-            ZvecError::NotFound(message) => (ErrorCode::NotFound, message),
-            ZvecError::AlreadyExists(message) => (ErrorCode::AlreadyExists, message),
-            ZvecError::InvalidArgument(message) => (ErrorCode::InvalidArgument, message),
-            ZvecError::PermissionDenied(message) => (ErrorCode::PermissionDenied, message),
-            ZvecError::FailedPrecondition(message) => (ErrorCode::FailedPrecondition, message),
-            ZvecError::ResourceExhausted(message) => (ErrorCode::ResourceExhausted, message),
-            ZvecError::Unavailable(message) => (ErrorCode::Unavailable, message),
-            ZvecError::Internal(message) => (ErrorCode::InternalError, message),
-            ZvecError::NotSupported(message) => (ErrorCode::NotSupported, message),
-            ZvecError::Unknown(message) => (ErrorCode::Unknown, message),
-        };
-        Self::new(code, message)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,43 +218,6 @@ mod tests {
             .into();
         assert_eq!(err.code, ErrorCode::InternalError);
         assert!(err.message.contains("JSON"));
-    }
-
-    #[test]
-    fn zvec_errors_map_to_stable_codes() {
-        use zvec_core::error::ZvecError;
-        let cases = [
-            (ZvecError::NotFound("a".into()), ErrorCode::NotFound),
-            (
-                ZvecError::AlreadyExists("b".into()),
-                ErrorCode::AlreadyExists,
-            ),
-            (
-                ZvecError::InvalidArgument("c".into()),
-                ErrorCode::InvalidArgument,
-            ),
-            (
-                ZvecError::PermissionDenied("d".into()),
-                ErrorCode::PermissionDenied,
-            ),
-            (
-                ZvecError::FailedPrecondition("e".into()),
-                ErrorCode::FailedPrecondition,
-            ),
-            (
-                ZvecError::ResourceExhausted("f".into()),
-                ErrorCode::ResourceExhausted,
-            ),
-            (ZvecError::Unavailable("g".into()), ErrorCode::Unavailable),
-            (ZvecError::Internal("h".into()), ErrorCode::InternalError),
-            (ZvecError::NotSupported("i".into()), ErrorCode::NotSupported),
-            (ZvecError::Unknown("j".into()), ErrorCode::Unknown),
-        ];
-        for (source, code) in cases {
-            let mapped: Error = source.into();
-            assert_eq!(mapped.code, code);
-            assert!(!mapped.message.is_empty());
-        }
     }
 
     #[test]

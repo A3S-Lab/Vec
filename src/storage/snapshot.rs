@@ -6,7 +6,7 @@ use super::fault::{FaultInjector, FaultPoint};
 use super::manifest::{
     atomic_write_with_faults, checksum, sync_directory, AtomicWriteKind, Manifest,
 };
-use crate::doc::Doc;
+use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, Result};
 use crate::schema::CollectionSchema;
 use codec::{BinarySnapshot, DeltaSnapshot};
@@ -15,6 +15,58 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+
+/// A document set snapshot encoding can walk without owning a second body.
+pub(crate) trait SnapshotDocs {
+    fn len(&self) -> usize;
+    fn for_each<'a>(&'a self, visit: &mut dyn FnMut(&'a Doc));
+}
+
+impl SnapshotDocs for [Doc] {
+    fn len(&self) -> usize {
+        <[Doc]>::len(self)
+    }
+
+    fn for_each<'a>(&'a self, visit: &mut dyn FnMut(&'a Doc)) {
+        for doc in self {
+            visit(doc);
+        }
+    }
+}
+
+impl<const N: usize> SnapshotDocs for [Doc; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn for_each<'a>(&'a self, visit: &mut dyn FnMut(&'a Doc)) {
+        for doc in self {
+            visit(doc);
+        }
+    }
+}
+
+impl SnapshotDocs for Vec<Doc> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn for_each<'a>(&'a self, visit: &mut dyn FnMut(&'a Doc)) {
+        self.as_slice().for_each(visit);
+    }
+}
+
+impl SnapshotDocs for DocumentMap {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn for_each<'a>(&'a self, visit: &mut dyn FnMut(&'a Doc)) {
+        for doc in self.values() {
+            visit(doc.as_ref());
+        }
+    }
+}
 
 const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 3;
 const SNAPSHOT_FORMAT_VERSION: u32 = 4;
@@ -57,7 +109,7 @@ pub fn write(
 pub(super) fn write_with_faults(
     root: &Path,
     schema: &CollectionSchema,
-    docs: &[Doc],
+    docs: &(impl SnapshotDocs + ?Sized),
     generation: u64,
     revision: u64,
     sync: bool,
@@ -69,9 +121,9 @@ pub(super) fn write_with_faults(
             "snapshot generation must be positive",
         ));
     }
-    let snapshot = BinarySnapshot::new(SNAPSHOT_FORMAT_VERSION, generation, revision, schema, docs);
-    let bytes = rmp_serde::to_vec(&snapshot)
-        .map_err(|error| Error::internal(format!("serialize document snapshot: {error}")))?;
+    let bytes =
+        codec::encode_binary_snapshot(SNAPSHOT_FORMAT_VERSION, generation, revision, schema, docs)
+            .map_err(|error| Error::internal(format!("serialize document snapshot: {error}")))?;
     write_bytes(
         root,
         &binary_relative_path(generation),
@@ -91,7 +143,7 @@ pub(super) fn write_with_faults(
 pub(super) fn write_delta_with_faults(
     root: &Path,
     schema: &CollectionSchema,
-    docs: &[Doc],
+    docs: &(impl SnapshotDocs + ?Sized),
     previous: &[Doc],
     generation: u64,
     revision: u64,
@@ -129,7 +181,7 @@ pub(super) fn write_delta_with_faults(
     )
 }
 
-pub(super) fn documents_unchanged(previous: &[Doc], next: &[Doc]) -> bool {
+pub(super) fn documents_unchanged(previous: &[Doc], next: &(impl SnapshotDocs + ?Sized)) -> bool {
     if previous.len() != next.len() {
         return false;
     }
@@ -137,7 +189,10 @@ pub(super) fn documents_unchanged(previous: &[Doc], next: &[Doc]) -> bool {
     removed.is_empty() && upserted.is_empty()
 }
 
-fn document_delta(previous: &[Doc], next: &[Doc]) -> (Vec<String>, Vec<Doc>) {
+fn document_delta(
+    previous: &[Doc],
+    next: &(impl SnapshotDocs + ?Sized),
+) -> (Vec<String>, Vec<Doc>) {
     let mut previous_by_pk = BTreeMap::<&str, &Doc>::new();
     for doc in previous {
         if let Some(pk) = doc.get_pk() {
@@ -145,11 +200,11 @@ fn document_delta(previous: &[Doc], next: &[Doc]) -> (Vec<String>, Vec<Doc>) {
         }
     }
     let mut next_by_pk = BTreeMap::<&str, &Doc>::new();
-    for doc in next {
+    next.for_each(&mut |doc| {
         if let Some(pk) = doc.get_pk() {
             next_by_pk.insert(pk, doc);
         }
-    }
+    });
     let mut removed = Vec::new();
     for pk in previous_by_pk.keys() {
         if !next_by_pk.contains_key(pk) {

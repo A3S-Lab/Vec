@@ -2,7 +2,10 @@
 
 mod search;
 
-use self::search::{greedy_search_by, prefetch_f32_at, search_layer_by, search_layer_filtered_by};
+use self::search::{
+    greedy_search_by, prefetch_f32_at, search_layer_by, search_layer_filtered_by,
+    serial_neighbor_batch,
+};
 use super::ordinal_map::OrdinalMap;
 use super::ordinals::OrdinalTable;
 use super::quantization::{
@@ -11,6 +14,7 @@ use super::quantization::{
 };
 use crate::types::MetricType;
 use roaring::RoaringTreemap;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -129,8 +133,28 @@ impl HnswIndex {
     /// `parallel_scores` scores one neighbor list concurrently. Candidates are
     /// still admitted in neighbor-list order with the same `f64` scores, so
     /// the published graph matches the serial insertion.
-    #[allow(clippy::too_many_lines)]
     fn build_with(
+        vectors: &OrdinalMap<QuantizedVector>,
+        ordinals: &OrdinalTable,
+        m: usize,
+        ef_construction: usize,
+        metric: MetricType,
+        cache_scores: bool,
+        parallel_scores: bool,
+    ) -> Self {
+        Self::build_timed(
+            vectors,
+            ordinals,
+            m,
+            ef_construction,
+            metric,
+            cache_scores,
+            parallel_scores,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_timed(
         vectors: &OrdinalMap<QuantizedVector>,
         ordinals: &OrdinalTable,
         m: usize,
@@ -146,7 +170,6 @@ impl HnswIndex {
                 default_ef: ef_construction,
             };
         }
-
         let decoded: OrdinalMap<Vec<f32>> = vectors
             .iter()
             .map(|(ordinal, vector)| (ordinal, vector.decode()))
@@ -212,6 +235,77 @@ impl HnswIndex {
                     );
                 }
             };
+            let relative_error =
+                crate::score_f64::f32_cosine_score_error(query.len(), query_norm_f64);
+            let absolute_error = crate::score_f64::f32_dot_absolute_error(query.len());
+            let batch_score = |neighbors: &[u64], out: &mut [Option<f64>], floor: f64| -> bool {
+                if metric != MetricType::Cosine || out.len() != neighbors.len() {
+                    return false;
+                }
+                let Some(packed) = slab.as_ref() else {
+                    return false;
+                };
+                let key_floor = floor * query_norm_f64;
+                let can_reject = query_norm_f64.is_finite()
+                    && query_norm_f64 > 0.0
+                    && floor.is_finite()
+                    && key_floor.is_finite();
+                let mut pending = [0_u64; 8];
+                let mut pending_at = [0_usize; 8];
+                let mut pending_len = 0_usize;
+                for (index, candidate) in neighbors.iter().copied().enumerate() {
+                    if let Some(ahead) = neighbors.get(index + 8).copied() {
+                        prefetch_for(ahead);
+                    }
+                    if can_reject {
+                        let dominated = slab_slice(packed, candidate).is_some_and(|slice| {
+                            cached_cosine_norm(&norms, candidate).is_some_and(|norm| {
+                                cosine_cannot_beat(
+                                    query,
+                                    slice,
+                                    norm,
+                                    relative_error,
+                                    absolute_error,
+                                    key_floor,
+                                )
+                            })
+                        });
+                        if dominated {
+                            out[index] = None;
+                            continue;
+                        }
+                    }
+                    pending[pending_len] = candidate;
+                    pending_at[pending_len] = index;
+                    pending_len += 1;
+                    if pending_len == 8 {
+                        write_exact_group(
+                            query,
+                            packed,
+                            &norms,
+                            query_norm_f64,
+                            &pending,
+                            &pending_at,
+                            out,
+                            &score_for,
+                        );
+                        pending_len = 0;
+                    }
+                }
+                if pending_len > 0 {
+                    write_exact_group(
+                        query,
+                        packed,
+                        &norms,
+                        query_norm_f64,
+                        &pending[..pending_len],
+                        &pending_at[..pending_len],
+                        out,
+                        &score_for,
+                    );
+                }
+                true
+            };
             if maximum_level > level {
                 for layer in ((level + 1)..=maximum_level).rev() {
                     entry = greedy_search_by(
@@ -221,13 +315,14 @@ impl HnswIndex {
                         &score_for,
                         &prefetch_for,
                         parallel_scores,
+                        &batch_score,
                     );
                 }
             }
 
             let connection_top = level.min(maximum_level);
             for layer in (0..=connection_top).rev() {
-                let candidates = search_layer_by(
+                let found = search_layer_by(
                     &graph.layers[layer],
                     &[entry],
                     ef_construction,
@@ -235,22 +330,26 @@ impl HnswIndex {
                     &score_for,
                     &prefetch_for,
                     parallel_scores,
+                    &batch_score,
                 );
                 let degree = if layer == 0 { m.saturating_mul(2) } else { m }.max(1);
-                let neighbors: Vec<u64> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|candidate| *candidate != ordinal)
-                    .take(degree)
-                    .collect();
-                graph.layers[layer].insert(ordinal, neighbors.clone());
-                if let Some(scores) = edge_scores.as_mut() {
-                    scores[layer].insert(
-                        ordinal,
-                        cached_link_scores(&decoded, &norms, ordinal, &neighbors, metric),
-                    );
+                let mut neighbor_ids = Vec::with_capacity(degree);
+                let mut neighbor_scores = Vec::with_capacity(degree);
+                for (candidate, score) in &found {
+                    if *candidate == ordinal {
+                        continue;
+                    }
+                    neighbor_ids.push(*candidate);
+                    neighbor_scores.push(*score);
+                    if neighbor_ids.len() == degree {
+                        break;
+                    }
                 }
-                for neighbor in neighbors {
+                graph.layers[layer].insert(ordinal, neighbor_ids.clone());
+                if let Some(scores) = edge_scores.as_mut() {
+                    scores[layer].insert(ordinal, neighbor_scores.clone());
+                }
+                for (neighbor, score) in neighbor_ids.into_iter().zip(neighbor_scores) {
                     let added =
                         if let Some(edges) = graph.layers[layer].get_or_insert_default(neighbor) {
                             if edges.contains(&ordinal) {
@@ -265,15 +364,7 @@ impl HnswIndex {
                     if added {
                         let edge_len = graph.layers[layer].get(neighbor).map_or(0, Vec::len);
                         if let Some(scores) = edge_scores.as_mut() {
-                            remember_link(
-                                &mut scores[layer],
-                                &decoded,
-                                &norms,
-                                neighbor,
-                                ordinal,
-                                metric,
-                                edge_len,
-                            );
+                            remember_scored_link(&mut scores[layer], neighbor, score, edge_len);
                         }
                     }
                     prune_edges(
@@ -287,7 +378,7 @@ impl HnswIndex {
                         metric,
                     );
                 }
-                if let Some(best) = candidates.first() {
+                if let Some((best, _)) = found.first() {
                     entry = *best;
                 }
             }
@@ -374,6 +465,7 @@ impl HnswIndex {
                 score_for,
                 prefetch_for,
                 parallel,
+                &serial_neighbor_batch,
             );
         }
         search_layer_by(
@@ -384,8 +476,10 @@ impl HnswIndex {
             score_for,
             prefetch_for,
             parallel,
+            &serial_neighbor_batch,
         )
         .into_iter()
+        .map(|(ordinal, _)| ordinal)
         .take(ef)
         .collect()
     }
@@ -477,6 +571,7 @@ impl HnswIndex {
                 score_for,
                 prefetch_for,
                 parallel,
+                &serial_neighbor_batch,
             );
         }
         search_layer_filtered_by(
@@ -489,6 +584,7 @@ impl HnswIndex {
             prefetch_for,
             &|ordinal| filter.allowed.contains(ordinal) && !filter.excluded.contains(ordinal),
             parallel,
+            &serial_neighbor_batch,
         )
         .into_iter()
         .collect()
@@ -606,32 +702,7 @@ fn score_link(
     Some(score)
 }
 
-fn cached_link_scores(
-    vectors: &OrdinalMap<Vec<f32>>,
-    norms: &[f64],
-    node: u64,
-    neighbors: &[u64],
-    metric: MetricType,
-) -> Vec<f64> {
-    let mut values = Vec::with_capacity(neighbors.len());
-    for candidate in neighbors {
-        let Some(score) = score_link(vectors, norms, node, *candidate, metric) else {
-            return Vec::new();
-        };
-        values.push(score);
-    }
-    values
-}
-
-fn remember_link(
-    scores: &mut OrdinalMap<Vec<f64>>,
-    vectors: &OrdinalMap<Vec<f32>>,
-    norms: &[f64],
-    node: u64,
-    neighbor: u64,
-    metric: MetricType,
-    edge_len: usize,
-) {
+fn remember_scored_link(scores: &mut OrdinalMap<Vec<f64>>, node: u64, score: f64, edge_len: usize) {
     let Some(slot) = scores.get_or_insert_default(node) else {
         return;
     };
@@ -639,11 +710,69 @@ fn remember_link(
         slot.clear();
         return;
     }
-    let Some(score) = score_link(vectors, norms, node, neighbor, metric) else {
-        slot.clear();
-        return;
-    };
     slot.push(score);
+}
+
+fn prune_with_cache(
+    layer: &mut OrdinalMap<Vec<u64>>,
+    scores: &mut OrdinalMap<Vec<f64>>,
+    ordinals: &OrdinalTable,
+    node: u64,
+    degree: usize,
+) -> bool {
+    let Some(len) = layer.get(node).map(Vec::len) else {
+        return false;
+    };
+    let Some(score_len) = scores.get(node).map(Vec::len) else {
+        return false;
+    };
+    if len != score_len {
+        return false;
+    }
+    if len == 0 {
+        return true;
+    }
+    if len <= 64 {
+        let Some(neighbors) = layer.get_mut(node) else {
+            return false;
+        };
+        let Some(cached) = scores.get_mut(node) else {
+            return false;
+        };
+        if neighbors.len() != len || cached.len() != len || neighbors.is_empty() {
+            return false;
+        }
+        // The previous prune left `..len-1` sorted. One appended edge only
+        // has to move into that order, which is the same sequence as a full sort.
+        let mut index = neighbors.len() - 1;
+        while index > 0
+            && link_cmp(
+                neighbors[index],
+                cached[index],
+                neighbors[index - 1],
+                cached[index - 1],
+                ordinals,
+            ) == Ordering::Less
+        {
+            neighbors.swap(index, index - 1);
+            cached.swap(index, index - 1);
+            index -= 1;
+        }
+        if neighbors.len() > degree {
+            neighbors.truncate(degree);
+            cached.truncate(degree);
+        }
+        return true;
+    }
+    let Some(mut paired) = paired_cache(layer, scores, node) else {
+        return false;
+    };
+    sort_scored(&mut paired, ordinals);
+    paired.truncate(degree);
+    let (ids, values): (Vec<u64>, Vec<f64>) = paired.into_iter().unzip();
+    layer.insert(node, ids);
+    scores.insert(node, values);
+    true
 }
 
 fn paired_cache(
@@ -679,13 +808,8 @@ fn prune_edges(
     if vectors.get(node).is_none() {
         return;
     }
-    if let Some(score_map) = scores.as_mut() {
-        if let Some(mut paired) = paired_cache(layer, score_map, node) {
-            sort_scored(&mut paired, ordinals);
-            paired.truncate(degree);
-            let (ids, values): (Vec<u64>, Vec<f64>) = paired.into_iter().unzip();
-            layer.insert(node, ids);
-            score_map.insert(node, values);
+    if let Some(score_map) = scores.as_deref_mut() {
+        if prune_with_cache(layer, score_map, ordinals, node, degree) {
             return;
         }
     }
@@ -740,6 +864,149 @@ fn pack_decoded(decoded: &OrdinalMap<Vec<f32>>) -> Option<DecodedSlab> {
     Some(DecodedSlab { dimension, values })
 }
 
+/// `true` when the exact cosine is strictly below `key_floor` on the
+/// `dot / ||candidate||` scale. Ties stay on the exact path.
+fn cosine_cannot_beat(
+    query: &[f32],
+    candidate: &[f32],
+    candidate_norm: f64,
+    relative_error: f64,
+    absolute_error: f64,
+    key_floor: f64,
+) -> bool {
+    if candidate.len() != query.len() || !candidate_norm.is_finite() || candidate_norm <= 0.0 {
+        return false;
+    }
+    let approximate =
+        f64::from(crate::score_f64::dot_f32_approx(query, candidate)) / candidate_norm;
+    if !approximate.is_finite() {
+        return false;
+    }
+    let allowance = relative_error + absolute_error / candidate_norm;
+    approximate + allowance < key_floor
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_exact_group(
+    query: &[f32],
+    slab: &DecodedSlab,
+    norms: &[f64],
+    query_norm: f64,
+    ordinals: &[u64],
+    slots: &[usize],
+    out: &mut [Option<f64>],
+    score_for: &impl Fn(u64) -> Option<f64>,
+) {
+    let mut offset = 0;
+    if ordinals.len() == 8 && slots.len() == 8 {
+        if let Some(chunk) = cosine_chunk8(query, slab, norms, query_norm, ordinals) {
+            for (slot, score) in slots.iter().copied().zip(chunk) {
+                if let Some(destination) = out.get_mut(slot) {
+                    *destination = score;
+                }
+            }
+            return;
+        }
+    }
+    while offset + 4 <= ordinals.len() && offset + 4 <= slots.len() {
+        if let Some(chunk) = cosine_chunk4(
+            query,
+            slab,
+            norms,
+            query_norm,
+            &ordinals[offset..offset + 4],
+        ) {
+            for (slot, score) in slots[offset..offset + 4].iter().copied().zip(chunk) {
+                if let Some(destination) = out.get_mut(slot) {
+                    *destination = score;
+                }
+            }
+            offset += 4;
+        } else {
+            break;
+        }
+    }
+    for (slot, candidate) in slots[offset..]
+        .iter()
+        .copied()
+        .zip(ordinals[offset..].iter().copied())
+    {
+        if let Some(destination) = out.get_mut(slot) {
+            *destination = score_for(candidate);
+        }
+    }
+}
+
+#[inline]
+fn cosine_chunk8(
+    query: &[f32],
+    slab: &DecodedSlab,
+    norms: &[f64],
+    query_norm: f64,
+    ordinals: &[u64],
+) -> Option<[Option<f64>; 8]> {
+    let mut coordinates: [&[f32]; 8] = [&[], &[], &[], &[], &[], &[], &[], &[]];
+    let mut candidate_norms = [0.0_f64; 8];
+    for (index, ordinal) in ordinals.iter().copied().enumerate() {
+        let slice = slab_slice(slab, ordinal)?;
+        if slice.len() != query.len() {
+            return None;
+        }
+        let norm = cached_cosine_norm(norms, ordinal)?;
+        if !norm.is_finite() || norm <= 0.0 {
+            return None;
+        }
+        coordinates[index] = slice;
+        candidate_norms[index] = norm;
+    }
+    let dots = crate::score_f64::dot_f32_x8(query, coordinates);
+    let mut scores = [None; 8];
+    for index in 0..8 {
+        let score = if query_norm == 0.0 {
+            0.0
+        } else {
+            dots[index] / (query_norm * candidate_norms[index])
+        };
+        scores[index] = Some(score);
+    }
+    Some(scores)
+}
+
+#[inline]
+fn cosine_chunk4(
+    query: &[f32],
+    slab: &DecodedSlab,
+    norms: &[f64],
+    query_norm: f64,
+    ordinals: &[u64],
+) -> Option<[Option<f64>; 4]> {
+    let mut coordinates: [&[f32]; 4] = [&[], &[], &[], &[]];
+    let mut candidate_norms = [0.0_f64; 4];
+    for (index, ordinal) in ordinals.iter().copied().enumerate() {
+        let slice = slab_slice(slab, ordinal)?;
+        if slice.len() != query.len() {
+            return None;
+        }
+        let norm = cached_cosine_norm(norms, ordinal)?;
+        if !norm.is_finite() || norm <= 0.0 {
+            return None;
+        }
+        coordinates[index] = slice;
+        candidate_norms[index] = norm;
+    }
+    let dots = crate::score_f64::dot_f32_x4(query, coordinates);
+    let mut scores = [None; 4];
+    for index in 0..4 {
+        let score = if query_norm == 0.0 {
+            0.0
+        } else {
+            dots[index] / (query_norm * candidate_norms[index])
+        };
+        scores[index] = Some(score);
+    }
+    Some(scores)
+}
+
 fn slab_slice(slab: &DecodedSlab, ordinal: u64) -> Option<&[f32]> {
     let index = usize::try_from(ordinal).ok()?;
     let start = index.checked_mul(slab.dimension)?;
@@ -766,16 +1033,24 @@ fn cached_cosine_norm(norms: &[f64], ordinal: u64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+fn link_cmp(
+    left_id: u64,
+    left_score: f64,
+    right_id: u64,
+    right_score: f64,
+    ordinals: &OrdinalTable,
+) -> Ordering {
+    right_score.total_cmp(&left_score).then_with(|| {
+        ordinals
+            .id(left_id)
+            .unwrap_or_default()
+            .cmp(ordinals.id(right_id).unwrap_or_default())
+            .then_with(|| left_id.cmp(&right_id))
+    })
+}
+
 fn sort_scored(values: &mut [(u64, f64)], ordinals: &OrdinalTable) {
-    values.sort_by(|left, right| {
-        right.1.total_cmp(&left.1).then_with(|| {
-            ordinals
-                .id(left.0)
-                .unwrap_or_default()
-                .cmp(ordinals.id(right.0).unwrap_or_default())
-                .then_with(|| left.0.cmp(&right.0))
-        })
-    });
+    values.sort_by(|left, right| link_cmp(left.0, left.1, right.0, right.1, ordinals));
 }
 
 /// Stable, fixed-seed level assignment. Capping protects against an
@@ -870,6 +1145,26 @@ mod tests {
             assert_eq!(cached.entry_ordinal, fresh.entry_ordinal);
             assert_eq!(cached.layers, fresh.layers);
         }
+    }
+
+    #[test]
+    fn serial_f64_neighbor_fingerprint_stays_put() {
+        let (ordinals, vectors) = varied_fixture(48, 8);
+        let index = HnswIndex::build(&vectors, &ordinals, 8, 24, MetricType::Cosine);
+        let mut fingerprint = 0u64;
+        for layer in &index.layers {
+            for (ordinal, neighbors) in layer.iter() {
+                fingerprint = fingerprint
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(ordinal);
+                for neighbor in neighbors {
+                    fingerprint = fingerprint
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        .wrapping_add(*neighbor);
+                }
+            }
+        }
+        assert_eq!(fingerprint, 15_032_561_765_147_509_337);
     }
 
     #[test]

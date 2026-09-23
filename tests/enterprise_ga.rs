@@ -89,8 +89,10 @@ fn enterprise_ga_one_document_checkpoint_is_smaller_than_a_full_snapshot() {
     let path = collection_path(&temporary);
     let collection = Collection::create(&path, &schema(), None).expect("create");
     let docs: Vec<Doc> = (0..DOCUMENTS).map(|index| document(index, "v1")).collect();
-    let refs: Vec<&Doc> = docs.iter().collect();
-    collection.insert(&refs).expect("insert");
+    let first: Vec<&Doc> = docs[..DOCUMENTS / 2].iter().collect();
+    let second: Vec<&Doc> = docs[DOCUMENTS / 2..].iter().collect();
+    collection.insert(&first).expect("first batch");
+    collection.insert(&second).expect("second batch");
     collection.flush().expect("full checkpoint");
     drop(collection);
 

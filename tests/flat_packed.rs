@@ -411,9 +411,9 @@ fn dense_flat_mutations_then_rebuild_match_oracle() {
     assert_matches_oracle(&hits, &ranked_oracle(&ordered, &query, 3));
 }
 
-/// Zero-norm Cosine query returns empty without NaN scores (F-P0-6).
+/// Zero-norm Cosine stays finite and keeps primary-key top-k (F-P0-6).
 #[test]
-fn dense_flat_zero_norm_query_returns_empty() {
+fn dense_flat_zero_norm_query_matches_oracle_topk() {
     let temporary = tempdir().expect("tempdir");
     let path = temporary
         .path()
@@ -422,13 +422,29 @@ fn dense_flat_zero_norm_query_returns_empty() {
         .expect("utf8")
         .to_string();
     let collection = open_flat(&path, 2);
-    let doc = dense_doc("a", &[1.0, 0.0]);
-    collection.insert(&[&doc]).expect("insert");
-    collection.optimize().expect("optimize");
-    let hits = collection
-        .query(&SearchQuery::new("embedding", &[0.0, 0.0], 5).expect("query"))
-        .expect("zero-norm query");
-    assert!(hits.is_empty());
+    // Insert order is not primary-key order, and top-k is smaller than the corpus.
+    let corpus = vec![
+        ("c".to_string(), vec![0.0_f32, 1.0]),
+        ("a".to_string(), vec![1.0, 0.0]),
+        ("b".to_string(), vec![0.0, 1.0]),
+    ];
+    for (id, vector) in &corpus {
+        let doc = dense_doc(id, vector);
+        collection.insert(&[&doc]).expect("insert");
+    }
+    let query = [0.0_f32, 0.0];
+    let expected = ranked_oracle(&corpus, &query, 2);
+    let before = collection
+        .query(&SearchQuery::new("embedding", &query, 2).expect("query"))
+        .expect("query before pack");
+    assert_matches_oracle(&before, &expected);
+    assert!(before.iter().all(|hit| hit.get_score().is_finite()));
+    collection.optimize().expect("pack Flat");
+    let after = collection
+        .query(&SearchQuery::new("embedding", &query, 2).expect("query"))
+        .expect("query after pack");
+    assert_matches_oracle(&after, &expected);
+    assert!(after.iter().all(|hit| hit.get_score().is_finite()));
 }
 
 /// Sparse live set (delete without rebuild) still matches the oracle.

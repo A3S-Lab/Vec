@@ -25,6 +25,14 @@ const PREFETCH_AHEAD: usize = 4;
 /// lead time the prefetch is there to provide.
 #[allow(clippy::inline_always)]
 #[inline(always)]
+pub(super) fn serial_neighbor_batch(
+    _neighbors: &[u64],
+    _out: &mut [Option<f64>],
+    _floor: f64,
+) -> bool {
+    false
+}
+
 pub(super) fn prefetch_f32_at(values: &[f32], index: usize) {
     if index >= values.len() {
         return;
@@ -134,7 +142,20 @@ fn recycle_visited_words(bits: Vec<u64>) {
 struct ScoredNode<'a> {
     ordinal: u64,
     score: f64,
+    /// Integer image of `f64::total_cmp` for `score`. Heap order stays the
+    /// same as comparing the original values, without calling `total_cmp`
+    /// on every sift.
+    rank: u64,
     ordinals: &'a OrdinalTable,
+}
+
+fn total_rank(score: f64) -> u64 {
+    let bits = score.to_bits();
+    if bits & (1_u64 << 63) == 0 {
+        bits | (1_u64 << 63)
+    } else {
+        !bits
+    }
 }
 
 impl PartialEq for ScoredNode<'_> {
@@ -153,8 +174,8 @@ impl PartialOrd for ScoredNode<'_> {
 
 impl Ord for ScoredNode<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .total_cmp(&other.score)
+        self.rank
+            .cmp(&other.rank)
             // Resolve primary keys only for exact score ties. The old eager
             // lookup paid for a persistent reverse-map access on every heap
             // comparison, even when scores were distinct.
@@ -169,10 +190,12 @@ impl Ord for ScoredNode<'_> {
     }
 }
 
+#[inline]
 fn scored_node(ordinal: u64, score: f64, ordinals: &OrdinalTable) -> ScoredNode<'_> {
     ScoredNode {
         ordinal,
         score,
+        rank: total_rank(score),
         ordinals,
     }
 }
@@ -184,6 +207,7 @@ pub(super) fn greedy_search_by(
     score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
     parallel: bool,
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
 ) -> u64 {
     let mut current = entry;
     let mut current_score = score_for(entry).unwrap_or(f64::NEG_INFINITY);
@@ -195,6 +219,8 @@ pub(super) fn greedy_search_by(
             parallel,
             score_for,
             prefetch_for,
+            batch_score,
+            f64::NEG_INFINITY,
             |neighbor, score| {
                 let Some(score) = score else {
                     return;
@@ -213,6 +239,7 @@ pub(super) fn greedy_search_by(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn search_layer_by(
     layer: &OrdinalMap<Vec<u64>>,
     entries: &[u64],
@@ -221,7 +248,8 @@ pub(super) fn search_layer_by(
     score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
     parallel: bool,
-) -> Vec<u64> {
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
+) -> Vec<(u64, f64)> {
     bounded_graph_search(
         layer,
         entries,
@@ -230,6 +258,7 @@ pub(super) fn search_layer_by(
         score_for,
         prefetch_for,
         parallel,
+        batch_score,
     )
 }
 
@@ -244,6 +273,7 @@ pub(super) fn search_layer_filtered_by(
     prefetch_for: &impl Fn(u64),
     is_allowed: &impl Fn(u64) -> bool,
     parallel: bool,
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
 ) -> Vec<u64> {
     bounded_filtered_graph_search(
         layer,
@@ -255,9 +285,11 @@ pub(super) fn search_layer_filtered_by(
         prefetch_for,
         is_allowed,
         parallel,
+        batch_score,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bounded_graph_search(
     layer: &OrdinalMap<Vec<u64>>,
     entries: &[u64],
@@ -266,7 +298,8 @@ fn bounded_graph_search(
     score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
     parallel: bool,
-) -> Vec<u64> {
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
+) -> Vec<(u64, f64)> {
     let ef = ef.max(1);
     let expansion_limit = ef.saturating_mul(8).max(entries.len());
     let mut visited = VisitedSet::new(layer.slot_count(), expansion_limit.min(layer.len()));
@@ -293,19 +326,19 @@ fn bounded_graph_search(
             break;
         }
         expanded += 1;
-        for_each_scored_neighbor(
+        // A repeated neighbor is discarded after its first score, so the
+        // distance is not part of the candidate set. Record it before scoring.
+        let floor = result_floor(&best, ef);
+        expand_unvisited(
             layer,
             current.ordinal,
+            &mut visited,
             parallel,
             score_for,
             prefetch_for,
+            batch_score,
+            floor,
             |neighbor, candidate_score| {
-                if !visited.insert(neighbor) {
-                    return;
-                }
-                let Some(candidate_score) = candidate_score else {
-                    return;
-                };
                 consider_candidate(
                     &mut frontier,
                     &mut best,
@@ -316,7 +349,7 @@ fn bounded_graph_search(
             },
         );
     }
-    ordered_ordinals(best)
+    ordered_scored(best)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -330,6 +363,7 @@ fn bounded_filtered_graph_search(
     prefetch_for: &impl Fn(u64),
     is_allowed: impl Fn(u64) -> bool,
     parallel: bool,
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
 ) -> Vec<u64> {
     let result_limit = result_limit.max(1);
     let traversal_limit = traversal_limit.max(result_limit);
@@ -362,25 +396,23 @@ fn bounded_filtered_graph_search(
             break;
         }
         expanded += 1;
-        for_each_scored_neighbor(
+        let allowed = &is_allowed;
+        expand_unvisited(
             layer,
             current.ordinal,
+            &mut visited,
             parallel,
             score_for,
             prefetch_for,
+            batch_score,
+            f64::NEG_INFINITY,
             |neighbor, candidate_score| {
-                if !visited.insert(neighbor) {
-                    return;
-                }
-                let Some(candidate_score) = candidate_score else {
-                    return;
-                };
                 consider_candidate(
                     &mut frontier,
                     &mut best,
                     scored_node(neighbor, candidate_score, ordinals),
                     result_limit,
-                    is_allowed(neighbor),
+                    allowed(neighbor),
                 );
             },
         );
@@ -404,7 +436,13 @@ fn neighbor_scores(
     for neighbor in neighbors.iter().copied().take(primed) {
         prefetch_for(neighbor);
     }
-    let parallel = parallel && neighbors.len() >= 2 && rayon::current_thread_index().is_none();
+    // One worker cannot overlap these distance calls. A `par_iter` on that
+    // pool only pays scheduling, and the ordered zip below already publishes
+    // the same neighbor set as the serial loop.
+    let parallel = parallel
+        && neighbors.len() >= 2
+        && rayon::current_num_threads() > 1
+        && rayon::current_thread_index().is_none();
     if parallel {
         for neighbor in neighbors.iter().copied().skip(primed) {
             prefetch_for(neighbor);
@@ -425,23 +463,128 @@ fn neighbor_scores(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn for_each_scored_neighbor(
     layer: &OrdinalMap<Vec<u64>>,
     ordinal: u64,
     parallel: bool,
     score_for: &(impl Fn(u64) -> Option<f64> + Sync),
     prefetch_for: &impl Fn(u64),
-    mut visit: impl FnMut(u64, Option<f64>),
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
+    floor: f64,
+    visit: impl FnMut(u64, Option<f64>),
 ) {
     let Some(neighbors) = layer.get(ordinal) else {
         return;
     };
+    score_admitted(
+        neighbors,
+        parallel,
+        score_for,
+        prefetch_for,
+        batch_score,
+        floor,
+        visit,
+    );
+}
+
+/// Scores neighbors the first time they are reached.
+///
+/// `visited.insert` records the neighbor before the distance call. A later
+/// copy of that neighbor has no path into the result heap, so skipping its
+/// distance leaves the admitted `(ordinal, score)` pairs unchanged.
+#[allow(clippy::too_many_arguments)]
+fn expand_unvisited(
+    layer: &OrdinalMap<Vec<u64>>,
+    ordinal: u64,
+    visited: &mut VisitedSet,
+    parallel: bool,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
+    prefetch_for: &impl Fn(u64),
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
+    floor: f64,
+    mut visit: impl FnMut(u64, f64),
+) {
+    let mut stacked = [0_u64; 64];
+    let mut stacked_len = 0_usize;
+    let mut spilled: Option<Vec<u64>> = None;
+    {
+        let Some(neighbors) = layer.get(ordinal) else {
+            return;
+        };
+        if neighbors.len() <= stacked.len() {
+            for neighbor in neighbors {
+                if visited.insert(*neighbor) {
+                    stacked[stacked_len] = *neighbor;
+                    stacked_len += 1;
+                }
+            }
+        } else {
+            let mut ids = Vec::with_capacity(neighbors.len());
+            for neighbor in neighbors {
+                if visited.insert(*neighbor) {
+                    ids.push(*neighbor);
+                }
+            }
+            spilled = Some(ids);
+        }
+    }
+    let admitted: &[u64] = match spilled.as_deref() {
+        Some(ids) => ids,
+        None => &stacked[..stacked_len],
+    };
+    if admitted.is_empty() {
+        return;
+    }
+    score_admitted(
+        admitted,
+        parallel,
+        score_for,
+        prefetch_for,
+        batch_score,
+        floor,
+        |neighbor, score| {
+            if let Some(score) = score {
+                visit(neighbor, score);
+            }
+        },
+    );
+}
+
+fn result_floor(best: &BinaryHeap<Reverse<ScoredNode<'_>>>, limit: usize) -> f64 {
+    if best.len() >= limit {
+        best.peek()
+            .map_or(f64::NEG_INFINITY, |Reverse(node)| node.score)
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+fn score_admitted(
+    neighbors: &[u64],
+    parallel: bool,
+    score_for: &(impl Fn(u64) -> Option<f64> + Sync),
+    prefetch_for: &impl Fn(u64),
+    batch_score: &impl Fn(&[u64], &mut [Option<f64>], f64) -> bool,
+    floor: f64,
+    mut visit: impl FnMut(u64, Option<f64>),
+) {
+    if neighbors.len() <= 64 {
+        let mut stacked = [None; 64];
+        if batch_score(neighbors, &mut stacked[..neighbors.len()], floor) {
+            for (neighbor, score) in neighbors.iter().copied().zip(stacked) {
+                visit(neighbor, score);
+            }
+            return;
+        }
+    }
     let scores = neighbor_scores(neighbors, parallel, score_for, prefetch_for);
     for (neighbor, score) in neighbors.iter().copied().zip(scores) {
         visit(neighbor, score);
     }
 }
 
+#[inline]
 fn consider_candidate<'a>(
     frontier: &mut BinaryHeap<ScoredNode<'a>>,
     best: &mut BinaryHeap<Reverse<ScoredNode<'a>>>,
@@ -474,10 +617,20 @@ fn retain_best<'a>(
     }
 }
 
-fn ordered_ordinals(best: BinaryHeap<Reverse<ScoredNode<'_>>>) -> Vec<u64> {
+fn ordered_scored(best: BinaryHeap<Reverse<ScoredNode<'_>>>) -> Vec<(u64, f64)> {
     let mut nodes: Vec<ScoredNode<'_>> = best.into_iter().map(|Reverse(node)| node).collect();
     nodes.sort_unstable_by(|left, right| right.cmp(left));
-    nodes.into_iter().map(|node| node.ordinal).collect()
+    nodes
+        .into_iter()
+        .map(|node| (node.ordinal, node.score))
+        .collect()
+}
+
+fn ordered_ordinals(best: BinaryHeap<Reverse<ScoredNode<'_>>>) -> Vec<u64> {
+    ordered_scored(best)
+        .into_iter()
+        .map(|(ordinal, _)| ordinal)
+        .collect()
 }
 
 #[cfg(test)]
@@ -487,6 +640,31 @@ mod tests {
     use crate::index::ordinals::OrdinalTable;
     use std::collections::BinaryHeap;
     use std::sync::Arc;
+
+    #[test]
+    fn total_rank_matches_f64_total_cmp() {
+        let values = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::MIN,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            f64::from_bits(0xfff8_0000_0000_0001),
+            1.0e-200,
+            -1.0e-200,
+        ];
+        for left in values {
+            for right in values {
+                let order = super::total_rank(left).cmp(&super::total_rank(right));
+                assert_eq!(order, left.total_cmp(&right), "{left} vs {right}");
+            }
+        }
+    }
 
     #[test]
     fn heaps_order_scores_then_primary_keys_deterministically() {
@@ -503,21 +681,25 @@ mod tests {
             ScoredNode {
                 ordinal: table.ordinal("doc-b").expect("doc-b ordinal"),
                 score: 1.0,
+                rank: super::total_rank(1.0),
                 ordinals: &table,
             },
             ScoredNode {
                 ordinal: table.ordinal("doc-low").expect("doc-low ordinal"),
                 score: 0.0,
+                rank: super::total_rank(0.0),
                 ordinals: &table,
             },
             ScoredNode {
                 ordinal: table.ordinal("doc-a").expect("doc-a ordinal"),
                 score: 1.0,
+                rank: super::total_rank(1.0),
                 ordinals: &table,
             },
             ScoredNode {
                 ordinal: table.ordinal("doc-high").expect("doc-high ordinal"),
                 score: 2.0,
+                rank: super::total_rank(2.0),
                 ordinals: &table,
             },
         ] {

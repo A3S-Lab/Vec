@@ -8,6 +8,35 @@ use crate::schema::FieldSchema;
 use crate::types::DataType;
 use tempfile::tempdir;
 
+/// Rewrites a just-written version-5 segment as JSON frames at `version`.
+///
+/// The on-disk writer is `MessagePack`. Legacy replay is the JSON payload with
+/// an older header, not the same bytes with the version field edited.
+fn rewrite_segment_as_json(bytes: &[u8], version: u16) -> Vec<u8> {
+    let mut offset = 0usize;
+    let mut rewritten = Vec::with_capacity(bytes.len());
+    while offset < bytes.len() {
+        let len = usize::try_from(u32::from_le_bytes(
+            bytes[offset + 6..offset + 10]
+                .try_into()
+                .expect("WAL length is four bytes"),
+        ))
+        .expect("WAL length fits");
+        let payload_at = offset + 14;
+        let payload = &bytes[payload_at..payload_at + len];
+        let json = wal::legacy_json_from_frame(5, payload).expect("legacy WAL payload is JSON");
+        let crc = crc32fast::hash(&json);
+        rewritten.extend_from_slice(b"A3VW");
+        rewritten.extend_from_slice(&version.to_le_bytes());
+        let json_len = u32::try_from(json.len()).expect("JSON frame fits u32");
+        rewritten.extend_from_slice(&json_len.to_le_bytes());
+        rewritten.extend_from_slice(&crc.to_le_bytes());
+        rewritten.extend_from_slice(&json);
+        offset = payload_at + len;
+    }
+    rewritten
+}
+
 #[test]
 fn legacy_v3_snapshot_reopens_and_upgrades_on_checkpoint() {
     let temporary = tempdir().expect("temporary directory must be available");
@@ -382,17 +411,14 @@ fn legacy_v3_wal_frames_replay_after_wal_format_upgrade() {
         )
         .expect("legacy-compatible schema WAL append must commit");
     let wal_path = wal::segment_path(&root, storage.manifest.wal_active_seq);
+    let bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
+    let legacy = rewrite_segment_as_json(&bytes, 3);
+    std::fs::write(&wal_path, &legacy).expect("legacy WAL frame must be writable");
+    storage.manifest.wal_bytes_since_checkpoint =
+        u64::try_from(legacy.len()).expect("legacy WAL fits u64");
+    manifest::write_with_faults(&root, &storage.manifest, true, &FaultInjector::default())
+        .expect("legacy manifest must record the JSON segment length");
     drop(storage);
-
-    let mut bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
-    // Each frame header stores the version as a little-endian u16 at offset 4.
-    bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
-    let first_payload_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
-    let second_header = 14usize
-        .checked_add(first_payload_len)
-        .expect("test frame offset must fit usize");
-    bytes[second_header + 4..second_header + 6].copy_from_slice(&3_u16.to_le_bytes());
-    std::fs::write(&wal_path, bytes).expect("legacy WAL frame must be writable");
 
     let (recovered, recovered_schema, docs) = StorageHandle::open(
         &root,
@@ -434,11 +460,14 @@ fn legacy_v3_wal_frame_rejects_schema_only_operations() {
         )
         .expect("schema-only WAL append must commit");
     let wal_path = wal::segment_path(&root, storage.manifest.wal_active_seq);
+    let bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
+    let legacy = rewrite_segment_as_json(&bytes, 3);
+    std::fs::write(&wal_path, &legacy).expect("legacy WAL frame must be writable");
+    storage.manifest.wal_bytes_since_checkpoint =
+        u64::try_from(legacy.len()).expect("legacy WAL fits u64");
+    manifest::write_with_faults(&root, &storage.manifest, true, &FaultInjector::default())
+        .expect("legacy manifest must record the JSON segment length");
     drop(storage);
-
-    let mut bytes = std::fs::read(&wal_path).expect("WAL frame must be readable");
-    bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
-    std::fs::write(&wal_path, bytes).expect("legacy WAL frame must be writable");
 
     let error = StorageHandle::open(
         &root,

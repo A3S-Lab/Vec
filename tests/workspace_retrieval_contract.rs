@@ -1,6 +1,6 @@
 //! Engine contract for A3S Code workspace retrieval.
 //!
-//! Code's shipped lexical path uses `zvec-rust` FTS with a whitespace tokenizer
+//! Code's shipped lexical path uses whitespace FTS
 //! and one temporary collection per file partition. Semantic retrieval today
 //! uses `a3s-memory`. The platform target replaces both with `a3s-vec` while
 //! keeping Code as the catalog and authority for chunk identity. This fixture

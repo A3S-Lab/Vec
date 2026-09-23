@@ -27,8 +27,8 @@
 //! degradation and normal WAL checkpoint lag. Native async file reads and
 //! direct file-backed mmap remain explicit future optimizations.
 //!
-//! The external algorithm kernel is an implementation detail and is not part
-//! of the stable A3S API:
+//! Filter parsing, tokenization, and index quantization live in this crate.
+//! They are not part of the stable A3S API:
 //!
 //! ```compile_fail
 //! use a3s_vec::core;
@@ -39,6 +39,7 @@ mod config;
 mod doc;
 mod embedding;
 mod error;
+mod filter;
 mod index;
 mod iterator;
 mod multi_query;

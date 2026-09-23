@@ -3,6 +3,7 @@
 use super::query_contract::{query_metric, validate_query_contract};
 use crate::doc::{Doc, DocumentMap, VectorValue};
 use crate::error::{Error, Result};
+use crate::filter::FilterExpr;
 use crate::index::{CandidateSelection, IndexRegistry, OrdinalScores};
 use crate::query::{FtsDefaultOperator, SearchQuery};
 use crate::schema::{CollectionSchema, IndexParams};
@@ -14,7 +15,6 @@ use crate::types::{DataType, MetricType};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
-use zvec_core::filter::FilterExpr;
 
 struct ScoredDoc {
     exact_score: f64,
@@ -185,14 +185,13 @@ fn sort_scored_docs(docs: &mut [ScoredDoc]) {
     });
 }
 
-pub(super) fn parse_filter_expression(expression: &str) -> Result<zvec_core::filter::FilterExpr> {
+pub(super) fn parse_filter_expression(expression: &str) -> Result<FilterExpr> {
     if expression.trim().is_empty() {
         return Err(Error::invalid_argument(
             "filter expression must not be empty",
         ));
     }
-    zvec_core::filter::parse_filter(expression)
-        .map_err(|error| Error::invalid_argument(error.to_string()))
+    crate::filter::parse_filter(expression)
 }
 
 pub(super) fn parse_optional_filter(expression: Option<&str>) -> Result<Option<FilterExpr>> {
@@ -200,7 +199,7 @@ pub(super) fn parse_optional_filter(expression: Option<&str>) -> Result<Option<F
 }
 
 pub(super) fn matches_filter(doc: &Doc, filter: Option<&FilterExpr>) -> bool {
-    filter.map_or(true, |filter| filter.matches(&doc.to_core()))
+    filter.map_or(true, |filter| filter.matches(doc))
 }
 
 pub(super) fn execute_query_with_candidates(

@@ -1,10 +1,12 @@
 //! Deterministic collection-local resource admission and accounting.
 
-use crate::doc::DocumentMap;
+use crate::doc::{Doc, DocumentMap};
 use crate::error::{Error, Result};
 use crate::index::IndexRegistry;
 use crate::schema::CollectionSchema;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// Collection-local logical resource budgets.
 ///
@@ -154,14 +156,17 @@ impl CollectionResourceLimits {
     ) -> Result<ResourceUsage> {
         let document_count = u64::try_from(docs.len())
             .map_err(|_| Error::resource_exhausted("collection exceeds u64 documents"))?;
+        let usage = ResourceUsage::measure(schema, docs, indexes)?;
+        self.admit(document_count, usage)
+    }
+
+    pub(super) fn admit(self, document_count: u64, usage: ResourceUsage) -> Result<ResourceUsage> {
         if self.documents.is_some_and(|limit| document_count > limit) {
             return Err(Error::resource_exhausted(format!(
                 "collection document count {document_count} exceeds configured limit {}",
                 self.documents.unwrap_or(u64::MAX)
             )));
         }
-
-        let usage = ResourceUsage::measure(schema, docs, indexes)?;
         if self
             .accounted_bytes
             .is_some_and(|limit| usage.total > limit)
@@ -195,24 +200,80 @@ pub(super) struct ResourceUsage {
 
 impl ResourceUsage {
     pub(super) fn measure(
-        schema: &CollectionSchema,
+        _schema: &CollectionSchema,
         docs: &DocumentMap,
         indexes: &IndexRegistry,
     ) -> Result<Self> {
-        let document_bytes = bincode::serialized_size(docs)
-            .map_err(|error| Error::internal(format!("account document bytes: {error}")))?;
-        let estimated_index_bytes = indexes
-            .stats(schema, docs, 0)
-            .into_iter()
-            .filter_map(|index| index.estimated_payload_bytes)
-            .fold(0_u64, u64::saturating_add);
-        let accounted_bytes = document_bytes.saturating_add(estimated_index_bytes);
-        Ok(Self {
-            documents: document_bytes,
-            indexes: estimated_index_bytes,
-            total: accounted_bytes,
-        })
+        Ok(Self::from_parts(
+            document_map_bytes(docs)?,
+            indexes.accounted_payload_bytes(),
+        ))
     }
+
+    /// Updates document accounting from the changed primary keys only.
+    ///
+    /// `bincode` encodes an `OrdMap` as one length prefix plus each key and
+    /// value. The prefix width does not grow with the entry count, so a
+    /// generation can add and remove entry sizes without walking documents
+    /// that this batch did not touch. A drift or overflow falls back to a
+    /// full measurement.
+    pub(super) fn after_documents(
+        &self,
+        previous_docs: &DocumentMap,
+        next_docs: &DocumentMap,
+        changed_ids: &BTreeSet<String>,
+        indexes: &IndexRegistry,
+    ) -> Result<Self> {
+        let mut documents = self.documents;
+        for id in changed_ids {
+            let before = document_entry_bytes(id, previous_docs.get(id))?;
+            let after = document_entry_bytes(id, next_docs.get(id))?;
+            if before > documents {
+                return Ok(Self::from_parts(
+                    document_map_bytes(next_docs)?,
+                    indexes.accounted_payload_bytes(),
+                ));
+            }
+            documents -= before;
+            documents = match documents.checked_add(after) {
+                Some(documents) => documents,
+                None => {
+                    return Ok(Self::from_parts(
+                        document_map_bytes(next_docs)?,
+                        indexes.accounted_payload_bytes(),
+                    ));
+                }
+            };
+        }
+        Ok(Self::from_parts(
+            documents,
+            indexes.accounted_payload_bytes(),
+        ))
+    }
+
+    fn from_parts(documents: u64, indexes: u64) -> Self {
+        Self {
+            documents,
+            indexes,
+            total: documents.saturating_add(indexes),
+        }
+    }
+}
+
+fn document_map_bytes(docs: &DocumentMap) -> Result<u64> {
+    bincode::serialized_size(docs)
+        .map_err(|error| Error::internal(format!("account document bytes: {error}")))
+}
+
+fn document_entry_bytes(id: &str, doc: Option<&Arc<Doc>>) -> Result<u64> {
+    let Some(doc) = doc else {
+        return Ok(0);
+    };
+    let key = bincode::serialized_size(id)
+        .map_err(|error| Error::internal(format!("account document key: {error}")))?;
+    let value = bincode::serialized_size(doc)
+        .map_err(|error| Error::internal(format!("account document value: {error}")))?;
+    Ok(key.saturating_add(value))
 }
 
 #[cfg(test)]
@@ -248,5 +309,49 @@ mod tests {
     fn public_policy_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CollectionResourceLimits>();
+    }
+
+    #[test]
+    fn document_map_bincode_size_is_the_header_plus_entries() {
+        use crate::doc::{Doc, DocumentMap};
+        use std::sync::Arc;
+
+        let mut docs = DocumentMap::new();
+        let mut running = bincode::serialized_size(&docs).expect("empty map size");
+        for index in 0..6 {
+            let mut doc = Doc::with_pk(format!("doc-{index}")).expect("primary key");
+            let coordinate = f32::from(u8::try_from(index).expect("fixture index"));
+            doc.add_vector_f32("embedding", &[coordinate, -1.0, 0.25])
+                .expect("vector");
+            if index % 2 == 0 {
+                doc.add_string("body", "kept").expect("field");
+            }
+            let id = doc.get_pk().expect("pk").to_string();
+            let stored = Arc::new(doc);
+            running += super::document_entry_bytes(&id, Some(&stored)).expect("entry");
+            docs.insert(id, stored);
+            assert_eq!(
+                bincode::serialized_size(&docs).expect("map size"),
+                running,
+                "insert {index}"
+            );
+        }
+        let removed_id = "doc-2".to_string();
+        let removed = docs.get(&removed_id).expect("present").clone();
+        running -= super::document_entry_bytes(&removed_id, Some(&removed)).expect("removed entry");
+        docs.remove(&removed_id);
+        assert_eq!(bincode::serialized_size(&docs).expect("map size"), running);
+
+        let replaced_id = "doc-4".to_string();
+        let previous = docs.get(&replaced_id).expect("present").clone();
+        let mut replacement = Doc::with_pk(replaced_id.clone()).expect("primary key");
+        replacement
+            .add_vector_f32("embedding", &[9.0, 8.0, 7.0])
+            .expect("vector");
+        let stored = Arc::new(replacement);
+        running -= super::document_entry_bytes(&replaced_id, Some(&previous)).expect("old entry");
+        running += super::document_entry_bytes(&replaced_id, Some(&stored)).expect("new entry");
+        docs.insert(replaced_id, stored);
+        assert_eq!(bincode::serialized_size(&docs).expect("map size"), running);
     }
 }

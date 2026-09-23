@@ -18,14 +18,23 @@
 
 # a3s-vec
 
-**Process-local retrieval for Coding Agent workspaces.**  
-Dense and sparse vectors, BM25 full-text, and typed scalar filters live in one
-durable Rust collection—no server process and no C/C++ runtime.
+**Process-local retrieval for Coding Agent workspaces.**
 
-**[`0.1.6` on crates.io](https://crates.io/crates/a3s-vec)** · published
-(tag `0.1.6` · SHA-256 `67c238a0…` · [RELEASE.md](RELEASE.md)).
-`0.1.5` remains the prior published binding (tag `0.1.5` · SHA-256 `bc42798f…`).
-`0.1.4` remains bound at tag `0.1.4` · SHA-256 `15c4220d…`.
+A collection is a durable log of documents. The document snapshot and the WAL
+are the source of truth. HNSW, IVF, RaBitQ, Vamana, DiskANN, scalar postings,
+and BM25 are derived indexes: they propose candidates, and the public score is
+the exact `f64` re-rank of the authoritative vector. A missing or stale index
+falls back to that scan. Equal scores keep the ascending primary key.
+
+Dense and sparse vectors, BM25 full-text, and typed scalar filters share one
+revisioned ordinal domain. There is no server process and no C/C++ runtime.
+`0.1.7` implements the filter, tokenizer, and quantization kernel in this crate.
+
+**[`0.1.7`](https://crates.io/crates/a3s-vec)** · this release. The registry
+checksum is recorded in [RELEASE.md](RELEASE.md) after `cargo publish`.
+`0.1.6` remains the prior published binding (tag `0.1.6` · SHA-256 `67c238a0…`).
+`0.1.5` remains tag `0.1.5` · SHA-256 `bc42798f…`.
+`0.1.4` remains tag `0.1.4` · SHA-256 `15c4220d…`.
 
 [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
 [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
@@ -59,13 +68,13 @@ L2, IP, cosine, MIPS-L2.
    authoritative vectors; Flat recall is 1.0 by construction.
 3. **Hybrid without glue code** — semantic + lexical + structured predicates
    in one planner and one durable generation.
-4. **Published Enterprise GA** — hosted multi-platform CI, versioned release
-   candidate, and crates.io checksum bind to one revision (`0.1.6` keeps a
-   stale DiskANN sidecar from dropping the index cache; `0.1.5` and `0.1.4`
-   remain their own published bindings).
-5. **Competitive HNSW under an honest harness** — same knobs, one worker,
-   exact re-rank kept; see proof below (directional, not an SLO). Million-document
-   flush is unblocked on workstation hosts (8 GiB storage ceilings).
+4. **One revision, one checksum** — hosted CI, the git tag, and the crates.io
+   artifact bind to the same commit. `0.1.6` keeps a stale DiskANN sidecar from
+   dropping the index cache. `0.1.5` and `0.1.4` remain their own published
+   bindings.
+5. **Measured against zvec 0.7.0** — same corpus, cosine, top-10, `m=16`,
+   `ef_construction=96`, `ef=64`, one worker, exact re-rank kept. See the proof
+   below. Million-document flush stays inside the 8 GiB storage ceilings.
 
 What it is **not**: a hosted vector cloud, a zvec C++ ABI clone, or a claim of
 universal engine ranking.
@@ -76,13 +85,13 @@ universal engine ranking.
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.6"
+a3s-vec = "0.1.7"
 ```
 
 Tokio-facing queries (same planner on `spawn_blocking`):
 
 ```toml
-a3s-vec = { version = "0.1.6", features = ["async"] }
+a3s-vec = { version = "0.1.7", features = ["async"] }
 ```
 
 Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
@@ -157,59 +166,35 @@ maintenance scheduler. Deep contracts for DiskANN I/O, RaBitQ, FTS analyzers,
 
 ## Proof vs zvec (honest, not a crown)
 
-Directional same-host evidence—not a capacity SLO and not “full dominance.”
+Same-host evidence from one fresh protocol run—not a capacity SLO.
 Protocol: [docs/scale-compare-protocol.md](docs/scale-compare-protocol.md) ·
 [BENCHMARKS.md](BENCHMARKS.md).
 
 Controls: SplitMix64 corpus, cosine, top-10, 32×3 queries, batch 512, HNSW
 `m=16` / `ef_construction=96` / `ef=64`, one worker. a3s-vec keeps exact
-re-rank + `f64` scores; zvec uses `is_using_refiner=False`. Medians of three
-processes · package `0.1.3` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0
-(100k table). The million-document table is a single same-host process under
-the same controls after the 8 GiB storage ceilings in `0.1.3`.
+re-rank and public `f64` scores; zvec uses `is_using_refiner=False`.
+2,000×32 and 100,000×128 are three-process medians. 1,000,000×128 is one
+process. `0.1.7` on Apple M5 Max, zvec `0.7.0`, 2026-09-23.
+Insert time includes the final flush.
 
-### HNSW · 100k × 128 (fairness harness)
+| Fixture | a3s insert | zvec insert | a3s Flat p50 | zvec Flat p50 | a3s HNSW build | zvec HNSW build | a3s HNSW p50 | zvec HNSW p50 | a3s Recall@10 | zvec Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,000×32 | 28.2 ms | 28.8 ms | 11.5 µs | 53.4 µs | 66.2 ms | 67.8 ms | 29.3 µs | 57.6 µs | 1.0000 | 1.0000 |
+| 100,000×128 | 346 ms | 964 ms | 770 µs | 1,694 µs | 12.4 s | 45.3 s | 98.3 µs | 136 µs | 0.6000 | 0.5813 |
+| 1,000,000×128 | 3.33 s | 10.0 s | 7.54 ms | 23.6 ms | 202 s | 559 s | 136 µs | 180 µs | 0.3063 | 0.2594 |
 
-| Engine | Index build | Query p50 | Recall@10 |
-| --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.3** | **26.3 s** | **103 µs** | **0.6000** |
-| zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
-
-≈ **1.75×** faster build, ≈ **1.44×** lower query p50, higher stable recall.
-
-### Flat · same one-worker pin
-
-| Engine | Query p50 | Recall@10 |
-| --- | ---: | ---: |
-| a3s-vec 0.1.3 | 3,550 µs | **1.0000** |
-| zvec 0.7.0 | **1,841 µs** | **1.0000** |
-
-Exact Flat with public `f64` scores is about **1.93×** slower here by
-contract. With the host default Rayon pool (product default), a3s-vec Flat
-p50 falls to **~651 µs** on this machine—report separately; do not mix into
-the HNSW fairness table.
-
-### HNSW · 1M × 128 (same controls, single process)
-
-| Engine | Insert | Index build | Query p50 | QPS | Recall@10 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| **a3s-vec 0.1.3** | 77.3 s | **422 s** | **159 µs** | **5954** | 0.3063 |
-| zvec 0.7.0 | **13.5 s** | 628 s | 231 µs | 4244 | 0.2437 |
-
-Directional only: a3s builds and queries HNSW faster at this scale; zvec
-loads Flat faster. Protocol-default recall is **not** an accuracy claim—
-raise `ef` / `ef_construction` before quoting million-scale recall.
-
-Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32` to
-manufacture a win.
+The 2026-09-20 million-document insert of `77,339.081` ms stays an unsplit
+historical measurement. Protocol-default Recall@10 is not an accuracy SLO.
+Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32`
+to manufacture a win.
 
 ---
 
 ## Boundaries
 
 - Not binary-compatible with Alibaba zvec storage or C++ ABI.
-- `zvec-core` is a private pure-Rust algorithm kernel; the public API is
-  A3S-owned.
+- Filter parsing, FTS tokenization, and FP16/INT8/INT4 index quantization are
+  Rust owned by this crate. The public API is A3S-owned.
 - Binary ANN and C++ wire import/export are deliberate non-goals.
 - Native async file reads and direct file-backed mmap stay refused until an
   invariant fails ([VEC-R2](ROADMAP.md)).

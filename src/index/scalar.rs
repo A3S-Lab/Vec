@@ -3,6 +3,7 @@
 use super::ordinals::{OrdinalSet, OrdinalTable};
 use crate::doc::{DocumentMap, FieldValue};
 use crate::error::{Error, Result};
+use crate::filter::{like_match, CmpOp, FilterExpr, Literal};
 use crate::schema::{CollectionSchema, FieldSchema, IndexParams};
 use crate::stats::IndexStat;
 use crate::types::{DataType, IndexType};
@@ -12,7 +13,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
-use zvec_core::filter::{CmpOp, FilterExpr, Literal};
 
 const CONJUNCTION_EARLY_STOP: u64 = 4_096;
 
@@ -715,41 +715,6 @@ fn comparable_order(left: &ScalarKey, right: &ScalarKey) -> Option<Ordering> {
     }
 }
 
-fn like_match(text: &str, pattern: &str) -> bool {
-    let text: Vec<char> = text.chars().collect();
-    let pattern: Vec<char> = pattern.chars().collect();
-    let (mut text_index, mut pattern_index) = (0, 0);
-    let mut wildcard_pattern = None;
-    let mut wildcard_text = 0;
-    while text_index < text.len() {
-        if pattern_index < pattern.len() && matches!(pattern[pattern_index], '%' | '*') {
-            while pattern_index < pattern.len() && matches!(pattern[pattern_index], '%' | '*') {
-                pattern_index += 1;
-            }
-            if pattern_index == pattern.len() {
-                return true;
-            }
-            wildcard_pattern = Some(pattern_index);
-            wildcard_text = text_index;
-        } else if pattern_index < pattern.len()
-            && (pattern[pattern_index] == '_' || pattern[pattern_index] == text[text_index])
-        {
-            text_index += 1;
-            pattern_index += 1;
-        } else if let Some(saved_pattern) = wildcard_pattern {
-            wildcard_text += 1;
-            text_index = wildcard_text;
-            pattern_index = saved_pattern;
-        } else {
-            return false;
-        }
-    }
-    while pattern_index < pattern.len() && matches!(pattern[pattern_index], '%' | '*') {
-        pattern_index += 1;
-    }
-    pattern_index == pattern.len()
-}
-
 fn like_literal_prefix(pattern: &str) -> Option<String> {
     let prefix: String = pattern
         .chars()
@@ -761,13 +726,11 @@ fn like_literal_prefix(pattern: &str) -> Option<String> {
 #[cfg(test)]
 #[allow(clippy::bool_assert_comparison)]
 mod tests {
-    use super::{
-        like_literal_prefix, like_match, literal_key, scalar_key, ScalarKey, ScalarNumber,
-    };
+    use super::{like_literal_prefix, literal_key, scalar_key, ScalarKey, ScalarNumber};
     use crate::doc::FieldValue;
+    use crate::filter::{like_match, Literal};
     use crate::types::DataType;
     use std::cmp::Ordering;
-    use zvec_core::filter::Literal;
 
     #[test]
     fn wildcard_matching_agrees_with_filter_syntax() {

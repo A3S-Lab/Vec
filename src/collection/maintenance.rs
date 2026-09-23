@@ -328,17 +328,17 @@ impl Collection {
         state.resource_usage = resource_usage;
         drop(state);
 
-        let docs = current
-            .docs
-            .values()
-            .map(|doc| doc.as_ref().clone())
-            .collect::<Vec<_>>();
         let mut storage = self
             .inner
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        storage.checkpoint(&current.schema, &docs, current.revision, true)?;
+        storage.checkpoint(
+            &current.schema,
+            current.docs.as_ref(),
+            current.revision,
+            true,
+        )?;
         persist_index_cache(&storage, &current.schema, &indexes, current.revision, true);
         Ok(current.revision)
     }

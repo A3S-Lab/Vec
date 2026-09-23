@@ -178,42 +178,6 @@ impl VectorValue {
         }
     }
 
-    pub(crate) fn to_core(&self) -> Option<zvec_core::model::StoredVector> {
-        use zvec_core::model::StoredVector;
-        match self {
-            Self::Binary32(_) | Self::Binary64(_) => None,
-            Self::Fp32(v) => Some(StoredVector::Dense(v.clone())),
-            Self::Fp64(v) => Some(StoredVector::Dense(
-                v.iter().copied().map(f64_to_f32).collect::<Option<_>>()?,
-            )),
-            Self::Fp16(v) => Some(StoredVector::DenseFp16 { data: v.clone() }),
-            Self::Int4(v) | Self::Int8(v) => Some(StoredVector::Dense(
-                v.iter().map(|value| f32::from(*value)).collect(),
-            )),
-            Self::Int16(v) => Some(StoredVector::Dense(
-                v.iter().map(|value| f32::from(*value)).collect(),
-            )),
-            Self::SparseFp16 { indices, values } => {
-                let map = indices
-                    .iter()
-                    .copied()
-                    .zip(values.iter().map(|value| f64::from(fp16_to_f32(*value))))
-                    .map(|(index, value)| (index.to_string(), value))
-                    .collect();
-                Some(StoredVector::Sparse(map))
-            }
-            Self::SparseFp32 { indices, values } => {
-                let map = indices
-                    .iter()
-                    .copied()
-                    .zip(values.iter().map(|value| f64::from(*value)))
-                    .map(|(index, value)| (index.to_string(), value))
-                    .collect();
-                Some(StoredVector::Sparse(map))
-            }
-        }
-    }
-
     pub(crate) fn validate(&self) -> Result<()> {
         validate_vector(self)
     }

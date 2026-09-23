@@ -130,6 +130,39 @@ fn enterprise_ga_public_scores_match_exact_oracle_and_radius() {
 }
 
 #[test]
+fn zero_cosine_query_keeps_topk_after_flat_rebuild() {
+    let temporary = tempdir().expect("temporary directory");
+    let collection = Collection::create(
+        &path_of(&temporary, "zero-cosine"),
+        &vector_schema("zero-cosine", MetricType::Cosine, false),
+        None,
+    )
+    .expect("collection");
+    // Insert order is not primary-key order, and top-k is smaller than the corpus.
+    for doc in [
+        vector_doc("c", &[0.0, 0.0, 1.0, 0.0]),
+        vector_doc("a", &[1.0, 0.0, 0.0, 0.0]),
+        vector_doc("b", &[0.0, 1.0, 0.0, 0.0]),
+    ] {
+        collection.insert(&[&doc]).expect("insert");
+    }
+    let query = SearchQuery::new("embedding", &[0.0, 0.0, 0.0, 0.0], 2).expect("query");
+    let before = collection.query(&query).expect("query before rebuild");
+    collection.rebuild_index("embedding").expect("flat rebuild");
+    let after = collection.query(&query).expect("query after rebuild");
+    let expected = vec![
+        ("a".to_string(), 0.0_f32.to_bits()),
+        ("b".to_string(), 0.0_f32.to_bits()),
+    ];
+    assert_eq!(ranked(&before), expected);
+    assert_eq!(ranked(&after), expected);
+    let nonzero = SearchQuery::new("embedding", &[1.0, 0.0, 0.0, 0.0], 1).expect("query");
+    let nonzero_hits = collection.query(&nonzero).expect("nonzero query");
+    assert_eq!(nonzero_hits.first().and_then(Doc::get_pk), Some("a"));
+    assert_eq!(nonzero_hits.first().map(Doc::get_score), Some(1.0));
+}
+
+#[test]
 fn enterprise_ga_default_hnsw_ef_matches_explicit_64() {
     let temporary = tempdir().expect("temporary directory");
     let mut embedding =
@@ -370,4 +403,110 @@ fn enterprise_ga_stale_diskann_sidecar_keeps_index_cache() {
         vec!["doc-0"]
     );
     assert_eq!(reopened.fetch(&["doc-extra"]).expect("fetch").len(), 1);
+}
+
+#[test]
+fn enterprise_ga_flush_encodes_the_published_generation_without_body_clones() {
+    const DOCUMENTS: usize = 2_000;
+    let temporary = tempdir().expect("temporary directory");
+    let mut embedding =
+        FieldSchema::new("embedding", DataType::VectorFp32, false, 4).expect("vector field");
+    embedding
+        .set_index_params(&IndexParams::flat(MetricType::Cosine).expect("flat"))
+        .expect("flat attaches");
+    let schema = CollectionSchema::builder("flush-generation")
+        .add_field(embedding)
+        .build()
+        .expect("schema");
+    let path = path_of(&temporary, "flush-generation");
+    let collection = Collection::create(&path, &schema, None).expect("create");
+    let mut stored = Vec::with_capacity(DOCUMENTS);
+    for index in 0..DOCUMENTS {
+        let mut doc = Doc::with_pk(format!("doc-{index:04}")).expect("primary key");
+        let index = u16::try_from(index).expect("index fits");
+        doc.add_vector_f32("embedding", &[f32::from(index % 97), 0.5, 1.5, -0.25])
+            .expect("vector");
+        stored.push(doc);
+    }
+    let first: Vec<&Doc> = stored[..1_000].iter().collect();
+    let second: Vec<&Doc> = stored[1_000..].iter().collect();
+    collection.insert(&first).expect("first batch");
+    collection.insert(&second).expect("second batch");
+    crate::doc::reset_doc_body_clones();
+    collection.flush().expect("flush");
+    assert_eq!(
+        crate::doc::doc_body_clones(),
+        0,
+        "flush must encode the published generation without cloning every document body"
+    );
+    drop(collection);
+
+    let full = snapshot_files(std::path::Path::new(&path));
+    assert_eq!(
+        full.len(),
+        1,
+        "the first content checkpoint is one full file"
+    );
+    assert_eq!(full[0].2.first().copied(), Some(0x95));
+    assert_eq!(full[0].2.get(1).copied(), Some(0x04));
+    let full_length = full[0].1;
+
+    let opened = Collection::open(&path, None).expect("format 4 snapshot must open");
+    assert_eq!(opened.count().expect("count"), DOCUMENTS);
+    for doc in &stored {
+        let id = doc.get_pk().expect("primary key");
+        let fetched = opened.fetch(&[id]).expect("fetch");
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].get_pk(), Some(id));
+        assert_eq!(fetched[0].vector("embedding"), doc.vector("embedding"));
+    }
+    let mut edited = Doc::with_pk(stored[0].get_pk().expect("primary key")).expect("edited key");
+    edited
+        .add_vector_f32("embedding", &[9.0, 8.0, 7.0, 6.0])
+        .expect("edited vector");
+    opened.upsert(&[&edited]).expect("one document change");
+    opened.flush().expect("delta checkpoint");
+    drop(opened);
+
+    let files = snapshot_files(std::path::Path::new(&path));
+    assert!(
+        files.len() >= 2,
+        "the base snapshot remains beside the delta"
+    );
+    let delta = files.last().expect("delta snapshot");
+    assert_eq!(delta.2.first().copied(), Some(0x98));
+    assert_eq!(delta.2.get(1).copied(), Some(0x05));
+    assert!(
+        delta.1.saturating_mul(2) < full_length,
+        "one-document checkpoint length {} is not under half of the full snapshot {full_length}",
+        delta.1
+    );
+    let reopened = Collection::open(&path, None).expect("delta snapshot must open");
+    let edited_id = edited.get_pk().expect("edited id");
+    let fetched = reopened.fetch(&[edited_id]).expect("fetch edited");
+    assert_eq!(fetched[0].vector("embedding"), edited.vector("embedding"));
+    assert_eq!(reopened.count().expect("count"), DOCUMENTS);
+}
+
+fn snapshot_files(root: &std::path::Path) -> Vec<(u64, u64, Vec<u8>)> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root.join("segments")).expect("segments directory") {
+        let entry = entry.expect("segment entry");
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(generation) = name
+            .strip_prefix("snapshot-")
+            .and_then(|rest| rest.strip_suffix(".bin"))
+            .and_then(|rest| rest.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let bytes = std::fs::read(entry.path()).expect("snapshot bytes");
+        let length = u64::try_from(bytes.len()).expect("snapshot length fits");
+        files.push((generation, length, bytes));
+    }
+    files.sort_by_key(|(generation, _, _)| *generation);
+    files
 }

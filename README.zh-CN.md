@@ -18,14 +18,21 @@
 
 # a3s-vec
 
-**面向 Coding Agent 工作区的进程内检索。**  
-稠密/稀疏向量、BM25 全文与类型化标量过滤落在同一持久化 Rust 集合——无需
-服务端进程，也无需 C/C++ 运行时。
+**面向 Coding Agent 工作区的进程内检索。**
 
-**[`0.1.6` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
-（tag `0.1.6` · SHA-256 `67c238a0…` · [RELEASE.md](RELEASE.md)）。
-`0.1.5` 仍是上一已发布绑定（tag `0.1.5` · SHA-256 `bc42798f…`）。
-`0.1.4` 仍绑定 tag `0.1.4` · SHA-256 `15c4220d…`。
+集合是一份持久化的文档日志。文档快照和 WAL 是权威来源。HNSW、IVF、RaBitQ、
+Vamana、DiskANN、标量倒排和 BM25 是派生索引：它们提出候选，公开分数是权威
+向量的精确 `f64` 重排。索引缺失或过期时回退到这次精确扫描。分数相同则保留
+升序主键。
+
+稠密/稀疏向量、BM25 全文与类型化标量过滤共享同一个带修订的序号域。没有服务端
+进程，也没有 C/C++ 运行时。`0.1.7` 的过滤、分词和量化内核由本 crate 自己实现。
+
+**[`0.1.7`](https://crates.io/crates/a3s-vec)** · 本发布。registry 校验和在
+`cargo publish` 之后写入 [RELEASE.md](RELEASE.md)。
+`0.1.6` 仍是上一已发布绑定（tag `0.1.6` · SHA-256 `67c238a0…`）。
+`0.1.5` 仍是 tag `0.1.5` · SHA-256 `bc42798f…`。
+`0.1.4` 仍是 tag `0.1.4` · SHA-256 `15c4220d…`。
 
 [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) ·
 [测试](TESTING.md) · [基准](BENCHMARKS.md) ·
@@ -56,8 +63,8 @@ cosine、MIPS-L2。
 1. **跑在 Agent 进程内** — 无需运维旁路数据库；打开路径、写入、查询即可。
 2. **分数可辩护** — 公开排序对权威向量做精确 `f64` 重打分；Flat 召回按构造为 1.0。
 3. **混合检索无需胶水** — 语义 + 词法 + 结构化谓词在同一规划器与同一持久化世代。
-4. **已发布 Enterprise GA** — 多平台托管 CI、版本化 RC 与 crates.io 校验和绑定同一修订（`0.1.6` 在 DiskANN 边车仍是上一修订时保留索引缓存；`0.1.5` 与 `0.1.4` 仍是各自的已发布绑定）。
-5. **诚实 harness 下 HNSW 有竞争力** — 相同旋钮、单 worker、保留 exact re-rank；证据见下（方向性，非 SLO）。百万文档 flush 在工作站主机上已放开（8 GiB 存储上限）。
+4. **一次修订，一个校验和** — 托管 CI、git tag 与 crates.io 产物绑定同一提交。`0.1.6` 在 DiskANN 边车仍是上一修订时保留索引缓存。`0.1.5` 与 `0.1.4` 仍是各自的已发布绑定。
+5. **相对 zvec 0.7.0 的实测** — 同一语料、cosine、top-10、`m=16`、`ef_construction=96`、`ef=64`、单 worker，并保留 exact re-rank。证据见下。百万文档 flush 仍在 8 GiB 存储上限之内。
 
 **不是什么：** 托管向量云、zvec C++ ABI 克隆，或「全面碾压」式引擎排名。
 
@@ -67,13 +74,13 @@ cosine、MIPS-L2。
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.6"
+a3s-vec = "0.1.7"
 ```
 
 面向 Tokio 的查询（同一规划器，跑在 `spawn_blocking`）：
 
 ```toml
-a3s-vec = { version = "0.1.6", features = ["async"] }
+a3s-vec = { version = "0.1.7", features = ["async"] }
 ```
 
 Monorepo path：`a3s-vec = { path = "crates/vec" }`。
@@ -146,54 +153,33 @@ DiskANN I/O、RaBitQ、FTS 分析器、`CollectionResourceLimits`、`StorageCeil
 
 ## 相对 zvec 的证据（诚实，不是王冠）
 
-同主机方向性证据——不是容量 SLO，也不是「全面碾压」。
+同一次协议跑出来的同机证据，不是容量 SLO。
 协议：[docs/scale-compare-protocol.md](docs/scale-compare-protocol.md) ·
 [BENCHMARKS.md](BENCHMARKS.md)。
 
 控制：SplitMix64 语料、cosine、top-10、32×3 查询、batch 512、HNSW
 `m=16` / `ef_construction=96` / `ef=64`、单 worker。a3s-vec 保留 exact
-re-rank + `f64`；zvec 使用 `is_using_refiner=False`。三次进程中位数 · 包
-`0.1.3` · Apple M5 Max / macOS 26.6.2 arm64 · zvec 0.7.0（10 万表）。百万
-文档表为 `0.1.3` 提高 8 GiB 存储上限后、同一控制下的单进程同机结果。
+re-rank 和公开 `f64` 分数；zvec 使用 `is_using_refiner=False`。
+2,000×32 与 100,000×128 是三次进程中位数，1,000,000×128 是单进程。
+`0.1.7`，Apple M5 Max，zvec `0.7.0`，2026-09-23。
+写入时间包含最后一次 flush。
 
-### HNSW · 100k × 128（公平 harness）
+| 规模 | a3s 写入 | zvec 写入 | a3s Flat p50 | zvec Flat p50 | a3s HNSW 构建 | zvec HNSW 构建 | a3s HNSW p50 | zvec HNSW p50 | a3s Recall@10 | zvec Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,000×32 | 28.2 ms | 28.8 ms | 11.5 µs | 53.4 µs | 66.2 ms | 67.8 ms | 29.3 µs | 57.6 µs | 1.0000 | 1.0000 |
+| 100,000×128 | 346 ms | 964 ms | 770 µs | 1,694 µs | 12.4 s | 45.3 s | 98.3 µs | 136 µs | 0.6000 | 0.5813 |
+| 1,000,000×128 | 3.33 s | 10.0 s | 7.54 ms | 23.6 ms | 202 s | 559 s | 136 µs | 180 µs | 0.3063 | 0.2594 |
 
-| 引擎 | 索引构建 | 查询 p50 | Recall@10 |
-| --- | ---: | ---: | ---: |
-| **a3s-vec 0.1.3** | **26.3 s** | **103 µs** | **0.6000** |
-| zvec 0.7.0 | 46.2 s | 149 µs | 0.5813 |
-
-构建约快 **1.75×**，查询 p50 约低 **1.44×**，recall 更高且稳定。
-
-### Flat · 同一单 worker
-
-| 引擎 | 查询 p50 | Recall@10 |
-| --- | ---: | ---: |
-| a3s-vec 0.1.3 | 3,550 µs | **1.0000** |
-| zvec 0.7.0 | **1,841 µs** | **1.0000** |
-
-公开 `f64` 精确 Flat 在此约慢 **1.93×**（契约使然）。主机默认 Rayon 池下
-a3s-vec Flat p50 约 **651 µs**——单独报告，勿混入 HNSW 公平表。
-
-### HNSW · 1M × 128（同一控制，单进程）
-
-| 引擎 | 写入 | 索引构建 | 查询 p50 | QPS | Recall@10 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| **a3s-vec 0.1.3** | 77.3 s | **422 s** | **159 µs** | **5954** | 0.3063 |
-| zvec 0.7.0 | **13.5 s** | 628 s | 231 µs | 4244 | 0.2437 |
-
-方向性结论：此规模下 a3s HNSW 建图与查询更快；zvec Flat 加载更快。协议
-默认 recall **不是**精度承诺——引用百万级召回前请先提高 `ef` /
-`ef_construction`。
-
-不以降低 `ef`、关闭 re-ranking 或把公开分数改成 `f32` 制造胜负。
+2026-09-20 的百万文档写入 `77,339.081` ms 仍是未拆分的历史测量。
+协议默认 Recall@10 不是精度承诺。不以降低 `ef`、关闭 re-ranking
+或把公开分数改成 `f32` 制造胜负。
 
 ---
 
 ## 边界
 
 - 不是 Alibaba zvec 存储或 C++ ABI 的二进制兼容克隆。
-- `zvec-core` 是私有纯 Rust 算法内核；公开 API 由 A3S 拥有。
+- 过滤解析、全文分词，以及 FP16/INT8/INT4 索引量化都是本 crate 拥有的 Rust 实现。公开 API 由 A3S 拥有。
 - Binary ANN 与 C++ 线格式导入/导出是刻意非目标。
 - 原生异步文件读与直接文件映射 mmap 在有失败不变量测试前保持拒绝
   （[VEC-R2](ROADMAP.md)）。

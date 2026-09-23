@@ -85,6 +85,13 @@ Goal is done only when:
 3. `BENCHMARKS.md` and README "Proof vs zvec" are rewritten from those CSVs
    (historical tables labeled historical, not presented as current proof).
 
+### Recorded run (2026-09-23)
+
+Fresh protocol on the working tree: three processes for 2,000×32 and
+100,000×128, one process for 1,000,000×128, both engines, `ef_search=64`.
+Column-wise medians are in `BENCHMARKS.md`. The 2026-09-20 million-document
+insert of `77,339.081` ms stays unsplit historical evidence.
+
 ### Recorded completion (2026-09-20)
 
 | Requirement | Evidence |

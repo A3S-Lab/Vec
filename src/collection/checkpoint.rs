@@ -56,13 +56,8 @@ pub(super) fn publish_prepared_schema_change(
     let revision = next.revision;
     let schema = next.schema.clone();
     *state = next;
-    let checkpoint_docs = state
-        .docs
-        .values()
-        .map(|doc| doc.as_ref().clone())
-        .collect::<Vec<_>>();
     let sync = !matches!(config.durability, Durability::Manual);
-    storage.checkpoint(&schema, &checkpoint_docs, revision, sync)?;
+    storage.checkpoint(&schema, state.docs.as_ref(), revision, sync)?;
     persist_index_cache(storage, &schema, &state.indexes, revision, sync);
     Ok(())
 }
@@ -75,12 +70,7 @@ pub(super) fn maybe_checkpoint(
     let should =
         matches!(config.durability, Durability::Interval) && storage.should_checkpoint(config);
     if should {
-        let docs: Vec<Doc> = state
-            .docs
-            .values()
-            .map(|doc| doc.as_ref().clone())
-            .collect();
-        storage.checkpoint(&state.schema, &docs, state.revision, true)?;
+        storage.checkpoint(&state.schema, state.docs.as_ref(), state.revision, true)?;
         persist_index_cache(storage, &state.schema, &state.indexes, state.revision, true);
     }
     Ok(())

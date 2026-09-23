@@ -15,13 +15,64 @@ Protocol: [`docs/scale-compare-protocol.md`](docs/scale-compare-protocol.md).
 Runner: `scripts/run_fp_compare.sh`. Companion harnesses:
 `benches/scale_compare.rs` and `scripts/scale_compare_zvec.py`.
 
-This section **supersedes** earlier Apple Silicon marketing tables and the
-stacked same-day “after prefetch / after ordinal rerank” narrative. Those
-rows remain below only as historical evidence. Claims below come from a
-fresh three-process median on **current HEAD**, not from the most flattering
-inherited cell.
+Claims in this section come from one fresh same-host run of that protocol.
+Each numeric column is the median of the processes named below. The
+2026-09-20 tables, including the unsplit `77,339.081` ms million-document
+insert, stay historical and are not a split of this run.
 
 ### Host and controls (fairness harness)
+
+| Item | Value |
+| --- | --- |
+| Host | Apple M5 Max, macOS arm64 |
+| a3s-vec | `0.1.7`, `RAYON_NUM_THREADS=1` |
+| zvec | `0.7.0`, `IndexOption(concurrency=1)`, `init(query_threads=1)`, `is_using_refiner=False` |
+| Fixture | Cosine, top-10, 32 queries × 3 rounds, batch 512, HNSW `m=16`, `ef_construction=96`, `ef=64` |
+| Processes | 2,000×32 and 100,000×128: three. 1,000,000×128: one |
+| Stamp | 2026-09-23 |
+
+Asymmetries that remain material: portable Rust crate vs native C++ wheel,
+a3s exact `f64` re-rank vs zvec without refiner, and a3s Flat
+`rebuild_index` time (reported in `index_build_ms`) vs zvec Flat `0`.
+Insert time still includes batch insert and the final flush.
+
+### 2,000 × 32 (three-process median)
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 28.220 | 0.721 | 28.975 | 11.541 | 13.167 | 16.167 | 82,341.59 | 1.0000 |
+| zvec 0.7.0 flat | 28.817 | 0.000 | 28.817 | 53.375 | 74.833 | 93.333 | 17,390.65 | 1.0000 |
+| a3s-vec HNSW | 28.220 | 66.201 | 94.422 | 29.250 | 34.875 | 36.667 | 32,757.98 | 1.0000 |
+| zvec 0.7.0 HNSW | 28.817 | 67.831 | 96.639 | 57.625 | 69.917 | 85.625 | 16,688.03 | 1.0000 |
+
+### 100,000 × 128 (three-process median)
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 345.696 | 48.013 | 393.709 | 770.416 | 817.833 | 854.458 | 1,287.79 | 1.0000 |
+| zvec 0.7.0 flat | 964.416 | 0.000 | 964.416 | 1,694.083 | 1,910.208 | 2,332.167 | 583.18 | 1.0000 |
+| a3s-vec HNSW | 345.696 | 12,405.774 | 12,750.889 | 98.291 | 127.667 | 145.000 | 9,842.96 | 0.6000 |
+| zvec 0.7.0 HNSW | 964.416 | 45,275.918 | 46,240.335 | 136.333 | 181.542 | 226.084 | 6,928.93 | 0.5813 |
+
+### 1,000,000 × 128 (one process)
+
+| Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| a3s-vec flat | 3,332.440 | 533.593 | 3,866.032 | 7,538.708 | 7,708.417 | 8,454.000 | 132.47 | 1.0000 |
+| zvec 0.7.0 flat | 9,999.630 | 0.000 | 9,999.630 | 23,638.417 | 24,077.792 | 24,581.792 | 42.30 | 1.0000 |
+| a3s-vec HNSW | 3,332.440 | 201,843.549 | 205,175.989 | 135.666 | 220.583 | 279.292 | 6,777.27 | 0.3063 |
+| zvec 0.7.0 HNSW | 9,999.630 | 558,963.467 | 568,963.097 | 180.292 | 230.584 | 249.667 | 5,448.29 | 0.2594 |
+
+On every fixture in this run, a3s-vec insert and one-worker Flat p50 are lower
+than zvec, and a3s-vec HNSW build, HNSW p50, and Recall@10 are not worse.
+Public scores stay `f64` from exact re-rank. Default `ef` stays 64.
+
+## Historical fairness harness (2026-09-20)
+
+The rows below are the previous same-host record. The million-document insert
+`77,339.081` ms is that run's unsplit measurement. It is not decomposed here.
+
+### Host and controls
 
 | Item | Value |
 | --- | --- |
@@ -32,11 +83,7 @@ inherited cell.
 | Artifacts | `target/fp-compare-20260920/{small,scale}/` (local; not committed) |
 | Stamp | `20260920T093805Z` (scale), `20260920T093757Z` (small) |
 
-Asymmetries that remain material: portable Rust crate vs native C++ wheel,
-a3s exact `f64` re-rank vs zvec without refiner, and a3s Flat
-`rebuild_index` time (reported in `index_build_ms`) vs zvec Flat `0`.
-
-### 100,000 × 128 (primary)
+### 100,000 × 128 (2026-09-20)
 
 | Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -62,11 +109,11 @@ Flat median p50 is **650.584 µs** (Recall@10 = 1.0) versus zvec’s one-worker
 Flat median **1,841.084 µs** — about **2.83×** lower p50. Do **not** mix this
 row into the one-worker HNSW fairness table.
 
-### 1,000,000 × 128 (single process, post-0.1.3 ceilings)
+### 1,000,000 × 128 (2026-09-20, single process)
 
-Same fairness controls as above (`RAYON_NUM_THREADS=1`, protocol HNSW knobs).
-One process per engine after raising snapshot / derived-index-cache / WAL-replay
-ceilings to 8 GiB. Not a three-process median.
+Same fairness controls (`RAYON_NUM_THREADS=1`, protocol HNSW knobs).
+One process per engine. Not a three-process median. The insert column
+`77,339.081` ms is unsplit: it is not assigned to WAL, snapshot, or index work.
 
 | Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -79,7 +126,7 @@ Directional: a3s HNSW builds and queries faster; zvec Flat insert/query is
 faster under one worker. Protocol-default Recall@10 is low on both engines—
 do not quote it as an accuracy SLO without raising `ef` / `ef_construction`.
 
-### 2,000 × 32 (wiring / recall sanity)
+### 2,000 × 32 (2026-09-20)
 
 | Engine / mode | Insert (ms) | Index build (ms) | Total build (ms) | p50 (µs) | p95 (µs) | p99 (µs) | QPS | Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -88,9 +135,8 @@ do not quote it as an accuracy SLO without raising `ef` / `ef_construction`.
 | a3s-vec HNSW | 30.947 | 94.657 | 124.797 | 30.709 | 37.833 | 40.542 | 31,102.77 | 1.0000 |
 | zvec 0.7.0 HNSW | 33.379 | 69.722 | 101.882 | 57.333 | 113.125 | 163.250 | 15,231.55 | 1.0000 |
 
-At this tiny corpus, zvec HNSW builds faster (~1.36×) while a3s-vec HNSW
-query p50 is ~1.87× lower. Recall@10 is 1.0 for both. Prefer the 100k table
-for product direction.
+In that run, zvec HNSW built faster while a3s-vec HNSW query p50 was lower.
+Recall@10 was 1.0 for both. The current section above replaces this row.
 
 ## Historical: Xeon smoke comparison (2026-09-03)
 

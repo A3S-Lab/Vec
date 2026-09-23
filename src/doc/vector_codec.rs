@@ -100,7 +100,7 @@ pub(super) fn encode_fp16(values: &[f32]) -> Result<Vec<u16>> {
     values.iter().copied().map(f32_to_fp16).collect()
 }
 
-fn f32_to_fp16(value: f32) -> Result<u16> {
+pub(crate) fn f32_to_fp16(value: f32) -> Result<u16> {
     if !value.is_finite() {
         return Err(Error::invalid_argument("FP16 source values must be finite"));
     }
@@ -158,7 +158,7 @@ pub(super) fn fp16_is_finite(bits: u16) -> bool {
     bits & 0x7c00 != 0x7c00
 }
 
-pub(super) fn fp16_to_f32(bits: u16) -> f32 {
+pub(crate) fn fp16_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & 0x8000) << 16;
     let exp = (bits >> 10) & 0x1f;
     let frac = u32::from(bits & 0x03ff);

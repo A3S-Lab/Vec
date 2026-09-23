@@ -285,11 +285,7 @@ impl Collection {
                 .map_err(|_| Error::internal("collection state lock poisoned"))?;
             (
                 state.schema.clone(),
-                state
-                    .docs
-                    .values()
-                    .map(|doc| doc.as_ref().clone())
-                    .collect::<Vec<_>>(),
+                Arc::clone(&state.docs),
                 Arc::clone(&state.indexes),
                 state.revision,
             )
@@ -299,7 +295,7 @@ impl Collection {
             .storage
             .lock()
             .map_err(|_| Error::internal("storage lock poisoned"))?;
-        storage.checkpoint(&schema, &docs, revision, true)?;
+        storage.checkpoint(&schema, docs.as_ref(), revision, true)?;
         persist_index_cache(&storage, &schema, &indexes, revision, true);
         Ok(())
     }

@@ -37,7 +37,6 @@ impl<T> OrdinalMap<T> {
         self.slots.get(index)?.as_ref()
     }
 
-    #[cfg(test)]
     pub(super) fn get_mut(&mut self, ordinal: u64) -> Option<&mut T> {
         let index = usize::try_from(ordinal).ok()?;
         self.slots.get_mut(index)?.as_mut()

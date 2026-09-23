@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 use vector_codec::validate_vector;
 
+pub(crate) use vector_codec::{f32_to_fp16, fp16_to_f32};
+
 /// Scalar and array field values accepted by a collection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
@@ -138,7 +140,7 @@ pub enum VectorValue {
 }
 
 /// A typed document.  `BTreeMap` gives deterministic snapshots and tie-breaks.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Doc {
     pk: Option<String>,
     #[serde(default)]
@@ -156,6 +158,35 @@ pub struct Doc {
 /// documents across generations. A write copy-on-writes only the tree path and
 /// document it changes; public APIs and persistence still use owned `Doc`s.
 pub(crate) type DocumentMap = OrdMap<String, Arc<Doc>>;
+
+#[cfg(test)]
+thread_local! {
+    static DOC_BODY_CLONES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_doc_body_clones() {
+    DOC_BODY_CLONES.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn doc_body_clones() -> u64 {
+    DOC_BODY_CLONES.with(std::cell::Cell::get)
+}
+
+impl Clone for Doc {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        DOC_BODY_CLONES.with(|count| count.set(count.get().saturating_add(1)));
+        Self {
+            pk: self.pk.clone(),
+            score: self.score,
+            internal_id: self.internal_id,
+            fields: self.fields.clone(),
+            vectors: self.vectors.clone(),
+        }
+    }
+}
 
 impl Default for Doc {
     fn default() -> Self {
@@ -562,25 +593,6 @@ impl Doc {
         out
     }
 
-    pub(crate) fn to_core(&self) -> zvec_core::model::Doc {
-        let vectors = self
-            .vectors
-            .iter()
-            .filter_map(|(name, value)| value.to_core().map(|value| (name.clone(), value)))
-            .collect();
-        let fields = self
-            .fields
-            .iter()
-            .map(|(name, value)| (name.clone(), value.to_json()))
-            .collect();
-        zvec_core::model::Doc::new(
-            self.pk.clone().unwrap_or_default(),
-            Some(f64::from(self.score)),
-            vectors,
-            fields,
-        )
-    }
-
     pub(crate) fn scalar_json(&self, name: &str) -> Option<Value> {
         self.fields.get(name).map(FieldValue::to_json)
     }
@@ -706,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn doc_to_core_and_scalar_json_cover_projection_path() {
+    fn scalar_json_and_projection_keep_requested_fields() {
         let mut doc = Doc::with_pk("pk").expect("pk");
         doc.set_score(1.25).expect("score");
         doc.add_string("title", "hello").expect("string");
@@ -715,8 +727,6 @@ mod tests {
             .expect("vector");
         assert_eq!(doc.scalar_json("title"), Some(json!("hello")));
         assert_eq!(doc.scalar_json("missing"), None);
-        let core = doc.to_core();
-        assert!(!format!("{core:?}").is_empty());
         let projected = doc.project(Some(&["title".into()]), true);
         assert!(projected.has_field("title"));
         assert!(!projected.has_field("n"));
@@ -796,8 +806,6 @@ mod tests {
             values: vec![0x3c00, 0x4000],
         };
         assert!(bad16.to_sparse_f64().is_none());
-        assert!(VectorValue::Binary32(vec![0xff; 4]).to_core().is_none());
-        assert!(VectorValue::Binary64(vec![0; 8]).to_core().is_none());
     }
 
     #[test]

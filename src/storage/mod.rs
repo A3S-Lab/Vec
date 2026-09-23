@@ -191,7 +191,7 @@ impl StorageHandle {
     pub fn checkpoint(
         &mut self,
         schema: &CollectionSchema,
-        docs: &[Doc],
+        docs: &(impl snapshot::SnapshotDocs + ?Sized),
         revision: u64,
         sync: bool,
     ) -> Result<()> {
@@ -258,12 +258,15 @@ impl StorageHandle {
     fn next_snapshot_checksum(
         &self,
         schema: &CollectionSchema,
-        docs: &[Doc],
+        docs: &(impl snapshot::SnapshotDocs + ?Sized),
         generation: u64,
         revision: u64,
         sync: bool,
     ) -> Result<Option<u32>> {
-        let previous = if self.manifest.format_version >= manifest::FORMAT_VERSION
+        // A schema change cannot be a document delta. Reading the previous
+        // snapshot only to throw it away is the whole decode of every body.
+        let previous = if self.manifest.schema_digest == schema.digest()
+            && self.manifest.format_version >= manifest::FORMAT_VERSION
             && self.manifest.generation > 0
         {
             snapshot::read(

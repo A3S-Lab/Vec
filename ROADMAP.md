@@ -18,10 +18,11 @@ derived indexes that can always be rebuilt. The six invariants in
 make one of those invariants more true is not scheduled.
 
 Phases 0 through 7 are complete on `main`. The current release line is
-`0.1.6` (a stale DiskANN sidecar no longer drops the index cache; see
-[RELEASE.md](RELEASE.md)). `0.1.5` and `0.1.4` remain their published
-bindings. Do not reopen a completed index family to add a variant. There are
-no open engine issues that pass the six-invariant filter.
+`0.1.7` (the algorithm kernel is Rust owned by this crate; the public `f64`
+contract is unchanged; see [RELEASE.md](RELEASE.md)). `0.1.6`, `0.1.5`, and
+`0.1.4` remain their published bindings. Do not reopen a completed index
+family to add a variant. There are no open engine issues that pass the
+six-invariant filter.
 
 ### VEC-R1 — Cancelled: macOS 12 Intel support dropped
 
@@ -283,8 +284,8 @@ and direct file-backed mmap remain future work.
   scalar/array types. Numeric JSON scalar and array fixtures cover signed and
   unsigned extrema, wrong signs, fractions, overflowing members, and finite
   floating-point limits without narrowing or wraparound.
-- Completed: the `zvec-core` implementation dependency is no longer re-exported
-  through the A3S public surface; a compile-fail doctest guards the boundary.
+- Completed: filter parsing, tokenization, and index quantization are owned by
+  this crate. A compile-fail doctest guards the public surface.
 - Partially completed: removed inert memory/thread/logging/I/O/mmap/buffer/
   segment controls, then restored only the typed I/O choice after both bounded
   backends existed; fixed process-versus-collection durability precedence, and
@@ -987,12 +988,13 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.6`: tag `0.1.6` and crates.io publish bind to
-   revision `c7b828c` (SHA-256 `67c238a0…`); hosted CI run `35754487571`
-   is green — see [RELEASE.md](RELEASE.md). `0.1.5` remains bound to
-   revision `84f8985` (SHA-256 `bc42798f…`, run `35746396350`). `0.1.4`
-   remains bound to revision `9a07e9a` (SHA-256 `15c4220d…`, run
-   `35510190796`). macOS 12 Intel is unsupported and is not a gate.
+2. Enterprise GA for `0.1.7`: tag `0.1.7` and the crates.io publish bind to
+   the revision recorded in [RELEASE.md](RELEASE.md). `0.1.6` remains bound
+   to revision `c7b828c` (SHA-256 `67c238a0…`, run `35754487571`). `0.1.5`
+   remains bound to revision `84f8985` (SHA-256 `bc42798f…`, run
+   `35746396350`). `0.1.4` remains bound to revision `9a07e9a` (SHA-256
+   `15c4220d…`, run `35510190796`). macOS 12 Intel is unsupported and is
+   not a gate.
 3. VEC-R2: accept no further engine change without a failing invariant test.
    Native async reads, direct file-backed mmap, benchmark-chasing index
    variants, and restoring Monterey support stay refused.

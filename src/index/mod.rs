@@ -326,6 +326,18 @@ impl IndexRegistry {
         !self.indexes.is_empty() || !self.scalar_indexes.is_empty() || !self.fts_indexes.is_empty()
     }
 
+    /// Derived payload bytes already stored on built vector indexes.
+    ///
+    /// Flat has no stored payload until a graph index replaces it, and scalar
+    /// and full-text stats report no payload estimate. Callers use this for
+    /// admission so a Flat insert does not walk every document to rediscover
+    /// an empty total.
+    pub(crate) fn accounted_payload_bytes(&self) -> u64 {
+        self.indexes.values().fold(0_u64, |total, index| {
+            total.saturating_add(index.estimated_payload_bytes())
+        })
+    }
+
     /// Publishes a lightweight index generation for document mutations. The
     /// immutable graph/posting base is shared with readers of the previous
     /// collection generation; only changed vectors and tombstones are copied.
@@ -551,7 +563,7 @@ impl IndexRegistry {
     pub(crate) fn scalar_candidates(
         &self,
         source_revision: u64,
-        filter: &zvec_core::filter::FilterExpr,
+        filter: &crate::filter::FilterExpr,
     ) -> Option<ScalarCandidates> {
         self.scalar_indexes
             .candidates(source_revision, filter, &self.ordinals)
@@ -627,7 +639,7 @@ impl IndexRegistry {
         docs: &DocumentMap,
         source_revision: u64,
         query: &SearchQuery,
-        filter: Option<&zvec_core::filter::FilterExpr>,
+        filter: Option<&crate::filter::FilterExpr>,
     ) -> Result<CandidatePlan> {
         let scalar = filter.and_then(|filter| self.scalar_candidates(source_revision, filter));
         if query.fts.is_some() {
@@ -679,10 +691,7 @@ impl IndexRegistry {
                     "scalar candidate refinement requires a parsed filter",
                 ));
             };
-            scalar.retain_ids(|id| {
-                docs.get(id)
-                    .is_some_and(|doc| filter.matches(&doc.to_core()))
-            });
+            scalar.retain_ids(|id| docs.get(id).is_some_and(|doc| filter.matches(doc)));
             scalar.exact = true;
         }
         if scalar.len() <= exact_limit {

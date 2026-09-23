@@ -160,31 +160,24 @@ impl Collection {
             revision,
             &changed_ids,
         )?;
-        let (next_indexes, next_resource_usage) = match current
-            .options
-            .resource_limits
-            .enforce_state(&current.schema, &next_docs, &incremental_indexes)
-        {
-            Ok(usage) => (incremental_indexes, usage),
-            Err(error) if error.code == ErrorCode::ResourceExhausted => {
-                // A tombstone overlay can be larger than the removed payload.
-                // Compact before rejecting so deletion remains a practical way
-                // to return the collection below its configured budget.
-                let compacted = IndexRegistry::build(&current.schema, &next_docs, revision)?;
-                match current.options.resource_limits.enforce_state(
-                    &current.schema,
-                    &next_docs,
-                    &compacted,
-                ) {
-                    Ok(usage) => (compacted, usage),
-                    Err(error) => {
-                        current.stats.record_resource_limit_rejection();
-                        return Err(error);
+        let (next_indexes, next_resource_usage) =
+            match account_published(current, &next_docs, &changed_ids, &incremental_indexes) {
+                Ok(usage) => (incremental_indexes, usage),
+                Err(error) if error.code == ErrorCode::ResourceExhausted => {
+                    // A tombstone overlay can be larger than the removed payload.
+                    // Compact before rejecting so deletion remains a practical way
+                    // to return the collection below its configured budget.
+                    let compacted = IndexRegistry::build(&current.schema, &next_docs, revision)?;
+                    match account_published(current, &next_docs, &changed_ids, &compacted) {
+                        Ok(usage) => (compacted, usage),
+                        Err(error) => {
+                            current.stats.record_resource_limit_rejection();
+                            return Err(error);
+                        }
                     }
                 }
-            }
-            Err(error) => return Err(error),
-        };
+                Err(error) => return Err(error),
+            };
         self.commit_visible_revision(
             current,
             revision,
@@ -264,17 +257,14 @@ impl Collection {
             revision,
             &changed_ids,
         )?;
-        let next_resource_usage = match current.options.resource_limits.enforce_state(
-            &current.schema,
-            &next_docs,
-            &next_indexes,
-        ) {
-            Ok(usage) => usage,
-            Err(error) => {
-                current.stats.record_resource_limit_rejection();
-                return Err(error);
-            }
-        };
+        let next_resource_usage =
+            match account_published(&current, &next_docs, &changed_ids, &next_indexes) {
+                Ok(usage) => usage,
+                Err(error) => {
+                    current.stats.record_resource_limit_rejection();
+                    return Err(error);
+                }
+            };
         self.commit_visible_revision(
             &current,
             revision,
@@ -348,6 +338,23 @@ pub(super) fn write_error(code: ErrorCode, message: impl Into<String>) -> DocWri
         code,
         message: message.into(),
     }
+}
+
+fn account_published(
+    current: &super::CollectionState,
+    next_docs: &crate::doc::DocumentMap,
+    changed_ids: &BTreeSet<String>,
+    indexes: &IndexRegistry,
+) -> Result<super::resource::ResourceUsage> {
+    let usage = current.resource_usage.after_documents(
+        current.docs.as_ref(),
+        next_docs,
+        changed_ids,
+        indexes,
+    )?;
+    let document_count = u64::try_from(next_docs.len())
+        .map_err(|_| Error::resource_exhausted("collection exceeds u64 documents"))?;
+    current.options.resource_limits.admit(document_count, usage)
 }
 
 fn write_result(results: Vec<DocWriteResult>) -> WriteResult {

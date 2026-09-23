@@ -1,5 +1,46 @@
 # Release Qualification
 
+## 0.1.7
+
+`a3s-vec` `0.1.7` keeps the public query contract and owns the algorithm
+kernel. Tag `0.1.7` points at the revision that `cargo publish` uploads.
+The registry SHA-256 is filled in the post-publish checklist below once that
+upload exists. `0.1.6` stays on the registry (tag `0.1.6` @
+`c7b828cfa610bb3e1aca84ae9255f1caf7c938c7`, SHA-256
+`67c238a010add5d35d085a87a9183b9d3e08aef6a89b1b5edf19186b31b65062`).
+
+### 0.1.7 release notes
+
+The document snapshot and the WAL remain authoritative. Derived indexes still
+propose candidates, and the public score is still the exact `f64` re-rank.
+Default HNSW `ef` stays 64, exact re-rank stays on, default durability stays
+`Always`, and IVF queries gain no default `scale_factor`. HNSW construction
+for a fixed corpus and seed still publishes the ordered single-thread `f64`
+neighbor sets. Equal scores keep the ascending primary key, including a
+zero-norm cosine top-k after the flat index is rebuilt.
+
+- Filter parsing, tokenization, and FP16/INT8/INT4 quantization are Rust in
+  this crate. The optional `jieba` feature uses `jieba-rs`. The previous
+  private kernel dependency is gone.
+- New WAL frames are version 5 packed MessagePack. Older JSON frames still
+  decode. Schema-only operations still require frame version 4 or newer.
+- Accounted bytes grow with the entries written in a batch. A drift or
+  overflow falls back to a full measure.
+- The 2026-09-23 same-host protocol (cosine, top-10, `m=16`,
+  `ef_construction=96`, `ef=64`, one worker, zvec 0.7.0 with the refiner off)
+  is the proof in [README.md](README.md) and [BENCHMARKS.md](BENCHMARKS.md).
+  The 2026-09-20 million-document insert of `77,339.081` ms stays an unsplit
+  historical measurement.
+
+### 0.1.7 post-publish checklist
+
+1. Hosted CI on the tagged revision is green.
+2. The published crate SHA-256 is recorded here.
+3. Formal git tag `0.1.7` points at that revision, and `cargo publish`
+   uploaded the matching crate.
+
+## 0.1.6 historical binding
+
 `a3s-vec` `0.1.6` is published. Tag `0.1.6`, and crates.io SHA-256
 `67c238a010add5d35d085a87a9183b9d3e08aef6a89b1b5edf19186b31b65062` bind to
 revision `c7b828cfa610bb3e1aca84ae9255f1caf7c938c7`. Hosted CI run
@@ -124,8 +165,8 @@ persist derived indexes on workstation hosts:
 
 The release-facing contract has the following boundaries:
 
-- `zvec-core` remains a private algorithm dependency and cannot be named
-  through the public crate surface.
+- Filter parsing, tokenization, and index quantization are implemented in this
+  crate and cannot be named through the public crate surface.
 - Collection and process configuration use typed Rust values. Unsupported
   controls and index/query combinations fail with typed errors before
   mutation.
@@ -143,7 +184,7 @@ The release-facing contract has the following boundaries:
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.6` identity.
+  against the package's `0.1.7` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -169,9 +210,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.6.crate`;
-- `a3s-vec-0.1.6.crate.sha256`;
-- `a3s-vec-0.1.6.release.json`, which records the package version, source
+- `a3s-vec-0.1.7.crate`;
+- `a3s-vec-0.1.7.crate.sha256`;
+- `a3s-vec-0.1.7.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the

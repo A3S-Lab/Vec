@@ -4,13 +4,14 @@ version = 3
 
 [[package]]
 name = "a3s-vec"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bincode",
  "bitmaps",
  "crc32fast",
  "fs2",
  "imbl",
+ "jieba-rs",
  "memmap2",
  "rayon",
  "rayon-core",
@@ -25,7 +26,6 @@ dependencies = [
  "tokio",
  "unicode-general-category",
  "unicode-normalization",
- "zvec-core",
 ]
 
 [[package]]
@@ -959,19 +959,4 @@ checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
 dependencies = [
  "cc",
  "pkg-config",
-]
-
-[[package]]
-name = "zvec-core"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "405f855596d420dee8f61a86e6fa2b84cca6fe493095338f241aafb3ea88d235"
-dependencies = [
- "crc32fast",
- "jieba-rs",
- "once_cell",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "a3s-vec"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -14,19 +14,13 @@ categories = ["database-implementations", "algorithms"]
 
 [features]
 default = []
-jieba = ["zvec-core/jieba"]
+jieba = ["dep:jieba-rs"]
 # Tokio-facing query methods offload the synchronous snapshot/planner/I/O path
 # to the runtime's blocking pool. The core API remains runtime-independent.
 async = ["dep:tokio"]
 
 [dependencies]
-# zvec-core is a pure-Rust algorithm kernel. It has no C/C++ or runtime
-# library dependency; a3s-vec owns the public contract, storage, and locking
-# layer around it.
-zvec-core = { version = "0.1.0", default-features = false }
-# zvec-core permits any Rayon 1.x release. Newer Rayon releases require Rust
-# 1.80, so keep the transitive pair on its Rust-1.75-compatible line until the
-# kernel publishes an MSRV-aware constraint.
+# Newer Rayon releases require Rust 1.80. Keep this pair on the Rust 1.75 line.
 rayon = "=1.10.0"
 rayon-core = "=1.12.1"
 crc32fast = "1"
@@ -54,6 +48,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "1"
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
+jieba-rs = { version = "0.7", optional = true }
 # N-gram token character filters use Unicode general categories instead of
 # ASCII-only approximations. Pin the audited Unicode-16 table and MSRV line.
 unicode-general-category = "=1.1.0"
