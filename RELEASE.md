@@ -1,12 +1,34 @@
 # Release Qualification
 
+## 0.1.8
+
+`a3s-vec` `0.1.8` is the Rust 1.75 fix for the published `0.1.7` crate.
+Tag `0.1.8` points at the revision that `cargo publish` uploads. The registry
+SHA-256 is filled in the post-publish checklist below once that upload exists.
+
+### 0.1.8 release notes
+
+`f32::next_up` is unstable on Rust 1.75. One Flat rejector test used it, so
+`cargo test` failed the MSRV job for `0.1.7`. The test now steps one ULP
+toward `+∞` with `to_bits`. The library, the public `f64` contract, and the
+2026-09-23 proof are unchanged.
+
+### 0.1.8 post-publish checklist
+
+1. Hosted CI on the tagged revision is green.
+2. The published crate SHA-256 is recorded here.
+3. Formal git tag `0.1.8` points at that revision, and `cargo publish`
+   uploaded the matching crate.
+
 ## 0.1.7
 
-`a3s-vec` `0.1.7` keeps the public query contract and owns the algorithm
-kernel. Tag `0.1.7` points at the revision that `cargo publish` uploads.
-The registry SHA-256 is filled in the post-publish checklist below once that
-upload exists. `0.1.6` stays on the registry (tag `0.1.6` @
-`c7b828cfa610bb3e1aca84ae9255f1caf7c938c7`, SHA-256
+`a3s-vec` `0.1.7` is published. Tag `0.1.7` @
+`57fc47694befd0f9915df21175a2158918432170`, crates.io SHA-256
+`90254cfdaddbe3848788fd93fc91a301ac39016b60b1e09c6afca799d59efd73`.
+`cargo test` on Rust 1.75 fails in `src/index/vector_query.rs` because that
+revision calls `f32::next_up`. `0.1.8` replaces that call. The library itself
+matches the ranking code measured on 2026-09-23. `0.1.6` stays on the
+registry (tag `0.1.6` @ `c7b828cfa610bb3e1aca84ae9255f1caf7c938c7`, SHA-256
 `67c238a010add5d35d085a87a9183b9d3e08aef6a89b1b5edf19186b31b65062`).
 
 ### 0.1.7 release notes
@@ -34,8 +56,10 @@ zero-norm cosine top-k after the flat index is rebuilt.
 
 ### 0.1.7 post-publish checklist
 
-1. Hosted CI on the tagged revision is green.
-2. The published crate SHA-256 is recorded here.
+1. Hosted CI run `35818658069` on revision `57fc476` failed the Rust 1.75
+   MSRV job. `0.1.8` is the fix.
+2. The published crate SHA-256 matches
+   `90254cfdaddbe3848788fd93fc91a301ac39016b60b1e09c6afca799d59efd73`.
 3. Formal git tag `0.1.7` points at that revision, and `cargo publish`
    uploaded the matching crate.
 
@@ -184,7 +208,7 @@ The release-facing contract has the following boundaries:
   anonymous snapshot of a fully validated sidecar, not a mutable file-backed
   mapping.
 - `version()`, the numeric version accessors, and `check_version()` are checked
-  against the package's `0.1.7` identity.
+  against the package's `0.1.8` identity.
 - The public feature matrix checks every advertised query/lifecycle route,
   all six ANN families across their supported metrics (including metric-aware
   Vamana and DiskANN/PQ), cache/sidecar reopen, and the explicit binary-query
@@ -210,9 +234,9 @@ After every required hosted CI job passes on `main`, the `Versioned release
 candidate` job runs `cargo package --locked`. It uploads these files in one
 revision-bound Actions artifact:
 
-- `a3s-vec-0.1.7.crate`;
-- `a3s-vec-0.1.7.crate.sha256`;
-- `a3s-vec-0.1.7.release.json`, which records the package version, source
+- `a3s-vec-0.1.8.crate`;
+- `a3s-vec-0.1.8.crate.sha256`;
+- `a3s-vec-0.1.8.release.json`, which records the package version, source
   revision, workflow run, and build runner.
 - `feature-matrix.csv`, `concurrent-queries.csv`, `mixed-workload.csv`,
   `scale-compare.csv`, and `lifecycle-matrix.csv`, which record the

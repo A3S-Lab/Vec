@@ -25,7 +25,7 @@ insert, stay historical and are not a split of this run.
 | Item | Value |
 | --- | --- |
 | Host | Apple M5 Max, macOS arm64 |
-| a3s-vec | `0.1.7`, `RAYON_NUM_THREADS=1` |
+| a3s-vec | `0.1.8` (proof measured on the `0.1.7` ranking code), `RAYON_NUM_THREADS=1` |
 | zvec | `0.7.0`, `IndexOption(concurrency=1)`, `init(query_threads=1)`, `is_using_refiner=False` |
 | Fixture | Cosine, top-10, 32 queries × 3 rounds, batch 512, HNSW `m=16`, `ef_construction=96`, `ef=64` |
 | Processes | 2,000×32 and 100,000×128: three. 1,000,000×128: one |

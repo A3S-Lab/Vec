@@ -27,10 +27,14 @@ Vamana、DiskANN、标量倒排和 BM25 是派生索引：它们提出候选，�
 
 稠密/稀疏向量、BM25 全文与类型化标量过滤共享同一个带修订的序号域。没有服务端
 进程，也没有 C/C++ 运行时。`0.1.7` 的过滤、分词和量化内核由本 crate 自己实现。
+`0.1.8` 保持这份实现，并把一个测试辅助函数换成 Rust 1.75 能编译的写法
+（`f32::next_up` 比 MSRV 新）。
 
-**[`0.1.7`](https://crates.io/crates/a3s-vec)** · 本发布。registry 校验和在
+**[`0.1.8`](https://crates.io/crates/a3s-vec)** · 本发布。registry 校验和在
 `cargo publish` 之后写入 [RELEASE.md](RELEASE.md)。
-`0.1.6` 仍是上一已发布绑定（tag `0.1.6` · SHA-256 `67c238a0…`）。
+`0.1.7` 已发布（tag `0.1.7` @ `57fc476` · SHA-256 `90254cfd…`）。
+它的库代码与这份排序实现相同；它的单元测试在 Rust 1.75 上编不过。
+`0.1.6` 仍是 tag `0.1.6` · SHA-256 `67c238a0…`。
 `0.1.5` 仍是 tag `0.1.5` · SHA-256 `bc42798f…`。
 `0.1.4` 仍是 tag `0.1.4` · SHA-256 `15c4220d…`。
 
@@ -74,13 +78,13 @@ cosine、MIPS-L2。
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.7"
+a3s-vec = "0.1.8"
 ```
 
 面向 Tokio 的查询（同一规划器，跑在 `spawn_blocking`）：
 
 ```toml
-a3s-vec = { version = "0.1.7", features = ["async"] }
+a3s-vec = { version = "0.1.8", features = ["async"] }
 ```
 
 Monorepo path：`a3s-vec = { path = "crates/vec" }`。
@@ -161,7 +165,8 @@ DiskANN I/O、RaBitQ、FTS 分析器、`CollectionResourceLimits`、`StorageCeil
 `m=16` / `ef_construction=96` / `ef=64`、单 worker。a3s-vec 保留 exact
 re-rank 和公开 `f64` 分数；zvec 使用 `is_using_refiner=False`。
 2,000×32 与 100,000×128 是三次进程中位数，1,000,000×128 是单进程。
-`0.1.7`，Apple M5 Max，zvec `0.7.0`，2026-09-23。
+数字来自 `0.1.7` 的排序实现；`0.1.8` 只改了 Rust 1.75 的测试辅助函数。
+Apple M5 Max，zvec `0.7.0`，2026-09-23。
 写入时间包含最后一次 flush。
 
 | 规模 | a3s 写入 | zvec 写入 | a3s Flat p50 | zvec Flat p50 | a3s HNSW 构建 | zvec HNSW 构建 | a3s HNSW p50 | zvec HNSW p50 | a3s Recall@10 | zvec Recall@10 |

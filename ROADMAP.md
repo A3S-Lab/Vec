@@ -18,9 +18,9 @@ derived indexes that can always be rebuilt. The six invariants in
 make one of those invariants more true is not scheduled.
 
 Phases 0 through 7 are complete on `main`. The current release line is
-`0.1.7` (the algorithm kernel is Rust owned by this crate; the public `f64`
-contract is unchanged; see [RELEASE.md](RELEASE.md)). `0.1.6`, `0.1.5`, and
-`0.1.4` remain their published bindings. Do not reopen a completed index
+`0.1.8` (Rust 1.75 can compile the suite; the owned kernel and public `f64`
+contract are the published `0.1.7` behavior; see [RELEASE.md](RELEASE.md)).
+`0.1.7`, `0.1.6`, `0.1.5`, and `0.1.4` remain their published bindings. Do not reopen a completed index
 family to add a variant. There are no open engine issues that pass the
 six-invariant filter.
 
@@ -988,8 +988,9 @@ execution are implemented.
 ## Immediate implementation order
 
 1. Phases 0–7 are done. Do not reland them.
-2. Enterprise GA for `0.1.7`: tag `0.1.7` and the crates.io publish bind to
-   the revision recorded in [RELEASE.md](RELEASE.md). `0.1.6` remains bound
+2. Enterprise GA for `0.1.8`: tag `0.1.8` and the crates.io publish bind to
+   the revision recorded in [RELEASE.md](RELEASE.md). `0.1.7` remains bound
+   to revision `57fc476` (SHA-256 `90254cfd…`). `0.1.6` remains bound
    to revision `c7b828c` (SHA-256 `67c238a0…`, run `35754487571`). `0.1.5`
    remains bound to revision `84f8985` (SHA-256 `bc42798f…`, run
    `35746396350`). `0.1.4` remains bound to revision `9a07e9a` (SHA-256

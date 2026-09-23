@@ -1179,6 +1179,22 @@ mod tests {
     use crate::types::MetricType;
     use roaring::RoaringTreemap;
 
+    /// One step toward `+∞`. `f32::next_up` is unstable on the 1.75 MSRV.
+    fn next_up_f32(value: f32) -> f32 {
+        let bits = value.to_bits();
+        if value.is_nan() || bits == f32::INFINITY.to_bits() {
+            return value;
+        }
+        let next_bits = if bits & 0x7fff_ffff == 0 {
+            1
+        } else if bits & 0x8000_0000 == 0 {
+            bits + 1
+        } else {
+            bits - 1
+        };
+        f32::from_bits(next_bits)
+    }
+
     #[test]
     fn live_is_dense_oracle() {
         let mut live = RoaringTreemap::new();
@@ -1415,7 +1431,7 @@ mod tests {
             let neighbor = dimension;
             let (head, tail) = values.split_at_mut(neighbor);
             tail[..dimension].copy_from_slice(&head[..dimension]);
-            let nudged = values[neighbor].next_up();
+            let nudged = next_up_f32(values[neighbor]);
             values[neighbor] = nudged;
             let norm_sq: f64 = values[neighbor..neighbor + dimension]
                 .iter()

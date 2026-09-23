@@ -29,10 +29,14 @@ falls back to that scan. Equal scores keep the ascending primary key.
 Dense and sparse vectors, BM25 full-text, and typed scalar filters share one
 revisioned ordinal domain. There is no server process and no C/C++ runtime.
 `0.1.7` implements the filter, tokenizer, and quantization kernel in this crate.
+`0.1.8` keeps that crate and replaces one test helper so Rust 1.75 can compile
+the suite (`f32::next_up` is newer than the MSRV).
 
-**[`0.1.7`](https://crates.io/crates/a3s-vec)** · this release. The registry
+**[`0.1.8`](https://crates.io/crates/a3s-vec)** · this release. The registry
 checksum is recorded in [RELEASE.md](RELEASE.md) after `cargo publish`.
-`0.1.6` remains the prior published binding (tag `0.1.6` · SHA-256 `67c238a0…`).
+`0.1.7` is published (tag `0.1.7` @ `57fc476` · SHA-256 `90254cfd…`).
+Its library matches this ranking code; its unit tests do not build on Rust 1.75.
+`0.1.6` remains tag `0.1.6` · SHA-256 `67c238a0…`.
 `0.1.5` remains tag `0.1.5` · SHA-256 `bc42798f…`.
 `0.1.4` remains tag `0.1.4` · SHA-256 `15c4220d…`.
 
@@ -85,13 +89,13 @@ universal engine ranking.
 
 ```toml
 [dependencies]
-a3s-vec = "0.1.7"
+a3s-vec = "0.1.8"
 ```
 
 Tokio-facing queries (same planner on `spawn_blocking`):
 
 ```toml
-a3s-vec = { version = "0.1.7", features = ["async"] }
+a3s-vec = { version = "0.1.8", features = ["async"] }
 ```
 
 Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
@@ -174,7 +178,8 @@ Controls: SplitMix64 corpus, cosine, top-10, 32×3 queries, batch 512, HNSW
 `m=16` / `ef_construction=96` / `ef=64`, one worker. a3s-vec keeps exact
 re-rank and public `f64` scores; zvec uses `is_using_refiner=False`.
 2,000×32 and 100,000×128 are three-process medians. 1,000,000×128 is one
-process. `0.1.7` on Apple M5 Max, zvec `0.7.0`, 2026-09-23.
+process. Measured on the `0.1.7` ranking code, unchanged in `0.1.8` except the
+Rust 1.75 test helper. Apple M5 Max, zvec `0.7.0`, 2026-09-23.
 Insert time includes the final flush.
 
 | Fixture | a3s insert | zvec insert | a3s Flat p50 | zvec Flat p50 | a3s HNSW build | zvec HNSW build | a3s HNSW p50 | zvec HNSW p50 | a3s Recall@10 | zvec Recall@10 |
