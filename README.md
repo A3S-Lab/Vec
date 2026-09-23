@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec: process-local vector and full-text retrieval for Coding Agent workspaces">
+  <img src="./assets/readme/hero.svg" width="100%" alt="a3s-vec: in-process vector and full-text search">
 </p>
 
 <p align="center">
@@ -11,79 +11,17 @@
 </p>
 
 <p align="center">
-  <strong>Language / 语言:</strong>
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">中文</a>
 </p>
 
 # a3s-vec
 
-**Process-local retrieval for Coding Agent workspaces.**
+In-process vector and full-text search for a Coding Agent workspace. A collection is a directory. The document snapshot and the WAL are the record. HNSW, IVF, RaBitQ, Vamana, DiskANN, scalar postings, and BM25 are built from that record and can be built again.
 
-A collection is a durable log of documents. The document snapshot and the WAL
-are the source of truth. HNSW, IVF, RaBitQ, Vamana, DiskANN, scalar postings,
-and BM25 are derived indexes: they propose candidates, and the public score is
-the exact `f64` re-rank of the authoritative vector. A missing or stale index
-falls back to that scan. Equal scores keep the ascending primary key.
+[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) · [docs.rs](https://docs.rs/a3s-vec)
 
-Dense and sparse vectors, BM25 full-text, and typed scalar filters share one
-revisioned ordinal domain. There is no server process and no C/C++ runtime.
-`0.1.7` implements the filter, tokenizer, and quantization kernel in this crate.
-`0.1.8` keeps that crate and replaces one test helper so Rust 1.75 can compile
-the suite (`f32::next_up` is newer than the MSRV).
-
-**[`0.1.8` on crates.io](https://crates.io/crates/a3s-vec)** · published
-(tag `0.1.8` @ `a26d59e` · SHA-256 `755d3bee…` · [RELEASE.md](RELEASE.md)).
-`0.1.7` is published (tag `0.1.7` @ `57fc476` · SHA-256 `90254cfd…`).
-Its library matches this ranking code; its unit tests do not build on Rust 1.75.
-`0.1.6` remains tag `0.1.6` · SHA-256 `67c238a0…`.
-`0.1.5` remains tag `0.1.5` · SHA-256 `bc42798f…`.
-`0.1.4` remains tag `0.1.4` · SHA-256 `15c4220d…`.
-
-[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) ·
-[Testing](TESTING.md) · [Benchmarks](BENCHMARKS.md) ·
-[docs.rs](https://docs.rs/a3s-vec)
-
----
-
-## Features
-
-| Feature | What it does |
-| --- | --- |
-| **One collection** | Vectors, FTS, and scalar indexes share one revisioned `u64` ordinal domain—compose filters without building query-sized primary-key maps. |
-| **Exact-first correctness** | ANN proposes candidates; authoritative vectors **exact re-rank** with public `f64` scores. Missing or stale indexes fall back to exact scan—no silent approximation. |
-| **ANN depth** | HNSW, IVF (+ optional SOAR), HNSW/IVF RaBitQ, Vamana, PQ/ADC DiskANN (positioned I/O or mmap sidecar). |
-| **Workspace text** | BM25 with `standard` / `whitespace` / `ngram` / optional `jieba`; boolean, phrase, wildcard, fuzzy, range; character-trigram prune before matcher expansion. |
-| **Typed filters** | Equality, range, `IN`, null, wildcard/prefix/suffix, boolean composition—same planner as ANN/FTS. |
-| **Durability** | WAL, checksummed snapshots, file locking, derived-index cache, typed resource limits; typed `StorageCeilings` (defaults 8 GiB / 8 GiB / 8 GiB / 512 MiB DiskANN)—explicit policy, never host autodetection. |
-| **Fail-closed API** | Unsupported routes and bad dimensions fail with typed errors before mutation. |
-| **Embed anywhere** | Embedding models stay with the caller; a3s-vec owns storage, indexes, and planning. |
-
-Native encodings: FP16/32/64, INT4/8/16, Binary32/64, sparse FP16/32. Metrics:
-L2, IP, cosine, MIPS-L2.
-
----
-
-## Why teams pick it
-
-1. **Runs inside the agent process** — no sidecar DB to operate; open a path,
-   insert, query.
-2. **Scores you can defend** — public ranking uses exact `f64` re-scoring of
-   authoritative vectors; Flat recall is 1.0 by construction.
-3. **Hybrid without glue code** — semantic + lexical + structured predicates
-   in one planner and one durable generation.
-4. **One revision, one checksum** — hosted CI, the git tag, and the crates.io
-   artifact bind to the same commit. `0.1.6` keeps a stale DiskANN sidecar from
-   dropping the index cache. `0.1.5` and `0.1.4` remain their own published
-   bindings.
-5. **Measured against zvec 0.7.0** — same corpus, cosine, top-10, `m=16`,
-   `ef_construction=96`, `ef=64`, one worker, exact re-rank kept. See the proof
-   below. Million-document flush stays inside the 8 GiB storage ceilings.
-
-What it is **not**: a hosted vector cloud, a zvec C++ ABI clone, or a claim of
-universal engine ranking.
-
----
+Current release: [`0.1.8`](https://crates.io/crates/a3s-vec), tag `0.1.8` at `a26d59e`, crate SHA-256 `755d3bee…`. Details and older tags are in [RELEASE.md](RELEASE.md). `0.1.7` has the same library; its tests call `f32::next_up` and do not build on Rust 1.75.
 
 ## Install
 
@@ -92,20 +30,46 @@ universal engine ranking.
 a3s-vec = "0.1.8"
 ```
 
-Tokio-facing queries (same planner on `spawn_blocking`):
+Queries on a Tokio runtime use the same planner on `spawn_blocking`:
 
 ```toml
 a3s-vec = { version = "0.1.8", features = ["async"] }
 ```
 
-Monorepo path dependency: `a3s-vec = { path = "crates/vec" }`.
+From the A3S monorepo: `a3s-vec = { path = "crates/vec" }`.
 
-## Quick start
+## Example
 
 ```rust
 use a3s_vec::{
-    Collection, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams,
-    Result, SearchQuery,
+    Collection, CollectionSchema, DataType, Doc, FieldSchema, IndexParams, MetricType, Result,
+    SearchQuery,
+};
+
+fn main() -> Result<()> {
+    let mut embedding = FieldSchema::new("embedding", DataType::VectorFp32, false, 4)?;
+    embedding.set_index_params(&IndexParams::flat(MetricType::Cosine)?)?;
+    let schema = CollectionSchema::builder("notes")
+        .add_field(embedding)
+        .build()?;
+    let collection = Collection::create("./notes-index", &schema, None)?;
+
+    let mut doc = Doc::with_pk("src/index.rs")?;
+    doc.add_vector_f32("embedding", &[1.0, 0.0, 0.0, 0.0])?;
+    collection.insert(&[&doc])?;
+
+    let hits = collection.query(&SearchQuery::new("embedding", &[1.0, 0.0, 0.0, 0.0], 1)?)?;
+    assert_eq!(hits[0].get_pk(), Some("src/index.rs"));
+    Ok(())
+}
+```
+
+Full text uses the same collection. `standard`, `whitespace`, and `ngram` are built in. `jieba` is the `jieba` feature.
+
+```rust
+use a3s_vec::{
+    Collection, CollectionSchema, DataType, Doc, FieldSchema, Fts, IndexParams, Result,
+    SearchQuery,
 };
 
 fn main() -> Result<()> {
@@ -114,8 +78,8 @@ fn main() -> Result<()> {
     let schema = CollectionSchema::builder("workspace")
         .add_field(body)
         .build()?;
-
     let collection = Collection::create("./workspace-index", &schema, None)?;
+
     let mut doc = Doc::with_pk("src/index.rs")?;
     doc.add_string("body", "Rust vector database for workspace retrieval")?;
     collection.insert(&[&doc])?;
@@ -123,64 +87,56 @@ fn main() -> Result<()> {
     let mut expression = Fts::new()?;
     expression.set_query_string("rust AND \"vector database\"")?;
     let hits = collection.query(&SearchQuery::fts("body", &expression, 10)?)?;
-
     assert_eq!(hits[0].get_pk(), Some("src/index.rs"));
     Ok(())
 }
 ```
 
 ```rust
-async fn search(collection: &a3s_vec::Collection, query: &a3s_vec::SearchQuery)
-    -> a3s_vec::Result<Vec<a3s_vec::Doc>>
-{
+async fn search(
+    collection: &a3s_vec::Collection,
+    query: &a3s_vec::SearchQuery,
+) -> a3s_vec::Result<Vec<a3s_vec::Doc>> {
     collection.query_async(query).await
 }
 ```
 
-CI examples: `crud_operations`, `vector_search`, `retrieval_workflows` — see
-[`examples/README.md`](examples/README.md).
+More programs: [`examples/README.md`](examples/README.md).
 
----
+## Score
 
-## How a query stays exact
+A query freezes one schema, document, and index revision, then checks the route, types, dimensions, and limits. An index may return candidates. The score written on the hit is the exact `f64` score of the stored vector. If the index is missing or stale, the scan reads the documents. Flat recall is 1. Equal scores keep the smaller primary key, and that key is resolved for the retained hits.
 
-```text
-request
-  → freeze one schema / document / index revision
-  → validate route, types, dimensions, limits
-  → compose scalar + FTS candidates when selective
-  → ANN or exact vector path
-  → verify filters / phrases on authoritative docs
-  → exact-score, deterministic top-k, projection
-```
+The process default for durability is `Always`. The default HNSW `ef` is 64. Exact re-rank stays on. IVF has no default `scale_factor`.
 
-Equal scores break ties by ascending primary key. Keys resolve only for the
-final top-k.
+Filter parsing, tokenization, and FP16/INT8/INT4 quantization live in this crate. They are not re-exported.
 
----
+## Indexes and fields
 
-## Ops surface
+| Index | Notes |
+| --- | --- |
+| Flat | Exact scan of stored vectors. |
+| HNSW | `m` on upper layers, `2m` on layer 0. |
+| IVF | Optional SOAR. |
+| HNSW RaBitQ, IVF RaBitQ | 1-to-9-bit codes for traversal. The public score is still the full vector. |
+| Vamana | L2, inner product, cosine, MIPS-L2. |
+| DiskANN | PQ/ADC, positioned reads or a validated anonymous mmap snapshot. |
 
-Read-only opens, flush, targeted rebuild, optimize, health, and an owned
-maintenance scheduler. Deep contracts for DiskANN I/O, RaBitQ, FTS analyzers,
-`CollectionResourceLimits`, `StorageCeilings`, and recovery:
-[ARCHITECTURE.md](ARCHITECTURE.md).
+BM25 supports boolean, phrase, wildcard, fuzzy, and range queries. A character trigram prunes wildcard and fuzzy expansion before the matcher runs.
 
----
+Scalar filters are equality, range, `IN`, null, wildcard, prefix, suffix, and boolean composition. They use the same planner as vector and full-text search.
 
-## Proof vs zvec (honest, not a crown)
+Encodings: FP16, FP32, FP64, INT4, INT8, INT16, Binary32, Binary64, sparse FP16, sparse FP32. Metrics: L2, inner product, cosine, MIPS-L2. Binary search is exact Flat L2 or Hamming.
 
-Same-host evidence from one fresh protocol run—not a capacity SLO.
-Protocol: [docs/scale-compare-protocol.md](docs/scale-compare-protocol.md) ·
-[BENCHMARKS.md](BENCHMARKS.md).
+`StorageCeilings` defaults to 8 GiB for the snapshot, the index cache, and WAL replay, and 512 MiB for a DiskANN sidecar. Zero is rejected. The library does not size these from host RAM.
 
-Controls: SplitMix64 corpus, cosine, top-10, 32×3 queries, batch 512, HNSW
-`m=16` / `ef_construction=96` / `ef=64`, one worker. a3s-vec keeps exact
-re-rank and public `f64` scores; zvec uses `is_using_refiner=False`.
-2,000×32 and 100,000×128 are three-process medians. 1,000,000×128 is one
-process. Measured on the `0.1.7` ranking code, unchanged in `0.1.8` except the
-Rust 1.75 test helper. Apple M5 Max, zvec `0.7.0`, 2026-09-23.
-Insert time includes the final flush.
+Read-only open, flush, rebuild, optimize, health, and one owned maintenance scheduler are on `Collection`. DiskANN I/O, RaBitQ, analyzers, resource limits, and recovery are specified in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Measurement
+
+One same-host run, Apple M5 Max, 2026-09-23, a3s-vec `0.1.7` ranking code (`0.1.8` changes a Rust 1.75 test helper) against zvec 0.7.0. Cosine, top-10, 32 queries × 3 rounds, batch 512, HNSW `m=16`, `ef_construction=96`, `ef=64`, one worker. a3s-vec re-ranks with `f64`. zvec runs with `is_using_refiner=False`. Insert time includes the final flush. 2,000×32 and 100,000×128 are three-process medians. 1,000,000×128 is one process.
+
+Protocol: [docs/scale-compare-protocol.md](docs/scale-compare-protocol.md). Full tables: [BENCHMARKS.md](BENCHMARKS.md).
 
 | Fixture | a3s insert | zvec insert | a3s Flat p50 | zvec Flat p50 | a3s HNSW build | zvec HNSW build | a3s HNSW p50 | zvec HNSW p50 | a3s Recall@10 | zvec Recall@10 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -188,24 +144,16 @@ Insert time includes the final flush.
 | 100,000×128 | 346 ms | 964 ms | 770 µs | 1,694 µs | 12.4 s | 45.3 s | 98.3 µs | 136 µs | 0.6000 | 0.5813 |
 | 1,000,000×128 | 3.33 s | 10.0 s | 7.54 ms | 23.6 ms | 202 s | 559 s | 136 µs | 180 µs | 0.3063 | 0.2594 |
 
-The 2026-09-20 million-document insert of `77,339.081` ms stays an unsplit
-historical measurement. Protocol-default Recall@10 is not an accuracy SLO.
-Do not lower `ef`, drop exact re-ranking, or switch public scores to `f32`
-to manufacture a win.
+Recall@10 at `ef=64` is the value this protocol produced. The 2026-09-20 million-document insert of `77,339.081` ms is an older unsplit measurement, kept in [BENCHMARKS.md](BENCHMARKS.md).
 
----
+## Limits
 
-## Boundaries
+- The on-disk format is not Alibaba zvec's C++ storage, and this crate does not speak that ABI.
+- There is no C++ wire import or export, and no binary ANN.
+- Async file reads and file-backed mmap wait on a failing test ([VEC-R2](ROADMAP.md)).
+- macOS 12 Monterey on Intel is unsupported.
 
-- Not binary-compatible with Alibaba zvec storage or C++ ABI.
-- Filter parsing, FTS tokenization, and FP16/INT8/INT4 index quantization are
-  Rust owned by this crate. The public API is A3S-owned.
-- Binary ANN and C++ wire import/export are deliberate non-goals.
-- Native async file reads and direct file-backed mmap stay refused until an
-  invariant fails ([VEC-R2](ROADMAP.md)).
-- macOS 12 Monterey Intel is unsupported.
-
-## Quality gates
+## Develop
 
 ```sh
 cargo fmt --all -- --check
@@ -215,17 +163,6 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo +1.75.0 test --locked
 ```
 
-Hosted CI: quality, MSRV, recovery fuzz, and smoke performance on
-Linux/Windows/macOS (arm64 + Intel, deployment target 15.0).
+Hosted CI runs those gates, recovery fuzz, and smoke benches on Linux x86_64/aarch64, Windows x86_64, and macOS arm64/x86_64. The macOS deployment target is 15.0. The default build does not require `io_uring` or an architecture-specific SIMD path.
 
-## Platform and ownership
-
-Correctness targets Linux x86_64/aarch64, Windows x86_64, and macOS
-arm64/x86_64 (macOS 15.0+). No `io_uring`, C/C++ runtime, or mandatory
-arch-specific SIMD.
-
-Repository: [`A3S-Lab/Vec`](https://github.com/A3S-Lab/Vec). The A3S monorepo
-consumes it as `crates/vec`. Cross-project boundary:
-[retrieval platform architecture](https://github.com/A3S-Lab/a3s/blob/main/docs/retrieval-platform-architecture.md).
-
-Licensed under [MIT](LICENSE).
+Repository: [A3S-Lab/Vec](https://github.com/A3S-Lab/Vec). The monorepo mounts it at `crates/vec`. [MIT](LICENSE).
