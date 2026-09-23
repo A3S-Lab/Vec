@@ -32,8 +32,8 @@ revisioned ordinal domain. There is no server process and no C/C++ runtime.
 `0.1.8` keeps that crate and replaces one test helper so Rust 1.75 can compile
 the suite (`f32::next_up` is newer than the MSRV).
 
-**[`0.1.8`](https://crates.io/crates/a3s-vec)** · this release. The registry
-checksum is recorded in [RELEASE.md](RELEASE.md) after `cargo publish`.
+**[`0.1.8` on crates.io](https://crates.io/crates/a3s-vec)** · published
+(tag `0.1.8` @ `a26d59e` · SHA-256 `755d3bee…` · [RELEASE.md](RELEASE.md)).
 `0.1.7` is published (tag `0.1.7` @ `57fc476` · SHA-256 `90254cfd…`).
 Its library matches this ranking code; its unit tests do not build on Rust 1.75.
 `0.1.6` remains tag `0.1.6` · SHA-256 `67c238a0…`.

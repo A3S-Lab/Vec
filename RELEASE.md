@@ -2,9 +2,10 @@
 
 ## 0.1.8
 
-`a3s-vec` `0.1.8` is the Rust 1.75 fix for the published `0.1.7` crate.
-Tag `0.1.8` points at the revision that `cargo publish` uploads. The registry
-SHA-256 is filled in the post-publish checklist below once that upload exists.
+`a3s-vec` `0.1.8` is published. Tag `0.1.8` @
+`a26d59e9527d3e9588b20a441dc7ddca3852b0b0`, crates.io SHA-256
+`755d3beefad8e7662372f5d6e3b049346ce48ae6329f622a82fd0e97c5cedf95`.
+It is the Rust 1.75 fix for the published `0.1.7` crate.
 
 ### 0.1.8 release notes
 
@@ -15,10 +16,12 @@ toward `+∞` with `to_bits`. The library, the public `f64` contract, and the
 
 ### 0.1.8 post-publish checklist
 
-1. Hosted CI on the tagged revision is green.
-2. The published crate SHA-256 is recorded here.
-3. Formal git tag `0.1.8` points at that revision, and `cargo publish`
-   uploaded the matching crate.
+1. Hosted CI for revision `a26d59e` is the push of this commit's parent.
+   This checksum commit does not claim that run is green yet.
+2. The published crate SHA-256 matches
+   `755d3beefad8e7662372f5d6e3b049346ce48ae6329f622a82fd0e97c5cedf95`.
+3. Formal git tag `0.1.8` points at `a26d59e`, and `cargo publish` uploaded
+   the matching crate. This docs commit is after the tag.
 
 ## 0.1.7
 

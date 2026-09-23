@@ -30,8 +30,8 @@ Vamana、DiskANN、标量倒排和 BM25 是派生索引：它们提出候选，�
 `0.1.8` 保持这份实现，并把一个测试辅助函数换成 Rust 1.75 能编译的写法
 （`f32::next_up` 比 MSRV 新）。
 
-**[`0.1.8`](https://crates.io/crates/a3s-vec)** · 本发布。registry 校验和在
-`cargo publish` 之后写入 [RELEASE.md](RELEASE.md)。
+**[`0.1.8` 已发布](https://crates.io/crates/a3s-vec)** · 已发布
+（tag `0.1.8` @ `a26d59e` · SHA-256 `755d3bee…` · [RELEASE.md](RELEASE.md)）。
 `0.1.7` 已发布（tag `0.1.7` @ `57fc476` · SHA-256 `90254cfd…`）。
 它的库代码与这份排序实现相同；它的单元测试在 Rust 1.75 上编不过。
 `0.1.6` 仍是 tag `0.1.6` · SHA-256 `67c238a0…`。
